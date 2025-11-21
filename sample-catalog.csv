@@ -1,0 +1,50 @@
+UPC,Product Name,SKU,Category,Subcategory,Wholesale Cost,MSRP,Size,Color,Description
+123456789012,Climbing Shoes - Beginner,CS-001,Footwear,Climbing Shoes,45.00,89.99,10,Black,Entry-level climbing shoes with comfortable fit
+123456789013,Climbing Shoes - Intermediate,CS-002,Footwear,Climbing Shoes,65.00,129.99,10.5,Red,Performance climbing shoes for intermediate climbers
+123456789014,Climbing Shoes - Advanced,CS-003,Footwear,Climbing Shoes,85.00,169.99,9.5,Blue,High-performance shoes for advanced climbers
+123456789015,Chalk Bag - Small,CB-001,Accessories,Chalk Bags,8.00,16.99,,Green,Compact chalk bag with belt loop
+123456789016,Chalk Bag - Large,CB-002,Accessories,Chalk Bags,12.00,24.99,,Orange,Large capacity chalk bag with fleece lining
+123456789017,Climbing Harness - Sport,CH-001,Safety,Harnesses,45.00,89.99,M,Black,Lightweight sport climbing harness
+123456789018,Climbing Harness - Trad,CH-002,Safety,Harnesses,65.00,129.99,L,Gray,Full-featured traditional climbing harness
+123456789019,Belay Device - Tube Style,BD-001,Safety,Belay Devices,15.00,29.99,,Silver,Classic tube-style belay device
+123456789020,Belay Device - Assisted Braking,BD-002,Safety,Belay Devices,45.00,89.99,,Black,Assisted braking belay device for added safety
+123456789021,Carabiner - Locking,CR-001,Safety,Carabiners,8.00,16.99,,Silver,HMS locking carabiner for belaying
+123456789022,Carabiner - Non-Locking,CR-002,Safety,Carabiners,4.00,8.99,,Blue,Wiregate non-locking carabiner
+123456789023,Quickdraw Set - 6 Pack,QD-001,Safety,Quickdraws,65.00,129.99,,Multi,Set of 6 sport climbing quickdraws
+123456789024,Rope - 60m Dynamic,RP-001,Safety,Ropes,120.00,239.99,60m,Green,60-meter dynamic climbing rope 9.8mm
+123456789025,Rope - 70m Dynamic,RP-002,Safety,Ropes,140.00,279.99,70m,Blue,70-meter dynamic climbing rope 9.8mm
+123456789026,Crash Pad - Small,CP-001,Bouldering,Crash Pads,110.00,219.99,,Black,Compact bouldering crash pad
+123456789027,Crash Pad - Large,CP-002,Bouldering,Crash Pads,165.00,329.99,,Green,Large bouldering crash pad with shoulder straps
+123456789028,Brush - Small,BR-001,Accessories,Brushes,4.00,8.99,,Natural,Small climbing hold brush with natural bristles
+123456789029,Brush - Large,BR-002,Accessories,Brushes,8.00,16.99,,Synthetic,Large brush with synthetic bristles
+123456789030,Training Board,TB-001,Training,Hangboards,75.00,149.99,,Wood,Wooden training hangboard
+123456789031,Finger Trainer,FT-001,Training,Finger Strength,15.00,29.99,,Black,Adjustable finger strength trainer
+123456789032,Resistance Bands Set,RB-001,Training,Resistance Training,20.00,39.99,,Multi,Set of 5 resistance bands for climbing training
+123456789033,Climbing Tape - 1.5 inch,CT-001,Accessories,Tape,5.00,9.99,1.5in,White,Athletic tape for finger protection
+123456789034,Liquid Chalk - 100ml,LC-001,Accessories,Chalk,8.00,15.99,100ml,White,Liquid chalk for indoor climbing
+123456789035,Loose Chalk - 300g,CK-001,Accessories,Chalk,6.00,12.99,300g,White,Premium loose chalk for climbing
+123456789036,Approach Shoes,AS-001,Footwear,Approach Shoes,75.00,149.99,10,Gray,Durable approach shoes for hiking to crags
+123456789037,Climbing Pants,CP-003,Apparel,Pants,45.00,89.99,32,Khaki,Stretchy climbing pants with reinforced knees
+123456789038,Climbing Shorts,CS-004,Apparel,Shorts,30.00,59.99,32,Navy,Lightweight climbing shorts
+123456789039,T-Shirt - Logo,TS-001,Apparel,Shirts,12.00,24.99,M,Black,Cotton t-shirt with brand logo
+123456789040,Tank Top,TT-001,Apparel,Shirts,10.00,19.99,M,White,Breathable tank top for climbing
+123456789041,Hoodie,HD-001,Apparel,Outerwear,35.00,69.99,L,Gray,Comfortable hoodie with kangaroo pocket
+123456789042,Fleece Jacket,FJ-001,Apparel,Outerwear,55.00,109.99,L,Black,Warm fleece jacket for cold conditions
+123456789043,Windbreaker,WB-001,Apparel,Outerwear,45.00,89.99,M,Blue,Lightweight windbreaker jacket
+123456789044,Beanie,BN-001,Accessories,Headwear,10.00,19.99,,Black,Warm knit beanie
+123456789045,Cap,CAP-001,Accessories,Headwear,12.00,24.99,,Navy,Adjustable climbing cap
+123456789046,Backpack - 30L,BP-001,Gear,Backpacks,45.00,89.99,30L,Black,30-liter climbing backpack
+123456789047,Backpack - 45L,BP-002,Gear,Backpacks,65.00,129.99,45L,Green,45-liter multi-day climbing backpack
+123456789048,Rope Bag,RB-002,Gear,Rope Bags,25.00,49.99,,Blue,Durable rope bag with tarp
+123456789049,Gear Sling,GS-001,Safety,Slings,8.00,16.99,,Purple,Nylon gear sling for organizing equipment
+123456789050,Nut Set - 10 Piece,NS-001,Safety,Protection,85.00,169.99,,Silver,Set of 10 climbing nuts
+123456789051,Cam Set - 4 Piece,CM-001,Safety,Protection,185.00,369.99,,Multi,Set of 4 spring-loaded camming devices
+123456789052,Helmet - Sport,HM-001,Safety,Helmets,35.00,69.99,,White,Lightweight sport climbing helmet
+123456789053,Helmet - Multi-Purpose,HM-002,Safety,Helmets,45.00,89.99,,Black,Multi-purpose climbing and mountaineering helmet
+123456789054,Headlamp,HL-001,Accessories,Lighting,25.00,49.99,,Black,Rechargeable LED headlamp
+123456789055,Guidebook - Local Crags,GB-001,Books,Guidebooks,15.00,29.99,,Multi,Comprehensive local climbing guidebook
+123456789056,Training Guide,TG-001,Books,Training,20.00,39.99,,Multi,Complete climbing training guide
+123456789057,First Aid Kit,FA-001,Safety,First Aid,20.00,39.99,,Red,Compact climbing first aid kit
+123456789058,Sunglasses,SG-001,Accessories,Eyewear,25.00,49.99,,Black,Polarized climbing sunglasses
+123456789059,Skin Balm,SB-001,Accessories,Skin Care,8.00,15.99,,Clear,Healing balm for damaged skin
+123456789060,Hand Cream,HC-001,Accessories,Skin Care,10.00,19.99,,White,Moisturizing hand cream for climbers
