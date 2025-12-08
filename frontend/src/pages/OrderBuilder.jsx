@@ -15,6 +15,8 @@ const OrderBuilder = () => {
   const [error, setError] = useState('');
   const [showAddProductModal, setShowAddProductModal] = useState(false);
   const [showCopyOrderModal, setShowCopyOrderModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     fetchOrder();
@@ -41,6 +43,19 @@ const OrderBuilder = () => {
     } catch (err) {
       console.error('Error updating status:', err);
       setError('Failed to update order status');
+    }
+  };
+
+  const handleDeleteOrder = async () => {
+    try {
+      setDeleting(true);
+      await api.delete(`/orders/${id}`);
+      navigate(`/seasons/${order.season_id}`);
+    } catch (err) {
+      console.error('Error deleting order:', err);
+      setError(err.response?.data?.error || 'Failed to delete order');
+      setDeleting(false);
+      setShowDeleteConfirm(false);
     }
   };
 
@@ -163,6 +178,14 @@ const OrderBuilder = () => {
                 className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
               >
                 Confirm Order
+              </button>
+            )}
+            {isAdmin() && (
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
+              >
+                Delete Order
               </button>
             )}
           </div>
@@ -300,6 +323,35 @@ const OrderBuilder = () => {
               setShowCopyOrderModal(false);
             }}
           />
+        )}
+
+        {/* Delete Confirmation Modal */}
+        {showDeleteConfirm && (
+          <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full">
+              <h2 className="text-xl font-bold text-gray-900 mb-4">Delete Order</h2>
+              <p className="text-gray-600 mb-6">
+                Are you sure you want to delete order <strong>{order.order_number}</strong>?
+                This will permanently remove the order and all its items. This action cannot be undone.
+              </p>
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={() => setShowDeleteConfirm(false)}
+                  className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                  disabled={deleting}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteOrder}
+                  className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:bg-gray-400"
+                  disabled={deleting}
+                >
+                  {deleting ? 'Deleting...' : 'Delete Order'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </Layout>
