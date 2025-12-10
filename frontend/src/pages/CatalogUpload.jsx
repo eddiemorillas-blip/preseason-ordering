@@ -12,6 +12,12 @@ const CatalogUpload = () => {
   const [file, setFile] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [preview, setPreview] = useState(null);
+  const [rawRows, setRawRows] = useState(null);  // Raw preview for header row selection
+  const [headerRow, setHeaderRow] = useState(1);  // Which row contains column headers
+  const [sheetNames, setSheetNames] = useState(null);  // Available sheets in Excel file
+  const [selectedSheets, setSelectedSheets] = useState([]);  // Selected sheets for import
+  const [previewSheet, setPreviewSheet] = useState(null);  // Sheet currently being previewed
+  const [sheetsConfirmed, setSheetsConfirmed] = useState(false);  // Whether sheet selection has been confirmed
   const [columnMapping, setColumnMapping] = useState({});
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -81,6 +87,12 @@ const CatalogUpload = () => {
       required: false,
       variations: ['subcategory', 'sub category', 'sub-category', 'subclass', 'sub class']
     },
+    {
+      key: 'inseam',
+      label: 'Inseam',
+      required: false,
+      variations: ['inseam', 'inseam length', 'leg length', 'pant length', 'length']
+    },
   ];
 
   useEffect(() => {
@@ -144,13 +156,112 @@ const CatalogUpload = () => {
     setFile(selectedFile);
     setError('');
     setUploadResult(null);
+    setRawRows(null);
+    setPreview(null);
+    setColumnMapping({});
+    setHeaderRow(1);
+    setSheetNames(null);
+    setSelectedSheets([]);
+    setPreviewSheet(null);
+    setSheetsConfirmed(false);
 
-    // Preview file
+    // First, get raw preview to detect sheets and show first rows
+    try {
+      const rawFormData = new FormData();
+      rawFormData.append('file', selectedFile);
+      rawFormData.append('rawPreview', 'true');
+
+      const rawResponse = await catalogAPI.preview(rawFormData);
+
+      // Store sheet names if available (Excel files with multiple sheets)
+      if (rawResponse.data.sheetNames && rawResponse.data.sheetNames.length > 1) {
+        setSheetNames(rawResponse.data.sheetNames);
+        // Select all sheets by default
+        setSelectedSheets(rawResponse.data.sheetNames);
+        setPreviewSheet(rawResponse.data.selectedSheet || rawResponse.data.sheetNames[0]);
+        // Don't load preview yet - wait for user to confirm sheet selection
+        return;
+      }
+
+      // For CSV or single-sheet Excel, proceed with preview immediately
+      setRawRows(rawResponse.data.rawRows);
+
+      // Use auto-detected header row from backend
+      const detectedRow = rawResponse.data.detectedHeaderRow || 1;
+      setHeaderRow(detectedRow);
+
+      // Then get regular preview with detected headerRow
+      await fetchPreviewWithHeaderRow(selectedFile, detectedRow, rawResponse.data.selectedSheet);
+    } catch (err) {
+      console.error('Error previewing file:', err);
+      setError(err.response?.data?.error || 'Failed to preview file');
+    }
+  };
+
+  // Load preview after sheet selection is confirmed
+  const handleConfirmSheetSelection = async () => {
+    if (!file || selectedSheets.length === 0) return;
+
+    setSheetsConfirmed(true);
+
+    try {
+      // Get raw preview for the first selected sheet (for header row detection)
+      // Always use the first selected sheet to ensure consistency
+      const sheetToPreview = selectedSheets[0];
+      setPreviewSheet(sheetToPreview);
+      console.log('Confirming sheets, previewing sheet:', sheetToPreview);
+
+      const rawFormData = new FormData();
+      rawFormData.append('file', file);
+      rawFormData.append('rawPreview', 'true');
+      rawFormData.append('sheetName', sheetToPreview);
+
+      const rawResponse = await catalogAPI.preview(rawFormData);
+      console.log('Raw response for sheet', sheetToPreview, ':', {
+        rawRowsCount: rawResponse.data.rawRows?.length,
+        firstRow: rawResponse.data.rawRows?.[0],
+        selectedSheet: rawResponse.data.selectedSheet
+      });
+      setRawRows(rawResponse.data.rawRows);
+
+      // Use auto-detected header row from backend
+      const detectedRow = rawResponse.data.detectedHeaderRow || 1;
+      setHeaderRow(detectedRow);
+
+      // Then get regular preview with detected headerRow
+      await fetchPreviewWithHeaderRow(file, detectedRow, sheetToPreview);
+    } catch (err) {
+      console.error('Error loading preview:', err);
+      setError(err.response?.data?.error || 'Failed to load preview');
+    }
+  };
+
+  // Fetch preview with specific header row and sheet
+  const fetchPreviewWithHeaderRow = async (fileToPreview, row, sheet = null) => {
     try {
       const formData = new FormData();
-      formData.append('file', selectedFile);
+      formData.append('file', fileToPreview);
+      formData.append('headerRow', row.toString());
+      if (sheet) {
+        formData.append('sheetName', sheet);
+      }
 
       const response = await catalogAPI.preview(formData);
+      console.log('Data preview response for sheet', sheet, ':', {
+        columns: response.data.columns,
+        columnsLength: response.data.columns?.length,
+        previewRowCount: response.data.preview?.length,
+        firstPreviewRow: response.data.preview?.[0],
+        selectedSheet: response.data.selectedSheet,
+        totalRows: response.data.totalRows,
+        fullResponse: response.data
+      });
+
+      // Ensure columns exist before setting preview
+      if (!response.data.columns || response.data.columns.length === 0) {
+        console.error('No columns in preview response!');
+      }
+
       setPreview(response.data);
 
       // Intelligent auto-map columns using variations
@@ -192,8 +303,78 @@ const CatalogUpload = () => {
 
       setColumnMapping(autoMapping);
     } catch (err) {
-      console.error('Error previewing file:', err);
+      console.error('Error fetching preview with header row:', err);
       setError(err.response?.data?.error || 'Failed to preview file');
+    }
+  };
+
+  // Handle header row change
+  const handleHeaderRowChange = async (newHeaderRow) => {
+    const row = parseInt(newHeaderRow, 10);
+    if (row < 1 || row > (rawRows?.length || 10)) return;
+
+    setHeaderRow(row);
+    setColumnMapping({});
+
+    if (file) {
+      await fetchPreviewWithHeaderRow(file, row, previewSheet);
+    }
+  };
+
+  // Toggle sheet selection for import
+  const handleSheetToggle = (sheetName) => {
+    setSelectedSheets(prev => {
+      if (prev.includes(sheetName)) {
+        // Don't allow deselecting if it's the only one selected
+        if (prev.length === 1) return prev;
+        return prev.filter(s => s !== sheetName);
+      } else {
+        return [...prev, sheetName];
+      }
+    });
+  };
+
+  // Select/deselect all sheets
+  const handleSelectAllSheets = () => {
+    if (selectedSheets.length === sheetNames.length) {
+      // Keep at least the preview sheet selected
+      setSelectedSheets([previewSheet]);
+    } else {
+      setSelectedSheets([...sheetNames]);
+    }
+  };
+
+  // Change which sheet is being previewed (doesn't affect selection)
+  const handlePreviewSheetChange = async (newSheet) => {
+    console.log('Changing preview sheet to:', newSheet);
+    setPreviewSheet(newSheet);
+    setRawRows(null);
+    setPreview(null);
+    setColumnMapping({});
+    setHeaderRow(1);
+
+    if (file) {
+      try {
+        // Get raw preview for the new sheet
+        const rawFormData = new FormData();
+        rawFormData.append('file', file);
+        rawFormData.append('rawPreview', 'true');
+        rawFormData.append('sheetName', newSheet);
+        console.log('Sending preview request for sheet:', newSheet);
+
+        const rawResponse = await catalogAPI.preview(rawFormData);
+        setRawRows(rawResponse.data.rawRows);
+
+        // Use auto-detected header row from backend
+        const detectedRow = rawResponse.data.detectedHeaderRow || 1;
+        setHeaderRow(detectedRow);
+
+        // Then get regular preview with detected headerRow
+        await fetchPreviewWithHeaderRow(file, detectedRow, newSheet);
+      } catch (err) {
+        console.error('Error previewing sheet:', err);
+        setError(err.response?.data?.error || 'Failed to preview sheet');
+      }
     }
   };
 
@@ -237,6 +418,10 @@ const CatalogUpload = () => {
       }
 
       formData.append('columnMapping', JSON.stringify(columnMapping));
+      formData.append('headerRow', headerRow.toString());
+      if (selectedSheets && selectedSheets.length > 0) {
+        formData.append('sheetNames', JSON.stringify(selectedSheets));
+      }
 
       const response = await catalogAPI.upload(formData, (progressEvent) => {
         const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
@@ -246,6 +431,12 @@ const CatalogUpload = () => {
       setUploadResult(response.data);
       setFile(null);
       setPreview(null);
+      setRawRows(null);
+      setHeaderRow(1);
+      setSheetNames(null);
+      setSelectedSheets([]);
+      setPreviewSheet(null);
+      setSheetsConfirmed(false);
       setColumnMapping({});
       setBrandName('');
       setSelectedBrand('');
@@ -433,6 +624,12 @@ const CatalogUpload = () => {
                     onClick={() => {
                       setFile(null);
                       setPreview(null);
+                      setRawRows(null);
+                      setHeaderRow(1);
+                      setSheetNames(null);
+                      setSelectedSheets([]);
+                      setPreviewSheet(null);
+                      setSheetsConfirmed(false);
                       setColumnMapping({});
                       document.getElementById('fileInput').value = '';
                     }}
@@ -480,11 +677,194 @@ const CatalogUpload = () => {
             </div>
           </div>
 
+          {/* Sheet Selection for Excel files - shown before preview */}
+          {sheetNames && sheetNames.length > 1 && !sheetsConfirmed && (
+            <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="text-sm font-medium text-blue-900">
+                    Step 1: Select Sheets to Import
+                  </h3>
+                  <p className="text-xs text-blue-700 mt-1">
+                    This file contains {sheetNames.length} sheets. Select which ones to import ({selectedSheets.length} selected).
+                  </p>
+                </div>
+                <button
+                  onClick={handleSelectAllSheets}
+                  className="px-3 py-1.5 text-sm bg-white text-blue-700 border border-blue-300 rounded-md hover:bg-blue-100 transition-colors"
+                  disabled={uploading}
+                >
+                  {selectedSheets.length === sheetNames.length ? 'Deselect All' : 'Select All'}
+                </button>
+              </div>
+
+              {/* Sheet checkboxes */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 mb-4">
+                {sheetNames.map((name, idx) => (
+                  <label
+                    key={idx}
+                    className={`flex items-center p-2 rounded-md cursor-pointer transition-colors ${
+                      selectedSheets.includes(name)
+                        ? 'bg-blue-100 border-2 border-blue-500'
+                        : 'bg-white border-2 border-gray-200 hover:border-blue-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedSheets.includes(name)}
+                      onChange={() => handleSheetToggle(name)}
+                      disabled={uploading || (selectedSheets.length === 1 && selectedSheets.includes(name))}
+                      className="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                    />
+                    <span className={`ml-2 text-sm truncate ${
+                      selectedSheets.includes(name) ? 'text-blue-800 font-medium' : 'text-gray-700'
+                    }`}>
+                      {name}
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              <p className="text-xs text-blue-600 mb-4">
+                All selected sheets will be combined during import. Make sure they have the same column structure.
+              </p>
+
+              {/* Continue button */}
+              <div className="flex justify-end">
+                <button
+                  onClick={handleConfirmSheetSelection}
+                  disabled={uploading || selectedSheets.length === 0}
+                  className={`px-6 py-2 rounded-md font-medium transition-colors ${
+                    selectedSheets.length === 0
+                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
+                >
+                  Continue with {selectedSheets.length} sheet{selectedSheets.length !== 1 ? 's' : ''}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Sheet indicator after selection - shown with preview */}
+          {sheetNames && sheetNames.length > 1 && sheetsConfirmed && (
+            <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm font-medium text-blue-900">
+                    Importing {selectedSheets.length} sheet{selectedSheets.length !== 1 ? 's' : ''}:
+                  </span>
+                  <span className="text-sm text-blue-700">
+                    {selectedSheets.join(', ')}
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    setSheetsConfirmed(false);
+                    setRawRows(null);
+                    setPreview(null);
+                    setColumnMapping({});
+                    setHeaderRow(1);
+                  }}
+                  className="text-sm text-blue-600 hover:text-blue-800 underline"
+                  disabled={uploading}
+                >
+                  Change sheets
+                </button>
+              </div>
+              <div className="flex items-center justify-between mt-2 pt-2 border-t border-blue-200">
+                <span className="text-xs text-blue-700">
+                  Previewing:
+                </span>
+                <select
+                  value={previewSheet || ''}
+                  onChange={(e) => handlePreviewSheetChange(e.target.value)}
+                  className="px-3 py-1 border border-blue-300 rounded-md text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={uploading}
+                >
+                  {selectedSheets.map((name, idx) => (
+                    <option key={idx} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+
+          {/* Raw Rows Preview for Header Row Selection */}
+          {rawRows && rawRows.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-medium text-gray-700">
+                  Select Header Row
+                </h3>
+                <div className="flex items-center space-x-2">
+                  <label className="text-sm text-gray-600">Header row:</label>
+                  <select
+                    value={headerRow}
+                    onChange={(e) => handleHeaderRowChange(e.target.value)}
+                    className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    disabled={uploading}
+                  >
+                    {rawRows.map((_, idx) => (
+                      <option key={idx + 1} value={idx + 1}>
+                        Row {idx + 1}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <p className="text-xs text-gray-500 mb-2">
+                Header row auto-detected. Click on a different row to change it if needed.
+                Rows before the header row will be ignored during import.
+              </p>
+              <div className="overflow-x-auto border border-gray-200 rounded-md max-h-64 overflow-y-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {rawRows.map((row, rowIdx) => (
+                      <tr
+                        key={rowIdx}
+                        onClick={() => !uploading && handleHeaderRowChange(rowIdx + 1)}
+                        className={`cursor-pointer transition-colors ${
+                          rowIdx + 1 === headerRow
+                            ? 'bg-blue-100 border-l-4 border-l-blue-500'
+                            : rowIdx + 1 < headerRow
+                            ? 'bg-gray-100 text-gray-400'
+                            : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        <td className="px-2 py-2 text-xs text-gray-500 font-mono w-12">
+                          {rowIdx + 1}
+                        </td>
+                        {row.map((cell, cellIdx) => (
+                          <td
+                            key={cellIdx}
+                            className={`px-3 py-2 whitespace-nowrap ${
+                              rowIdx + 1 === headerRow ? 'font-semibold text-blue-800' : ''
+                            }`}
+                          >
+                            {cell || <span className="text-gray-300">-</span>}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {headerRow > 1 && (
+                <p className="text-xs text-amber-600 mt-2">
+                  {headerRow - 1} row(s) before the header will be skipped during import.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* File Preview */}
           {preview && (
             <div>
               <h3 className="text-sm font-medium text-gray-700 mb-2">
-                File Preview ({preview.totalRows} rows detected)
+                Data Preview ({preview.totalRows} data rows detected)
               </h3>
               <div className="overflow-x-auto border border-gray-200 rounded-md">
                 <table className="min-w-full divide-y divide-gray-200 text-sm">
@@ -544,10 +924,15 @@ const CatalogUpload = () => {
                   <div className="text-sm text-blue-800">
                     <p className="font-medium mb-1">Auto-mapping complete!</p>
                     <p>
-                      Mapped {Object.keys(columnMapping).length} of {dbFields.length} fields.
+                      Mapped {Object.values(columnMapping).filter(v => v && v !== '__NOT_AVAILABLE__').length} of {dbFields.length} fields.
                       {dbFields.filter(f => f.required && !columnMapping[f.key]).length > 0 && (
                         <span className="text-red-600 font-medium">
-                          {' '}Please map {dbFields.filter(f => f.required && !columnMapping[f.key]).length} required field(s).
+                          {' '}Please map or mark as N/A: {dbFields.filter(f => f.required && !columnMapping[f.key]).length} required field(s).
+                        </span>
+                      )}
+                      {dbFields.filter(f => f.required && columnMapping[f.key] === '__NOT_AVAILABLE__').length > 0 && (
+                        <span className="text-amber-600 font-medium">
+                          {' '}{dbFields.filter(f => f.required && columnMapping[f.key] === '__NOT_AVAILABLE__').length} required field(s) marked as N/A.
                         </span>
                       )}
                       {' '}Review and adjust mappings below before uploading.
@@ -558,9 +943,11 @@ const CatalogUpload = () => {
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {dbFields.map((field) => {
-                  const isMapped = !!columnMapping[field.key];
+                  const mappedValue = columnMapping[field.key];
+                  const isMapped = !!mappedValue && mappedValue !== '__NOT_AVAILABLE__';
+                  const isNotAvailable = mappedValue === '__NOT_AVAILABLE__';
                   const isRequired = field.required;
-                  const needsAttention = isRequired && !isMapped;
+                  const needsAttention = isRequired && !mappedValue;
 
                   return (
                     <div key={field.key} className="relative">
@@ -571,6 +958,9 @@ const CatalogUpload = () => {
                             <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                           </svg>
                         )}
+                        {isNotAvailable && (
+                          <span className="ml-2 text-xs text-amber-600">(N/A)</span>
+                        )}
                       </label>
                       <select
                         value={columnMapping[field.key] || ''}
@@ -578,6 +968,8 @@ const CatalogUpload = () => {
                         className={`w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 text-sm ${
                           needsAttention
                             ? 'border-red-300 bg-red-50'
+                            : isNotAvailable
+                            ? 'border-amber-300 bg-amber-50'
                             : isMapped
                             ? 'border-green-300 bg-green-50'
                             : 'border-gray-300'
@@ -585,6 +977,7 @@ const CatalogUpload = () => {
                         disabled={uploading}
                       >
                         <option value="">-- Select Column --</option>
+                        <option value="__NOT_AVAILABLE__">-- Not Available in File --</option>
                         {preview.columns.map((col, idx) => (
                           <option key={idx} value={col}>
                             {col}
@@ -593,6 +986,9 @@ const CatalogUpload = () => {
                       </select>
                       {needsAttention && (
                         <p className="mt-1 text-xs text-red-600">Required field not mapped</p>
+                      )}
+                      {isNotAvailable && isRequired && (
+                        <p className="mt-1 text-xs text-amber-600">Will be imported as empty</p>
                       )}
                     </div>
                   );
@@ -675,31 +1071,31 @@ const CatalogUpload = () => {
                   uploadHistory.map((upload) => (
                     <tr key={upload.id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {new Date(upload.createdAt).toLocaleString()}
+                        {new Date(upload.created_at).toLocaleString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {upload.brandName}
+                        {upload.brand_name}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {upload.fileName}
+                        {upload.file_name}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-green-600">
-                        {upload.productsAdded}
+                        {upload.products_added}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
-                        {upload.productsUpdated}
+                        {upload.products_updated}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span
                           className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                            upload.uploadStatus === 'completed'
+                            upload.upload_status === 'completed'
                               ? 'bg-green-100 text-green-800'
-                              : upload.uploadStatus === 'completed_with_errors'
+                              : upload.upload_status === 'completed_with_errors'
                               ? 'bg-yellow-100 text-yellow-800'
                               : 'bg-red-100 text-red-800'
                           }`}
                         >
-                          {upload.uploadStatus ? upload.uploadStatus.replace(/_/g, ' ') : 'unknown'}
+                          {upload.upload_status ? upload.upload_status.replace(/_/g, ' ') : 'unknown'}
                         </span>
                       </td>
                     </tr>

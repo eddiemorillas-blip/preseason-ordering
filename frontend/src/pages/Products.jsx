@@ -89,6 +89,45 @@ const Products = () => {
     }
   };
 
+  const handlePageJump = (pageNum) => {
+    const totalPages = Math.ceil(totalResults / limit);
+    if (pageNum >= 1 && pageNum <= totalPages) {
+      setPage(pageNum);
+    }
+  };
+
+  const totalPages = Math.ceil(totalResults / limit);
+
+  // Generate page numbers to display
+  const getPageNumbers = () => {
+    const pages = [];
+    const maxVisible = 7;
+
+    if (totalPages <= maxVisible) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      // Always show first page
+      pages.push(1);
+
+      if (page > 3) pages.push('...');
+
+      // Show pages around current page
+      const start = Math.max(2, page - 1);
+      const end = Math.min(totalPages - 1, page + 1);
+
+      for (let i = start; i <= end; i++) {
+        if (!pages.includes(i)) pages.push(i);
+      }
+
+      if (page < totalPages - 2) pages.push('...');
+
+      // Always show last page
+      if (!pages.includes(totalPages)) pages.push(totalPages);
+    }
+
+    return pages;
+  };
+
   const formatPrice = (price) => {
     if (!price) return 'N/A';
     return `$${parseFloat(price).toFixed(2)}`;
@@ -204,6 +243,11 @@ const Products = () => {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Size
                       </th>
+                      {products.some(p => p.inseam) && (
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Inseam
+                        </th>
+                      )}
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Color
                       </th>
@@ -242,6 +286,11 @@ const Products = () => {
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                           {product.size || 'N/A'}
                         </td>
+                        {products.some(p => p.inseam) && (
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {product.inseam || 'N/A'}
+                          </td>
+                        )}
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                           {product.color || 'N/A'}
                         </td>
@@ -282,9 +331,12 @@ const Products = () => {
                 >
                   Previous
                 </button>
+                <span className="text-sm text-gray-700 self-center">
+                  {page} / {totalPages}
+                </span>
                 <button
                   onClick={handleNextPage}
-                  disabled={products.length < limit}
+                  disabled={page >= totalPages}
                   className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Next
@@ -297,29 +349,75 @@ const Products = () => {
                     <span className="font-medium">
                       {Math.min(page * limit, (page - 1) * limit + products.length)}
                     </span>{' '}
-                    of <span className="font-medium">{totalResults}</span> results
+                    of <span className="font-medium">{totalResults.toLocaleString()}</span> results
                   </p>
                 </div>
-                <div>
+                <div className="flex items-center gap-4">
+                  {/* Page number buttons */}
                   <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
                     <button
                       onClick={handlePrevPage}
                       disabled={page === 1}
                       className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      Previous
+                      <span className="sr-only">Previous</span>
+                      <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
                     </button>
-                    <span className="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700">
-                      Page {page}
-                    </span>
+                    {getPageNumbers().map((pageNum, idx) => (
+                      pageNum === '...' ? (
+                        <span
+                          key={`ellipsis-${idx}`}
+                          className="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700"
+                        >
+                          ...
+                        </span>
+                      ) : (
+                        <button
+                          key={pageNum}
+                          onClick={() => handlePageJump(pageNum)}
+                          className={`relative inline-flex items-center px-4 py-2 border text-sm font-medium ${
+                            pageNum === page
+                              ? 'z-10 bg-blue-50 border-blue-500 text-blue-600'
+                              : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
+                          }`}
+                        >
+                          {pageNum}
+                        </button>
+                      )
+                    ))}
                     <button
                       onClick={handleNextPage}
-                      disabled={products.length < limit}
+                      disabled={page >= totalPages}
                       className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      Next
+                      <span className="sr-only">Next</span>
+                      <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                      </svg>
                     </button>
                   </nav>
+
+                  {/* Jump to page */}
+                  {totalPages > 7 && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-gray-700">Go to:</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max={totalPages}
+                        className="w-16 px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handlePageJump(parseInt(e.target.value, 10));
+                            e.target.value = '';
+                          }
+                        }}
+                        placeholder={page.toString()}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

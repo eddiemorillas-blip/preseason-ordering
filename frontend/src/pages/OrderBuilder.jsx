@@ -13,14 +13,33 @@ const OrderBuilder = () => {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [showAddProductModal, setShowAddProductModal] = useState(false);
+  // Removed modal state - now using full page for adding products
   const [showCopyOrderModal, setShowCopyOrderModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editingQuantities, setEditingQuantities] = useState({}); // { itemId: newQuantity }
+  const [savingItems, setSavingItems] = useState(new Set()); // Track which items are being saved
+  const [itemToDelete, setItemToDelete] = useState(null); // Item pending deletion confirmation
+  const [familyToDelete, setFamilyToDelete] = useState(null); // Family pending deletion { name, items }
+  const [deletingFamily, setDeletingFamily] = useState(false);
+  const [showExportDropdown, setShowExportDropdown] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [collapsedFamilies, setCollapsedFamilies] = useState(new Set());
 
   useEffect(() => {
     fetchOrder();
   }, [id]);
+
+  // Close export dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showExportDropdown && !event.target.closest('.export-dropdown')) {
+        setShowExportDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showExportDropdown]);
 
   const fetchOrder = async () => {
     try {
@@ -59,6 +78,129 @@ const OrderBuilder = () => {
     }
   };
 
+  // Handle quantity change in input field
+  const handleQuantityChange = (itemId, value) => {
+    setEditingQuantities({
+      ...editingQuantities,
+      [itemId]: value
+    });
+  };
+
+  // Save updated quantity for an item
+  const handleSaveQuantity = async (itemId) => {
+    const newQuantity = editingQuantities[itemId];
+    if (newQuantity === undefined || newQuantity === '') return;
+
+    const quantity = parseInt(newQuantity, 10);
+    if (isNaN(quantity) || quantity < 0) {
+      setError('Please enter a valid quantity');
+      return;
+    }
+
+    // If quantity is 0, prompt for deletion instead
+    if (quantity === 0) {
+      const item = items.find(i => i.id === itemId);
+      setItemToDelete(item);
+      return;
+    }
+
+    setSavingItems(prev => new Set(prev).add(itemId));
+    setError('');
+
+    try {
+      await api.patch(`/orders/${id}/items/${itemId}`, { quantity });
+
+      // Update local state
+      setItems(items.map(item =>
+        item.id === itemId
+          ? { ...item, quantity, line_total: quantity * parseFloat(item.unit_price || 0) }
+          : item
+      ));
+
+      // Clear editing state for this item
+      const newEditing = { ...editingQuantities };
+      delete newEditing[itemId];
+      setEditingQuantities(newEditing);
+
+      // Refresh order to get updated total
+      fetchOrder();
+    } catch (err) {
+      console.error('Error updating quantity:', err);
+      setError(err.response?.data?.error || 'Failed to update quantity');
+    } finally {
+      setSavingItems(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(itemId);
+        return newSet;
+      });
+    }
+  };
+
+  // Handle key press in quantity input (Enter to save, Escape to cancel)
+  const handleQuantityKeyDown = (e, itemId, originalQuantity) => {
+    if (e.key === 'Enter') {
+      handleSaveQuantity(itemId);
+    } else if (e.key === 'Escape') {
+      const newEditing = { ...editingQuantities };
+      delete newEditing[itemId];
+      setEditingQuantities(newEditing);
+    }
+  };
+
+  // Delete an item from the order
+  const handleDeleteItem = async (itemId) => {
+    setSavingItems(prev => new Set(prev).add(itemId));
+    setError('');
+
+    try {
+      await api.delete(`/orders/${id}/items/${itemId}`);
+
+      // Update local state
+      setItems(items.filter(item => item.id !== itemId));
+      setItemToDelete(null);
+
+      // Refresh order to get updated total
+      fetchOrder();
+    } catch (err) {
+      console.error('Error deleting item:', err);
+      setError(err.response?.data?.error || 'Failed to remove item');
+    } finally {
+      setSavingItems(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(itemId);
+        return newSet;
+      });
+    }
+  };
+
+  // Delete all items in a product family
+  const handleDeleteFamily = async () => {
+    if (!familyToDelete) return;
+
+    setDeletingFamily(true);
+    setError('');
+
+    try {
+      // Delete all items in the family
+      for (const item of familyToDelete.items) {
+        await api.delete(`/orders/${id}/items/${item.id}`);
+      }
+
+      // Update local state
+      const deletedIds = new Set(familyToDelete.items.map(i => i.id));
+      setItems(items.filter(item => !deletedIds.has(item.id)));
+      setFamilyToDelete(null);
+
+      // Refresh order to get updated total
+      fetchOrder();
+    } catch (err) {
+      console.error('Error deleting family:', err);
+      setError(err.response?.data?.error || 'Failed to remove product family');
+    } finally {
+      setDeletingFamily(false);
+    }
+  };
+
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -81,9 +223,9 @@ const OrderBuilder = () => {
     }
   };
 
-  // Group items by product family (base_name)
+  // Group items by product family (base_name, fallback to product_name)
   const groupedItems = items.reduce((acc, item) => {
-    const key = item.base_name || 'Ungrouped';
+    const key = item.base_name || item.product_name || 'Ungrouped';
     if (!acc[key]) {
       acc[key] = [];
     }
@@ -91,7 +233,60 @@ const OrderBuilder = () => {
     return acc;
   }, {});
 
-  const canEdit = (isAdmin() || isBuyer()) && order?.status === 'draft';
+
+  const toggleFamilyCollapse = (familyName) => {
+    const newCollapsed = new Set(collapsedFamilies);
+    if (newCollapsed.has(familyName)) {
+      newCollapsed.delete(familyName);
+    } else {
+      newCollapsed.add(familyName);
+    }
+    setCollapsedFamilies(newCollapsed);
+  };
+
+  const toggleAllFamilies = () => {
+    const familyNames = Object.keys(groupedItems);
+    if (collapsedFamilies.size === familyNames.length) {
+      // All collapsed, expand all
+      setCollapsedFamilies(new Set());
+    } else {
+      // Some or none collapsed, collapse all
+      setCollapsedFamilies(new Set(familyNames));
+    }
+  };
+
+  const allCollapsed = Object.keys(groupedItems).length > 0 && collapsedFamilies.size === Object.keys(groupedItems).length;
+
+  const canEdit = isAdmin() || isBuyer();
+
+  // Handle export
+  const handleExport = async (template, format) => {
+    setExporting(true);
+    setShowExportDropdown(false);
+    try {
+      const response = await api.get(`/exports/orders/${id}?template=${template}&format=${format}`, {
+        responseType: 'blob'
+      });
+
+      // Create download link
+      const blob = new Blob([response.data], {
+        type: format === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `order_${order.order_number}_${template}.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Error exporting order:', err);
+      setError('Failed to export order');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -150,10 +345,89 @@ const OrderBuilder = () => {
             </div>
           </div>
           <div className="flex space-x-2">
+            {/* Export Dropdown */}
+            <div className="relative export-dropdown">
+              <button
+                onClick={() => setShowExportDropdown(!showExportDropdown)}
+                disabled={exporting || items.length === 0}
+                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 flex items-center"
+              >
+                {exporting ? (
+                  <>
+                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Export
+                    <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </>
+                )}
+              </button>
+              {showExportDropdown && (
+                <div className="absolute right-0 mt-2 w-56 bg-white rounded-md shadow-lg ring-1 ring-black ring-opacity-5 z-50">
+                  <div className="py-1">
+                    <div className="px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">
+                      NuOrder Format
+                    </div>
+                    <button
+                      onClick={() => handleExport('nuorder', 'xlsx')}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    >
+                      Excel (.xlsx)
+                    </button>
+                    <button
+                      onClick={() => handleExport('nuorder', 'csv')}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    >
+                      CSV (.csv)
+                    </button>
+                    <div className="px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">
+                      Elastic Format
+                    </div>
+                    <button
+                      onClick={() => handleExport('elastic', 'xlsx')}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    >
+                      Excel (.xlsx)
+                    </button>
+                    <button
+                      onClick={() => handleExport('elastic', 'csv')}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    >
+                      CSV (.csv)
+                    </button>
+                    <div className="px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">
+                      Standard Format
+                    </div>
+                    <button
+                      onClick={() => handleExport('standard', 'xlsx')}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    >
+                      Excel (.xlsx)
+                    </button>
+                    <button
+                      onClick={() => handleExport('standard', 'csv')}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    >
+                      CSV (.csv)
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
             {canEdit && (
               <>
                 <button
-                  onClick={() => setShowAddProductModal(true)}
+                  onClick={() => navigate(`/orders/${id}/add-products`)}
                   className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
                 >
                   + Add Products
@@ -164,21 +438,7 @@ const OrderBuilder = () => {
                 >
                   Copy Order
                 </button>
-                <button
-                  onClick={() => handleUpdateStatus('submitted')}
-                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
-                >
-                  Submit Order
-                </button>
               </>
-            )}
-            {isAdmin() && order.status === 'submitted' && (
-              <button
-                onClick={() => handleUpdateStatus('confirmed')}
-                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
-              >
-                Confirm Order
-              </button>
             )}
             {isAdmin() && (
               <button
@@ -218,15 +478,23 @@ const OrderBuilder = () => {
 
         {/* Items by Family */}
         <div className="bg-white shadow rounded-lg overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-gray-900">Order Items</h2>
+            {items.length > 0 && (
+              <button
+                onClick={toggleAllFamilies}
+                className="text-sm text-blue-600 hover:text-blue-800"
+              >
+                {allCollapsed ? 'Expand All' : 'Collapse All'}
+              </button>
+            )}
           </div>
           {items.length === 0 ? (
             <div className="px-6 py-8 text-center text-sm text-gray-500">
               No items in this order yet.{' '}
               {canEdit && (
                 <button
-                  onClick={() => setShowAddProductModal(true)}
+                  onClick={() => navigate(`/orders/${id}/add-products`)}
                   className="text-blue-600 hover:text-blue-800"
                 >
                   Add products
@@ -236,9 +504,40 @@ const OrderBuilder = () => {
           ) : (
             <div className="divide-y divide-gray-200">
               {Object.entries(groupedItems).map(([familyName, familyItems]) => (
-                <div key={familyName} className="p-6">
-                  <h3 className="font-semibold text-gray-900 mb-4">{familyName}</h3>
-                  <div className="overflow-x-auto">
+                <div key={familyName}>
+                  <div
+                    className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50"
+                    onClick={() => toggleFamilyCollapse(familyName)}
+                  >
+                    <div className="flex items-center gap-2">
+                      <svg
+                        className={`w-4 h-4 text-gray-500 transition-transform ${collapsedFamilies.has(familyName) ? '' : 'rotate-90'}`}
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                      <h3 className="font-semibold text-gray-900">{familyName}</h3>
+                      <span className="text-sm text-gray-500">
+                        ({familyItems.length} items &bull; {formatCurrency(familyItems.reduce((sum, item) => sum + parseFloat(item.line_total), 0))})
+                      </span>
+                    </div>
+                    {canEdit && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setFamilyToDelete({ name: familyName, items: familyItems }); }}
+                        className="flex items-center text-sm text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-50"
+                        title="Remove entire family"
+                      >
+                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                        Remove Family
+                      </button>
+                    )}
+                  </div>
+                  {!collapsedFamilies.has(familyName) && (
+                  <div className="px-6 pb-6 overflow-x-auto">
                     <table className="min-w-full">
                       <thead className="bg-gray-50">
                         <tr>
@@ -260,59 +559,91 @@ const OrderBuilder = () => {
                           <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">
                             Line Total
                           </th>
+                          {canEdit && (
+                            <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase w-20">
+                              Actions
+                            </th>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-100">
-                        {familyItems.map((item) => (
-                          <tr key={item.id} className="hover:bg-gray-50">
-                            <td className="px-4 py-3 text-sm text-gray-900">
-                              {item.product_name}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-gray-600">
-                              {item.size || '-'}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-gray-600">
-                              {item.color || '-'}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-900">
-                              {formatCurrency(item.unit_price)}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">
-                              {item.quantity}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-right font-semibold text-gray-900">
-                              {formatCurrency(item.line_total)}
-                            </td>
-                          </tr>
-                        ))}
+                        {familyItems.map((item) => {
+                          const isEditing = editingQuantities[item.id] !== undefined;
+                          const isSaving = savingItems.has(item.id);
+                          const displayQuantity = isEditing ? editingQuantities[item.id] : item.quantity;
+
+                          return (
+                            <tr key={item.id} className={`hover:bg-gray-50 ${isSaving ? 'opacity-50' : ''}`}>
+                              <td className="px-4 py-3 text-sm text-gray-900">
+                                {item.product_name}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-600">
+                                {item.size || '-'}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-600">
+                                {item.color || '-'}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-right text-gray-900">
+                                {formatCurrency(item.unit_price)}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-right">
+                                {canEdit ? (
+                                  <div className="flex items-center justify-end space-x-1">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      value={displayQuantity}
+                                      onChange={(e) => handleQuantityChange(item.id, e.target.value)}
+                                      onKeyDown={(e) => handleQuantityKeyDown(e, item.id, item.quantity)}
+                                      onBlur={() => {
+                                        if (isEditing && editingQuantities[item.id] !== String(item.quantity)) {
+                                          handleSaveQuantity(item.id);
+                                        }
+                                      }}
+                                      className="w-16 px-2 py-1 text-right border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                      disabled={isSaving}
+                                    />
+                                    {isEditing && editingQuantities[item.id] !== String(item.quantity) && (
+                                      <span className="text-xs text-blue-600">*</span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="font-medium text-gray-900">{item.quantity}</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-right font-semibold text-gray-900">
+                                {formatCurrency(
+                                  isEditing && editingQuantities[item.id]
+                                    ? parseInt(editingQuantities[item.id] || 0, 10) * parseFloat(item.unit_price || 0)
+                                    : item.line_total
+                                )}
+                              </td>
+                              {canEdit && (
+                                <td className="px-4 py-3 text-center">
+                                  <button
+                                    onClick={() => setItemToDelete(item)}
+                                    className="text-red-600 hover:text-red-800 p-1 rounded hover:bg-red-50"
+                                    title="Remove item"
+                                    disabled={isSaving}
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
-                  <div className="mt-3 pt-3 border-t border-gray-200 flex justify-end">
-                    <div className="text-right">
-                      <span className="text-sm text-gray-600">Family Total: </span>
-                      <span className="text-lg font-semibold text-gray-900">
-                        {formatCurrency(familyItems.reduce((sum, item) => sum + parseFloat(item.line_total), 0))}
-                      </span>
-                    </div>
-                  </div>
+                  )}
                 </div>
               ))}
             </div>
           )}
         </div>
-
-        {/* Add Product Modal */}
-        {showAddProductModal && (
-          <AddProductModal
-            orderId={id}
-            brandId={order.brand_id}
-            onClose={() => {
-              setShowAddProductModal(false);
-              fetchOrder();
-            }}
-          />
-        )}
 
         {/* Copy Order Modal */}
         {showCopyOrderModal && (
@@ -353,620 +684,94 @@ const OrderBuilder = () => {
             </div>
           </div>
         )}
-      </div>
-    </Layout>
-  );
-};
 
-// Add Product Modal Component - Bulk Selection
-const AddProductModal = ({ orderId, brandId, onClose }) => {
-  const [products, setProducts] = useState([]);
-  const [families, setFamilies] = useState([]);
-  const [selectedFamilies, setSelectedFamilies] = useState(new Set());
-  const [selectedColors, setSelectedColors] = useState({}); // { familyName: ['Black', 'White'] }
-  const [quantities, setQuantities] = useState({}); // { productId: quantity }
-  const [selectedSizes, setSelectedSizes] = useState(new Set()); // Sizes to include in quantity entry
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [step, setStep] = useState(1); // 1: Select families, 2: Select colors, 3: Enter quantities
-
-  // Filters
-  const [genderFilter, setGenderFilter] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('');
-  const [subcategoryFilter, setSubcategoryFilter] = useState('');
-  const [searchFilter, setSearchFilter] = useState('');
-
-  useEffect(() => {
-    fetchProducts();
-  }, []);
-
-  const fetchProducts = async () => {
-    try {
-      setLoading(true);
-      const response = await api.get(`/products/search?brandId=${brandId}&limit=10000`);
-      const allProducts = response.data.products || [];
-      setProducts(allProducts);
-
-      // Group by family
-      const familyMap = {};
-      allProducts.forEach(product => {
-        const familyName = product.base_name || 'Unknown';
-        if (!familyMap[familyName]) {
-          familyMap[familyName] = {
-            name: familyName,
-            gender: product.gender || '',
-            category: product.category || '',
-            subcategory: product.subcategory || '',
-            products: [],
-            colors: new Set(),
-            sizes: new Set()
-          };
-        }
-        familyMap[familyName].products.push(product);
-        if (product.color) familyMap[familyName].colors.add(product.color);
-        if (product.size) familyMap[familyName].sizes.add(product.size);
-      });
-
-      setFamilies(Object.values(familyMap).map(f => ({
-        ...f,
-        colors: Array.from(f.colors),
-        sizes: Array.from(f.sizes)
-      })));
-    } catch (err) {
-      console.error('Error fetching products:', err);
-      setError('Failed to load products');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Get hierarchical filter options
-  // Step 1: Get all genders
-  const genders = [...new Set(families.map(f => f.gender).filter(Boolean))];
-
-  // Step 2: Get categories that match selected gender (or all if no gender selected)
-  const availableCategories = [...new Set(
-    families
-      .filter(f => !genderFilter || f.gender === genderFilter)
-      .map(f => f.category)
-      .filter(Boolean)
-  )];
-
-  // Step 3: Get subcategories that match selected gender+category (or all if no filters)
-  const availableSubcategories = [...new Set(
-    families
-      .filter(f => {
-        if (genderFilter && f.gender !== genderFilter) return false;
-        if (categoryFilter && f.category !== categoryFilter) return false;
-        return true;
-      })
-      .map(f => f.subcategory)
-      .filter(Boolean)
-  )];
-
-  // Filter families
-  const filteredFamilies = families.filter(family => {
-    if (genderFilter && family.gender !== genderFilter) return false;
-    if (categoryFilter && family.category !== categoryFilter) return false;
-    if (subcategoryFilter && family.subcategory !== subcategoryFilter) return false;
-    if (searchFilter && !family.name.toLowerCase().includes(searchFilter.toLowerCase())) return false;
-    return true;
-  });
-
-  // Reset child filters when parent filter changes
-  const handleGenderChange = (value) => {
-    setGenderFilter(value);
-    // Reset category and subcategory when gender changes
-    if (categoryFilter) {
-      const isCategoryStillValid = families.some(
-        f => f.gender === value && f.category === categoryFilter
-      );
-      if (!isCategoryStillValid) {
-        setCategoryFilter('');
-        setSubcategoryFilter('');
-      }
-    }
-  };
-
-  const handleCategoryChange = (value) => {
-    setCategoryFilter(value);
-    // Reset subcategory when category changes
-    if (subcategoryFilter) {
-      const isSubcategoryStillValid = families.some(
-        f => (!genderFilter || f.gender === genderFilter) &&
-             f.category === value &&
-             f.subcategory === subcategoryFilter
-      );
-      if (!isSubcategoryStillValid) {
-        setSubcategoryFilter('');
-      }
-    }
-  };
-
-  const handleToggleFamily = (familyName) => {
-    const newSelected = new Set(selectedFamilies);
-    if (newSelected.has(familyName)) {
-      newSelected.delete(familyName);
-    } else {
-      newSelected.add(familyName);
-    }
-    setSelectedFamilies(newSelected);
-  };
-
-  const handleNextToColors = () => {
-    if (selectedFamilies.size === 0) {
-      setError('Please select at least one product family');
-      return;
-    }
-    setError('');
-    setStep(2);
-  };
-
-  const handleToggleColor = (familyName, color) => {
-    const familyColors = selectedColors[familyName] || [];
-    const newColors = familyColors.includes(color)
-      ? familyColors.filter(c => c !== color)
-      : [...familyColors, color];
-
-    setSelectedColors({
-      ...selectedColors,
-      [familyName]: newColors
-    });
-  };
-
-  const handleNextToQuantities = () => {
-    // Validate that at least one color is selected for each family
-    const hasColorSelections = Array.from(selectedFamilies).every(
-      familyName => selectedColors[familyName]?.length > 0
-    );
-
-    if (!hasColorSelections) {
-      setError('Please select at least one color for each family');
-      return;
-    }
-
-    // Initialize selectedSizes with all available sizes
-    const allSizes = new Set();
-    getProductsForQuantityStep().forEach(product => {
-      if (product.size) allSizes.add(product.size);
-    });
-    setSelectedSizes(allSizes);
-
-    setError('');
-    setStep(3);
-  };
-
-  const handleToggleSize = (size) => {
-    const newSizes = new Set(selectedSizes);
-    if (newSizes.has(size)) {
-      newSizes.delete(size);
-    } else {
-      newSizes.add(size);
-    }
-    setSelectedSizes(newSizes);
-  };
-
-  const handleSelectAllSizes = () => {
-    const allSizes = new Set();
-    getProductsForQuantityStep().forEach(product => {
-      if (product.size) allSizes.add(product.size);
-    });
-    setSelectedSizes(allSizes);
-  };
-
-  const handleClearAllSizes = () => {
-    setSelectedSizes(new Set());
-  };
-
-  const handleSetAllQuantities = (quantity) => {
-    const newQuantities = {};
-    getFilteredProductsForQuantityStep().forEach(product => {
-      newQuantities[product.id] = quantity;
-    });
-    setQuantities(newQuantities);
-  };
-
-  const getProductsForQuantityStep = () => {
-    const productsToShow = [];
-
-    Array.from(selectedFamilies).forEach(familyName => {
-      const family = families.find(f => f.name === familyName);
-      const colors = selectedColors[familyName] || [];
-
-      if (family) {
-        family.products.forEach(product => {
-          if (colors.includes(product.color)) {
-            productsToShow.push(product);
-          }
-        });
-      }
-    });
-
-    // Sort by family, then color, then size
-    return productsToShow.sort((a, b) => {
-      if (a.base_name !== b.base_name) return a.base_name.localeCompare(b.base_name);
-      if (a.color !== b.color) return a.color.localeCompare(b.color);
-      return (a.size || '').localeCompare(b.size || '');
-    });
-  };
-
-  const getFilteredProductsForQuantityStep = () => {
-    return getProductsForQuantityStep().filter(product =>
-      !product.size || selectedSizes.has(product.size)
-    );
-  };
-
-  // Get all unique sizes from selected products
-  const getAllAvailableSizes = () => {
-    const allSizes = new Set();
-    getProductsForQuantityStep().forEach(product => {
-      if (product.size) allSizes.add(product.size);
-    });
-    return Array.from(allSizes).sort((a, b) => {
-      // Try to sort numerically if both are numbers, otherwise alphabetically
-      const aNum = parseFloat(a);
-      const bNum = parseFloat(b);
-      if (!isNaN(aNum) && !isNaN(bNum)) {
-        return aNum - bNum;
-      }
-      return a.localeCompare(b);
-    });
-  };
-
-  const handleAddProducts = async () => {
-    try {
-      setLoading(true);
-      setError('');
-
-      const productsToAdd = Object.entries(quantities)
-        .filter(([_, qty]) => qty && parseInt(qty) > 0)
-        .map(([productId, qty]) => ({
-          product_id: parseInt(productId),
-          quantity: parseInt(qty)
-        }));
-
-      if (productsToAdd.length === 0) {
-        setError('Please enter quantities for at least one product');
-        setLoading(false);
-        return;
-      }
-
-      // Add each product to the order
-      for (const product of productsToAdd) {
-        await api.post(`/orders/${orderId}/items`, product);
-      }
-
-      onClose();
-    } catch (err) {
-      console.error('Error adding products:', err);
-      setError(err.response?.data?.error || 'Failed to add products');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
-      <div className="bg-white rounded-lg p-6 max-w-6xl w-full my-8 max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold">Add Products to Order</h2>
-          <div className="text-sm text-gray-600">
-            Step {step} of 3: {step === 1 ? 'Select Families' : step === 2 ? 'Select Colors' : 'Enter Quantities'}
-          </div>
-        </div>
-
-        {error && (
-          <div className="mb-4 bg-red-50 border border-red-200 rounded-md p-3">
-            <p className="text-sm text-red-800">{error}</p>
-          </div>
-        )}
-
-        {/* Step 1: Select Families */}
-        {step === 1 && (
-          <div className="space-y-4">
-            {/* Filters */}
-            <div className="grid grid-cols-4 gap-3 pb-4 border-b">
-              <div>
-                <input
-                  type="text"
-                  placeholder="Search families..."
-                  value={searchFilter}
-                  onChange={(e) => setSearchFilter(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                />
+        {/* Delete Item Confirmation Modal */}
+        {itemToDelete && (
+          <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full">
+              <h2 className="text-xl font-bold text-gray-900 mb-4">Remove Item</h2>
+              <p className="text-gray-600 mb-2">
+                Are you sure you want to remove this item from the order?
+              </p>
+              <div className="bg-gray-50 rounded-md p-3 mb-6">
+                <p className="font-medium text-gray-900">{itemToDelete.product_name}</p>
+                <p className="text-sm text-gray-600">
+                  {itemToDelete.size && `Size: ${itemToDelete.size}`}
+                  {itemToDelete.size && itemToDelete.color && ' • '}
+                  {itemToDelete.color && `Color: ${itemToDelete.color}`}
+                </p>
+                <p className="text-sm text-gray-600">
+                  Quantity: {itemToDelete.quantity} × {formatCurrency(itemToDelete.unit_price)} = {formatCurrency(itemToDelete.line_total)}
+                </p>
               </div>
-              <div>
-                <select
-                  value={genderFilter}
-                  onChange={(e) => handleGenderChange(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                >
-                  <option value="">All Genders</option>
-                  {genders.map(gender => (
-                    <option key={gender} value={gender}>{gender}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <select
-                  value={categoryFilter}
-                  onChange={(e) => handleCategoryChange(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                  disabled={availableCategories.length === 0}
-                >
-                  <option value="">All Categories</option>
-                  {availableCategories.map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <select
-                  value={subcategoryFilter}
-                  onChange={(e) => setSubcategoryFilter(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                  disabled={availableSubcategories.length === 0}
-                >
-                  <option value="">All Subcategories</option>
-                  {availableSubcategories.map(sub => (
-                    <option key={sub} value={sub}>{sub}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Family List */}
-            <div className="text-sm text-gray-600 mb-2">
-              {selectedFamilies.size} of {filteredFamilies.length} families selected
-            </div>
-
-            <div className="max-h-96 overflow-y-auto border rounded-md">
-              <div className="divide-y">
-                {filteredFamilies.map(family => (
-                  <div
-                    key={family.name}
-                    className="p-3 hover:bg-gray-50 cursor-pointer flex items-start space-x-3"
-                    onClick={() => handleToggleFamily(family.name)}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedFamilies.has(family.name)}
-                      onChange={() => {}}
-                      className="mt-1"
-                    />
-                    <div className="flex-1">
-                      <div className="font-medium text-gray-900">{family.name}</div>
-                      <div className="text-sm text-gray-600">
-                        {family.gender && <span>{family.gender} • </span>}
-                        {family.category && <span>{family.category} • </span>}
-                        {family.subcategory && <span>{family.subcategory} • </span>}
-                        <span>{family.colors.length} colors • {family.sizes.length} sizes</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex justify-end space-x-2 pt-4 border-t">
-              <button
-                onClick={onClose}
-                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleNextToColors}
-                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-                disabled={selectedFamilies.size === 0}
-              >
-                Next: Select Colors ({selectedFamilies.size} families)
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Step 2: Select Colors */}
-        {step === 2 && (
-          <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              Select which colors to include for each product family
-            </p>
-
-            <div className="max-h-96 overflow-y-auto border rounded-md divide-y">
-              {Array.from(selectedFamilies).map(familyName => {
-                const family = families.find(f => f.name === familyName);
-                if (!family) return null;
-
-                return (
-                  <div key={familyName} className="p-4">
-                    <h3 className="font-semibold text-gray-900 mb-3">{familyName}</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {family.colors.map(color => (
-                        <button
-                          key={color}
-                          onClick={() => handleToggleColor(familyName, color)}
-                          className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                            selectedColors[familyName]?.includes(color)
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                          }`}
-                        >
-                          {color}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="flex justify-between space-x-2 pt-4 border-t">
-              <button
-                onClick={() => setStep(1)}
-                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-              >
-                ← Back
-              </button>
-              <div className="flex space-x-2">
+              <div className="flex justify-end space-x-3">
                 <button
-                  onClick={onClose}
+                  onClick={() => setItemToDelete(null)}
                   className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                  disabled={savingItems.has(itemToDelete.id)}
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleNextToQuantities}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  onClick={() => handleDeleteItem(itemToDelete.id)}
+                  className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:bg-gray-400"
+                  disabled={savingItems.has(itemToDelete.id)}
                 >
-                  Next: Enter Quantities
+                  {savingItems.has(itemToDelete.id) ? 'Removing...' : 'Remove Item'}
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Step 3: Enter Quantities */}
-        {step === 3 && (
-          <div className="space-y-4">
-            {/* Size Filter */}
-            <div className="border rounded-md p-4 bg-gray-50">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold text-gray-900">Size Filter</h3>
-                <div className="flex space-x-2">
-                  <button
-                    onClick={handleSelectAllSizes}
-                    className="text-xs text-blue-600 hover:text-blue-800"
-                  >
-                    Select All
-                  </button>
-                  <span className="text-xs text-gray-400">|</span>
-                  <button
-                    onClick={handleClearAllSizes}
-                    className="text-xs text-blue-600 hover:text-blue-800"
-                  >
-                    Clear All
-                  </button>
+        {/* Delete Family Confirmation Modal */}
+        {familyToDelete && (
+          <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-lg w-full">
+              <h2 className="text-xl font-bold text-gray-900 mb-4">Remove Product Family</h2>
+              <p className="text-gray-600 mb-2">
+                Are you sure you want to remove <strong>all items</strong> in this product family from the order?
+              </p>
+              <div className="bg-gray-50 rounded-md p-4 mb-6">
+                <p className="font-semibold text-gray-900 mb-2">{familyToDelete.name}</p>
+                <div className="text-sm text-gray-600 space-y-1 max-h-40 overflow-y-auto">
+                  {familyToDelete.items.map(item => (
+                    <div key={item.id} className="flex justify-between">
+                      <span>
+                        {item.size && `${item.size}`}
+                        {item.size && item.color && ' / '}
+                        {item.color && `${item.color}`}
+                      </span>
+                      <span>Qty: {item.quantity}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 pt-3 border-t border-gray-200 flex justify-between font-medium">
+                  <span>Total: {familyToDelete.items.length} items</span>
+                  <span>{formatCurrency(familyToDelete.items.reduce((sum, item) => sum + parseFloat(item.line_total || 0), 0))}</span>
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {getAllAvailableSizes().map(size => (
-                  <button
-                    key={size}
-                    onClick={() => handleToggleSize(size)}
-                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
-                      selectedSizes.has(size)
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'
-                    }`}
-                  >
-                    {size}
-                  </button>
-                ))}
-              </div>
-              <div className="mt-2 text-xs text-gray-600">
-                {selectedSizes.size} of {getAllAvailableSizes().length} sizes selected •
-                Showing {getFilteredProductsForQuantityStep().length} products
-              </div>
-            </div>
-
-            {/* Quantity Controls */}
-            <div className="flex items-center justify-between pb-4 border-b">
-              <p className="text-sm text-gray-600">
-                Enter quantities for each product variant
-              </p>
-              <div className="flex items-center space-x-2">
-                <label className="text-sm text-gray-700">Set all to:</label>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="0"
-                  className="w-20 px-2 py-1 border border-gray-300 rounded-md text-sm"
-                  onChange={(e) => handleSetAllQuantities(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="max-h-96 overflow-y-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50 sticky top-0">
-                  <tr>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                      Family
-                    </th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                      Color
-                    </th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                      Size
-                    </th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">
-                      Cost
-                    </th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">
-                      Quantity
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {getFilteredProductsForQuantityStep().map(product => (
-                    <tr key={product.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-2 text-sm text-gray-900">
-                        {product.base_name}
-                      </td>
-                      <td className="px-4 py-2 text-sm text-gray-600">
-                        {product.color}
-                      </td>
-                      <td className="px-4 py-2 text-sm text-gray-600">
-                        {product.size || '-'}
-                      </td>
-                      <td className="px-4 py-2 text-sm text-right text-gray-900">
-                        ${parseFloat(product.wholesale_cost || 0).toFixed(2)}
-                      </td>
-                      <td className="px-4 py-2 text-sm text-right">
-                        <input
-                          type="number"
-                          min="0"
-                          value={quantities[product.id] || ''}
-                          onChange={(e) => setQuantities({ ...quantities, [product.id]: e.target.value })}
-                          className="w-20 px-2 py-1 border border-gray-300 rounded-md text-right"
-                          placeholder="0"
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="flex justify-between space-x-2 pt-4 border-t">
-              <button
-                onClick={() => setStep(2)}
-                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-              >
-                ← Back
-              </button>
-              <div className="flex space-x-2">
+              <div className="flex justify-end space-x-3">
                 <button
-                  onClick={onClose}
+                  onClick={() => setFamilyToDelete(null)}
                   className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-                  disabled={loading}
+                  disabled={deletingFamily}
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleAddProducts}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
-                  disabled={loading}
+                  onClick={handleDeleteFamily}
+                  className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:bg-gray-400"
+                  disabled={deletingFamily}
                 >
-                  {loading ? 'Adding...' : 'Add to Order'}
+                  {deletingFamily ? 'Removing...' : `Remove ${familyToDelete.items.length} Items`}
                 </button>
               </div>
             </div>
           </div>
         )}
       </div>
-    </div>
+    </Layout>
   );
 };
 

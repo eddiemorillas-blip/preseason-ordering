@@ -4,15 +4,15 @@ import ProtectedRoute from './components/ProtectedRoute';
 
 // Pages
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
 import Products from './pages/Products';
 import Brands from './pages/Brands';
 import Users from './pages/Users';
 import CatalogUpload from './pages/CatalogUpload';
-import Seasons from './pages/Seasons';
-import SeasonDashboard from './pages/SeasonDashboard';
+import OrderManager from './pages/OrderManager';
 import OrderBuilder from './pages/OrderBuilder';
+import AddProducts from './pages/AddProducts';
 import SalesDataUpload from './pages/SalesDataUpload';
+import OrderSuggestions from './pages/OrderSuggestions';
 
 function App() {
   return (
@@ -27,7 +27,7 @@ function App() {
             path="/"
             element={
               <ProtectedRoute>
-                <Dashboard />
+                <OrderManager />
               </ProtectedRoute>
             }
           />
@@ -63,22 +63,10 @@ function App() {
               </ProtectedRoute>
             }
           />
-          <Route
-            path="/seasons"
-            element={
-              <ProtectedRoute>
-                <Seasons />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/seasons/:id"
-            element={
-              <ProtectedRoute>
-                <SeasonDashboard />
-              </ProtectedRoute>
-            }
-          />
+          {/* Legacy routes redirect to home */}
+          <Route path="/orders" element={<Navigate to="/" replace />} />
+          <Route path="/seasons" element={<Navigate to="/" replace />} />
+          <Route path="/seasons/:id" element={<Navigate to="/" replace />} />
           <Route
             path="/orders/:id"
             element={
@@ -88,10 +76,26 @@ function App() {
             }
           />
           <Route
+            path="/orders/:orderId/add-products"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <AddProducts />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/sales-data-upload"
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <SalesDataUpload />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/order-suggestions"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <OrderSuggestions />
               </ProtectedRoute>
             }
           />

@@ -41,29 +41,295 @@ const upload = multer({
   }
 });
 
-// Parse Excel file
-const parseExcelFile = (filePath) => {
+// Get sheet names from Excel file
+const getExcelSheetNames = (filePath) => {
   const workbook = XLSX.readFile(filePath);
-  const sheetName = workbook.SheetNames[0];
-  const worksheet = workbook.Sheets[sheetName];
-  const data = XLSX.utils.sheet_to_json(worksheet, { raw: false });
-  return data;
+  return workbook.SheetNames;
 };
 
-// Parse CSV file
-const parseCSVFile = (filePath) => {
+// Extract gender from sheet name
+const extractGenderFromSheetName = (sheetName) => {
+  if (!sheetName) return null;
+
+  const lowerName = sheetName.toLowerCase();
+
+  // Check for men's/mens/male patterns
+  if (lowerName.includes("men's") || lowerName.includes('mens') ||
+      lowerName.includes('male') || lowerName === 'men' ||
+      lowerName.startsWith('men ') || lowerName.endsWith(' men')) {
+    // Make sure it's not "women's" - check for 'wo' prefix
+    if (!lowerName.includes('women') && !lowerName.includes("women's")) {
+      return "Men's";
+    }
+  }
+
+  // Check for women's/womens/female patterns
+  if (lowerName.includes("women's") || lowerName.includes('womens') ||
+      lowerName.includes('female') || lowerName === 'women' ||
+      lowerName.startsWith('women ') || lowerName.endsWith(' women') ||
+      lowerName.includes('ladies') || lowerName.includes("lady's")) {
+    return "Women's";
+  }
+
+  // Check for unisex patterns
+  if (lowerName.includes('unisex') || lowerName.includes('uni-sex')) {
+    return 'Unisex';
+  }
+
+  // Check for kids/children patterns
+  if (lowerName.includes('kids') || lowerName.includes("kid's") ||
+      lowerName.includes('children') || lowerName.includes('youth') ||
+      lowerName.includes('boys') || lowerName.includes('girls') ||
+      lowerName.includes('junior')) {
+    return 'Kids';
+  }
+
+  return null;
+};
+
+// Parse Excel file with optional header row offset and sheet name
+// Returns { data, headers } object to ensure all columns are available for mapping
+const parseExcelFile = (filePath, headerRow = 1, sheetName = null) => {
+  const workbook = XLSX.readFile(filePath);
+  const targetSheet = sheetName || workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[targetSheet];
+
+  if (headerRow === 1) {
+    // Standard parsing - first row is header
+    const data = XLSX.utils.sheet_to_json(worksheet, { raw: false });
+    // Get headers from first row
+    const allRows = XLSX.utils.sheet_to_json(worksheet, {
+      raw: false,
+      header: 1,
+      defval: ''
+    });
+    const headers = allRows.length > 0
+      ? allRows[0].map((h, idx) => String(h || '').trim() || `Column_${idx + 1}`)
+      : [];
+    return { data, headers };
+  }
+
+  // For custom header row, read as array of arrays and manually construct objects
+  const allRows = XLSX.utils.sheet_to_json(worksheet, {
+    raw: false,
+    header: 1,  // Returns array of arrays
+    defval: ''  // Default value for empty cells
+  });
+
+  if (allRows.length < headerRow) {
+    return { data: [], headers: [] };
+  }
+
+  // Get headers from the specified row (headerRow is 1-indexed)
+  const headers = allRows[headerRow - 1].map((h, idx) => {
+    const header = String(h || '').trim();
+    return header || `Column_${idx + 1}`;  // Fallback for empty headers
+  });
+
+  // Build data objects from rows after the header
+  const data = [];
+  for (let i = headerRow; i < allRows.length; i++) {
+    const row = allRows[i];
+    const obj = {};
+    let hasData = false;
+
+    headers.forEach((header, idx) => {
+      const value = row[idx];
+      if (value !== undefined && value !== null && value !== '') {
+        obj[header] = value;
+        hasData = true;
+      }
+    });
+
+    // Only include rows that have at least some data
+    if (hasData) {
+      data.push(obj);
+    }
+  }
+
+  return { data, headers };
+};
+
+// Get raw rows from Excel file (for header row detection)
+const getRawExcelRows = (filePath, numRows = 10, sheetName = null) => {
+  const workbook = XLSX.readFile(filePath);
+  const targetSheet = sheetName || workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[targetSheet];
+
+  // Get all data as array of arrays (no headers assumed)
+  const allData = XLSX.utils.sheet_to_json(worksheet, {
+    raw: false,
+    header: 1,  // Returns array of arrays
+    defval: ''  // Default value for empty cells
+  });
+
+  return allData.slice(0, numRows);
+};
+
+// Known header keywords for auto-detection
+const HEADER_KEYWORDS = [
+  'upc', 'sku', 'barcode', 'ean', 'gtin', 'product code', 'item code',
+  'item number', 'item #', 'style', 'style number', 'model', 'model number',
+  'part number', 'vendor sku', 'product number', 'product #',
+  'name', 'product name', 'product', 'item name', 'item', 'title', 'description',
+  'size', 'sizing', 'dimension', 'dimensions',
+  'color', 'colour', 'colorway', 'color name',
+  'gender', 'sex', 'mens', 'womens', 'unisex',
+  'category', 'product category', 'type', 'product type', 'department', 'class',
+  'wholesale', 'wholesale cost', 'wholesale price', 'cost', 'dealer price',
+  'msrp', 'retail', 'retail price', 'list price', 'price', 'srp', 'rrp',
+  'subcategory', 'sub category', 'subclass', 'quantity', 'qty'
+];
+
+// Auto-detect which row contains the header
+const detectHeaderRow = (rawRows) => {
+  if (!rawRows || rawRows.length === 0) return 1;
+
+  let bestRow = 1;
+  let bestScore = 0;
+
+  for (let rowIdx = 0; rowIdx < Math.min(rawRows.length, 10); rowIdx++) {
+    const row = rawRows[rowIdx];
+    if (!row || row.length === 0) continue;
+
+    let score = 0;
+    let nonEmptyCells = 0;
+    let keywordMatches = 0;
+    let numericCells = 0;
+
+    for (const cell of row) {
+      const cellStr = String(cell || '').trim().toLowerCase();
+      if (!cellStr) continue;
+
+      nonEmptyCells++;
+
+      // Check for keyword matches
+      const hasKeyword = HEADER_KEYWORDS.some(keyword =>
+        cellStr === keyword ||
+        cellStr.includes(keyword) ||
+        keyword.includes(cellStr)
+      );
+      if (hasKeyword) {
+        keywordMatches++;
+        score += 10; // High score for keyword match
+      }
+
+      // Check if cell looks like a number (headers usually aren't numbers)
+      const looksNumeric = /^[\d$,.%-]+$/.test(cellStr) || !isNaN(parseFloat(cellStr.replace(/[$,]/g, '')));
+      if (looksNumeric) {
+        numericCells++;
+        score -= 3; // Penalty for numeric cells
+      }
+
+      // Check if cell looks like a UPC/barcode (12-14 digits)
+      if (/^\d{12,14}$/.test(cellStr)) {
+        score -= 10; // Strong penalty - this is likely data, not header
+      }
+    }
+
+    // Bonus for having multiple keyword matches
+    if (keywordMatches >= 3) score += 15;
+    if (keywordMatches >= 5) score += 20;
+
+    // Bonus for rows with reasonable number of non-empty cells
+    if (nonEmptyCells >= 3 && nonEmptyCells <= 20) score += 5;
+
+    // Penalty if most cells are numeric
+    if (nonEmptyCells > 0 && numericCells / nonEmptyCells > 0.5) score -= 10;
+
+    // Check if next row has different characteristics (more numeric = likely data)
+    if (rowIdx < rawRows.length - 1) {
+      const nextRow = rawRows[rowIdx + 1];
+      if (nextRow && nextRow.length > 0) {
+        let nextNumeric = 0;
+        let nextNonEmpty = 0;
+        for (const cell of nextRow) {
+          const cellStr = String(cell || '').trim();
+          if (!cellStr) continue;
+          nextNonEmpty++;
+          if (/^[\d$,.%-]+$/.test(cellStr) || !isNaN(parseFloat(cellStr.replace(/[$,]/g, '')))) {
+            nextNumeric++;
+          }
+        }
+        // If next row is more numeric, this row is likely the header
+        if (nextNonEmpty > 0 && nextNumeric / nextNonEmpty > numericCells / Math.max(nonEmptyCells, 1)) {
+          score += 8;
+        }
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestRow = rowIdx + 1; // 1-indexed
+    }
+  }
+
+  // If no good header found, default to row 1
+  return bestScore > 0 ? bestRow : 1;
+};
+
+// Parse CSV file with optional header row offset
+const parseCSVFile = (filePath, headerRow = 1) => {
   return new Promise((resolve, reject) => {
     const results = [];
+    let rowIndex = 0;
+    let headers = null;
+
+    if (headerRow === 1) {
+      // Standard parsing - first row is header
+      fs.createReadStream(filePath)
+        .pipe(csv())
+        .on('data', (data) => results.push(data))
+        .on('end', () => resolve(results))
+        .on('error', (error) => reject(error));
+    } else {
+      // Custom header row - need to manually handle
+      fs.createReadStream(filePath)
+        .pipe(csv({ headers: false }))  // Don't auto-detect headers
+        .on('data', (row) => {
+          rowIndex++;
+          if (rowIndex === headerRow) {
+            // This row contains our headers
+            headers = Object.values(row).map(h => String(h).trim());
+          } else if (rowIndex > headerRow && headers) {
+            // Data row - map to headers
+            const obj = {};
+            headers.forEach((header, idx) => {
+              if (header) {
+                obj[header] = row[idx] || '';
+              }
+            });
+            results.push(obj);
+          }
+        })
+        .on('end', () => resolve(results))
+        .on('error', (error) => reject(error));
+    }
+  });
+};
+
+// Get raw CSV rows (for header row detection)
+const getRawCSVRows = (filePath, numRows = 10) => {
+  return new Promise((resolve, reject) => {
+    const results = [];
+    let count = 0;
+
     fs.createReadStream(filePath)
-      .pipe(csv())
-      .on('data', (data) => results.push(data))
+      .pipe(csv({ headers: false }))
+      .on('data', (row) => {
+        if (count < numRows) {
+          results.push(Object.values(row));
+          count++;
+        }
+      })
       .on('end', () => resolve(results))
       .on('error', (error) => reject(error));
   });
 };
 
 // Map row data to product fields
-const mapRowToProduct = (row, columnMapping, brandId) => {
+// sheetGender is an optional fallback gender derived from the sheet name
+const mapRowToProduct = (row, columnMapping, brandId, sheetGender = null) => {
   const product = {
     brand_id: brandId,
     upc: null,
@@ -76,14 +342,24 @@ const mapRowToProduct = (row, columnMapping, brandId) => {
     size: null,
     color: null,
     gender: null,
+    inseam: null,
     active: true
   };
 
   // Map each field using the column mapping
   for (const [dbField, fileColumn] of Object.entries(columnMapping)) {
+    // Skip fields marked as "Not Available"
+    if (fileColumn === '__NOT_AVAILABLE__') {
+      continue;
+    }
     if (row[fileColumn] !== undefined && row[fileColumn] !== null && row[fileColumn] !== '') {
       product[dbField] = row[fileColumn];
     }
+  }
+
+  // If gender wasn't mapped from a column (or is empty), use sheet-derived gender as fallback
+  if (!product.gender && sheetGender) {
+    product.gender = sheetGender;
   }
 
   return product;
@@ -98,39 +374,22 @@ const cleanNumericValue = (value) => {
 };
 
 // Validate product data
-const validateProduct = (product) => {
+// skipValidation is a Set of field names that are marked as "Not Available"
+const validateProduct = (product, skipValidation = new Set()) => {
   const errors = [];
 
-  // Required fields
-  if (!product.upc || product.upc.trim() === '') {
+  // Only UPC is strictly required - it's needed to identify the product
+  if (!skipValidation.has('upc') && (!product.upc || product.upc.trim() === '')) {
     errors.push('UPC is required');
   }
 
-  if (!product.sku || product.sku.trim() === '') {
-    errors.push('SKU/Product Number is required');
-  }
+  // Name is strongly recommended but rows will still import with blank names
+  // (They'll just show as empty in the UI)
 
-  if (!product.name || product.name.trim() === '') {
-    errors.push('Product name is required');
-  }
+  // Other fields (sku, size, color, gender, category) are optional
+  // Rows with blank values in these fields will still be imported
 
-  if (!product.size || product.size.trim() === '') {
-    errors.push('Size is required');
-  }
-
-  if (!product.color || product.color.trim() === '') {
-    errors.push('Color is required');
-  }
-
-  if (!product.gender || product.gender.trim() === '') {
-    errors.push('Gender is required');
-  }
-
-  if (!product.category || product.category.trim() === '') {
-    errors.push('Category is required');
-  }
-
-  // Clean and validate numeric fields
+  // Clean and validate numeric fields (if provided)
   if (product.wholesale_cost) {
     const cleaned = cleanNumericValue(product.wholesale_cost);
     if (cleaned && isNaN(parseFloat(cleaned))) {
@@ -157,8 +416,22 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
   const client = await pool.connect();
 
   try {
-    const { brandId, brandName, columnMapping } = req.body;
+    const { brandId, brandName, columnMapping, headerRow: headerRowParam, sheetNames: sheetNamesParam } = req.body;
     const file = req.file;
+
+    // Parse headerRow from form data (comes as string)
+    const headerRow = headerRowParam ? parseInt(headerRowParam, 10) : 1;
+
+    // Parse sheetNames from form data (comes as JSON string)
+    let sheetNames = null;
+    if (sheetNamesParam) {
+      try {
+        sheetNames = JSON.parse(sheetNamesParam);
+      } catch (e) {
+        // If it's a single sheet name string, wrap in array
+        sheetNames = [sheetNamesParam];
+      }
+    }
 
     if (!file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -209,14 +482,30 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
       }
     }
 
-    // Parse file based on type
+    // Parse file based on type (using headerRow parameter)
+    // Each row will have an optional __sheetName property for tracking source sheet
     let rows;
     const fileExt = path.extname(file.originalname).toLowerCase();
 
     if (fileExt === '.csv') {
-      rows = await parseCSVFile(file.path);
+      rows = await parseCSVFile(file.path, headerRow);
     } else if (fileExt === '.xlsx' || fileExt === '.xls') {
-      rows = parseExcelFile(file.path);
+      // Handle multiple sheets
+      if (sheetNames && sheetNames.length > 0) {
+        rows = [];
+        for (const sheet of sheetNames) {
+          const { data: sheetRows } = parseExcelFile(file.path, headerRow, sheet);
+          // Tag each row with its source sheet name for gender extraction
+          for (const row of sheetRows) {
+            row.__sheetName = sheet;
+          }
+          rows = rows.concat(sheetRows);
+        }
+      } else {
+        // Default to first sheet
+        const { data } = parseExcelFile(file.path, headerRow, null);
+        rows = data;
+      }
     } else {
       fs.unlinkSync(file.path);
       return res.status(400).json({ error: 'Unsupported file format' });
@@ -241,14 +530,30 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
     let errors = [];
     let validProducts = [];
 
+    // Build set of fields marked as "Not Available" to skip validation
+    const skipValidation = new Set();
+    for (const [dbField, fileColumn] of Object.entries(mapping)) {
+      if (fileColumn === '__NOT_AVAILABLE__') {
+        skipValidation.add(dbField);
+      }
+    }
+
     console.log(`Starting to validate ${rows.length} rows...`);
+    if (skipValidation.size > 0) {
+      console.log(`Skipping validation for fields marked as N/A: ${[...skipValidation].join(', ')}`);
+    }
 
     for (let i = 0; i < rows.length; i++) {
       try {
-        const product = mapRowToProduct(rows[i], mapping, actualBrandId);
+        // Extract gender from sheet name if available (used as fallback)
+        const sheetGender = rows[i].__sheetName
+          ? extractGenderFromSheetName(rows[i].__sheetName)
+          : null;
 
-        // Validate product
-        const validationErrors = validateProduct(product);
+        const product = mapRowToProduct(rows[i], mapping, actualBrandId, sheetGender);
+
+        // Validate product (passing fields to skip)
+        const validationErrors = validateProduct(product, skipValidation);
         if (validationErrors.length > 0) {
           errors.push({
             row: i + 1,
@@ -276,40 +581,29 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
     let productsUpdated = 0;
 
     if (validProducts.length > 0) {
+      // Deduplicate products by UPC (keep last occurrence to get latest data)
+      const productsByUpc = new Map();
+      for (const product of validProducts) {
+        if (product.upc) {
+          productsByUpc.set(product.upc, product);
+        }
+      }
+      const deduplicatedProducts = Array.from(productsByUpc.values());
+      const duplicateCount = validProducts.length - deduplicatedProducts.length;
+      if (duplicateCount > 0) {
+        console.log(`Removed ${duplicateCount} duplicate UPCs from batch`);
+      }
+
       // Get existing UPCs to determine what's new vs updated
-      const upcList = validProducts.map(p => p.upc);
+      const upcList = deduplicatedProducts.map(p => p.upc);
       const existingUPCs = await client.query(
         'SELECT upc FROM products WHERE upc = ANY($1)',
         [upcList]
       );
       const existingUPCSet = new Set(existingUPCs.rows.map(r => r.upc));
 
-      // Build batch INSERT with ON CONFLICT DO UPDATE
-      const values = [];
-      const placeholders = [];
-      let paramIndex = 1;
-
-      for (const product of validProducts) {
-        placeholders.push(
-          `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11})`
-        );
-        values.push(
-          product.brand_id,
-          product.upc,
-          product.sku,
-          product.name,
-          product.category,
-          product.subcategory,
-          product.wholesale_cost,
-          product.msrp,
-          product.size,
-          product.color,
-          product.gender,
-          product.active
-        );
-        paramIndex += 12;
-
-        // Count adds vs updates
+      // Count adds vs updates
+      for (const product of deduplicatedProducts) {
         if (existingUPCSet.has(product.upc)) {
           productsUpdated++;
         } else {
@@ -317,27 +611,69 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
         }
       }
 
-      const batchQuery = `
-        INSERT INTO products (
-          brand_id, upc, sku, name, category, subcategory,
-          wholesale_cost, msrp, size, color, gender, active
-        ) VALUES ${placeholders.join(', ')}
-        ON CONFLICT (upc) DO UPDATE SET
-          brand_id = EXCLUDED.brand_id,
-          sku = EXCLUDED.sku,
-          name = EXCLUDED.name,
-          category = EXCLUDED.category,
-          subcategory = EXCLUDED.subcategory,
-          wholesale_cost = EXCLUDED.wholesale_cost,
-          msrp = EXCLUDED.msrp,
-          size = EXCLUDED.size,
-          color = EXCLUDED.color,
-          gender = EXCLUDED.gender,
-          active = EXCLUDED.active,
-          updated_at = CURRENT_TIMESTAMP
-      `;
+      // Process in batches to avoid PostgreSQL parameter limit (~65535)
+      // With 13 parameters per product, we can do ~5000 products per batch
+      const BATCH_SIZE = 2000;
+      const totalBatches = Math.ceil(deduplicatedProducts.length / BATCH_SIZE);
+      console.log(`Processing ${deduplicatedProducts.length} products in ${totalBatches} batches...`);
 
-      await client.query(batchQuery, values);
+      for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
+        const batchStart = batchNum * BATCH_SIZE;
+        const batchEnd = Math.min(batchStart + BATCH_SIZE, deduplicatedProducts.length);
+        const batchProducts = deduplicatedProducts.slice(batchStart, batchEnd);
+
+        // Build batch INSERT with ON CONFLICT DO UPDATE
+        const values = [];
+        const placeholders = [];
+        let paramIndex = 1;
+
+        for (const product of batchProducts) {
+          placeholders.push(
+            `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}, $${paramIndex + 12})`
+          );
+          values.push(
+            product.brand_id,
+            product.upc,
+            product.sku,
+            product.name,
+            product.category,
+            product.subcategory,
+            product.wholesale_cost,
+            product.msrp,
+            product.size,
+            product.color,
+            product.gender,
+            product.inseam,
+            product.active
+          );
+          paramIndex += 13;
+        }
+
+        const batchQuery = `
+          INSERT INTO products (
+            brand_id, upc, sku, name, category, subcategory,
+            wholesale_cost, msrp, size, color, gender, inseam, active
+          ) VALUES ${placeholders.join(', ')}
+          ON CONFLICT (upc) DO UPDATE SET
+            brand_id = EXCLUDED.brand_id,
+            sku = EXCLUDED.sku,
+            name = EXCLUDED.name,
+            category = EXCLUDED.category,
+            subcategory = EXCLUDED.subcategory,
+            wholesale_cost = EXCLUDED.wholesale_cost,
+            msrp = EXCLUDED.msrp,
+            size = EXCLUDED.size,
+            color = EXCLUDED.color,
+            gender = EXCLUDED.gender,
+            inseam = EXCLUDED.inseam,
+            active = EXCLUDED.active,
+            updated_at = CURRENT_TIMESTAMP
+        `;
+
+        await client.query(batchQuery, values);
+        console.log(`Batch ${batchNum + 1}/${totalBatches} complete (${batchProducts.length} products)`);
+      }
+
       console.log(`Batch upsert complete: ${productsAdded} added, ${productsUpdated} updated`);
     }
 
@@ -417,30 +753,92 @@ router.get('/uploads', authenticateToken, async (req, res) => {
 });
 
 // Preview file (get first N rows)
+// Supports headerRow parameter to specify which row contains column headers
+// Supports sheetName parameter to specify which Excel sheet to use
 router.post('/preview', authenticateToken, authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
   try {
     const file = req.file;
+    const { headerRow: headerRowParam, rawPreview, sheetName } = req.body;
+
+    console.log('Preview request received:', {
+      sheetName: sheetName || '(not specified)',
+      rawPreview: rawPreview || false,
+      headerRow: headerRowParam || '(default)',
+      filename: file?.originalname || '(no file)'
+    });
+
+    // Parse headerRow from form data (comes as string)
+    const headerRow = headerRowParam ? parseInt(headerRowParam, 10) : 1;
 
     if (!file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    // Parse file based on type
-    let rows;
     const fileExt = path.extname(file.originalname).toLowerCase();
 
+    // Get sheet names for Excel files
+    let sheetNames = null;
+    if (fileExt === '.xlsx' || fileExt === '.xls') {
+      sheetNames = getExcelSheetNames(file.path);
+    }
+
+    // If rawPreview is requested, return first 10 rows as arrays (for header row detection)
+    if (rawPreview === 'true' || rawPreview === true) {
+      let rawRows;
+
+      if (fileExt === '.csv') {
+        rawRows = await getRawCSVRows(file.path, 10);
+      } else if (fileExt === '.xlsx' || fileExt === '.xls') {
+        console.log('Getting raw Excel rows from sheet:', sheetName || '(first sheet)');
+        rawRows = getRawExcelRows(file.path, 10, sheetName);
+        console.log('Got raw rows, first row:', rawRows[0]);
+      } else {
+        fs.unlinkSync(file.path);
+        return res.status(400).json({ error: 'Unsupported file format' });
+      }
+
+      // Auto-detect header row
+      const detectedHeaderRow = detectHeaderRow(rawRows);
+
+      // Clean up uploaded file
+      fs.unlinkSync(file.path);
+
+      return res.json({
+        rawRows,
+        totalRawRows: rawRows.length,
+        detectedHeaderRow,
+        sheetNames,
+        selectedSheet: sheetName || (sheetNames ? sheetNames[0] : null)
+      });
+    }
+
+    // Parse file based on type with headerRow parameter
+    let rows;
+
+    let columns = [];
     if (fileExt === '.csv') {
-      rows = await parseCSVFile(file.path);
+      rows = await parseCSVFile(file.path, headerRow);
+      columns = rows.length > 0 ? Object.keys(rows[0]) : [];
     } else if (fileExt === '.xlsx' || fileExt === '.xls') {
-      rows = parseExcelFile(file.path);
+      console.log('Parsing Excel for data preview, sheet:', sheetName || '(first sheet)', 'headerRow:', headerRow);
+      const result = parseExcelFile(file.path, headerRow, sheetName);
+      rows = result.data;
+      columns = result.headers;
+      console.log('Parsed', rows.length, 'data rows, columns:', columns);
     } else {
       fs.unlinkSync(file.path);
       return res.status(400).json({ error: 'Unsupported file format' });
     }
 
-    // Get first 5 rows and column names
+    // Get first 5 rows
     const preview = rows.slice(0, 5);
-    const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+
+    console.log('Preview response:', {
+      rowCount: rows.length,
+      columnsCount: columns.length,
+      columns: columns.slice(0, 5),  // First 5 columns
+      previewRowCount: preview.length
+    });
 
     // Clean up uploaded file
     fs.unlinkSync(file.path);
@@ -448,7 +846,10 @@ router.post('/preview', authenticateToken, authorizeRoles('admin', 'buyer'), upl
     res.json({
       columns,
       preview,
-      totalRows: rows.length
+      totalRows: rows.length,
+      headerRow,
+      sheetNames,
+      selectedSheet: sheetName || (sheetNames ? sheetNames[0] : null)
     });
 
   } catch (error) {

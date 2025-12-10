@@ -12,6 +12,10 @@ const SalesDataUpload = () => {
   const [columnMapping, setColumnMapping] = useState({});
   const [sheets, setSheets] = useState([]);
   const [selectedSheet, setSelectedSheet] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [locations, setLocations] = useState([]);
+  const [selectedLocation, setSelectedLocation] = useState('');
 
   // Available database fields for mapping with common variations
   const dbFields = [
@@ -38,11 +42,18 @@ const SalesDataUpload = () => {
       label: 'Location',
       required: false,
       variations: ['location', 'store', 'site', 'shop', 'branch', 'warehouse', 'store name', 'location name']
+    },
+    {
+      key: 'date',
+      label: 'Sale Date',
+      required: false,
+      variations: ['date', 'sale date', 'transaction date', 'purchase date', 'order date', 'sold date', 'trans date', 'txn date', 'created', 'created at']
     }
   ];
 
   useEffect(() => {
     fetchUploads();
+    fetchLocations();
   }, []);
 
   const fetchUploads = async () => {
@@ -51,6 +62,37 @@ const SalesDataUpload = () => {
       setUploads(response.data.uploads || []);
     } catch (err) {
       console.error('Error fetching uploads:', err);
+    }
+  };
+
+  const fetchLocations = async () => {
+    try {
+      const response = await api.get('/locations');
+      setLocations(response.data.locations || []);
+    } catch (err) {
+      console.error('Error fetching locations:', err);
+    }
+  };
+
+  const [deleting, setDeleting] = useState(null);
+
+  const handleDeleteUpload = async (uploadId, filename) => {
+    if (!window.confirm(`Are you sure you want to delete the upload "${filename}"?\n\nThis will also delete all associated sales data records.`)) {
+      return;
+    }
+
+    setDeleting(uploadId);
+    setError('');
+
+    try {
+      const response = await api.delete(`/sales-data/uploads/${uploadId}`);
+      setSuccess(`Upload deleted successfully. ${response.data.deletedRecords} sales records removed.`);
+      fetchUploads();
+    } catch (err) {
+      console.error('Delete error:', err);
+      setError(err.response?.data?.error || 'Failed to delete upload');
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -162,9 +204,18 @@ const SalesDataUpload = () => {
     }));
   };
 
+  // Upload result state for detailed display
+  const [uploadResult, setUploadResult] = useState(null);
+
   const handleUpload = async () => {
     if (!file) {
       setError('Please select a file first');
+      return;
+    }
+
+    // Validate date range if both are provided
+    if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+      setError('Start date must be before end date');
       return;
     }
 
@@ -186,6 +237,7 @@ const SalesDataUpload = () => {
     setLoading(true);
     setError('');
     setSuccess('');
+    setUploadResult(null);
 
     try {
       const formData = new FormData();
@@ -194,12 +246,17 @@ const SalesDataUpload = () => {
         formData.append('sheetName', selectedSheet);
       }
       formData.append('columnMapping', JSON.stringify(columnMapping));
+      formData.append('startDate', startDate);
+      formData.append('endDate', endDate);
+      if (selectedLocation) {
+        formData.append('locationId', selectedLocation);
+      }
 
       const response = await api.post('/sales-data/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
 
-      const { summary, errors } = response.data;
+      const { summary, errors, unmatchedProducts, unmatchedLocations } = response.data;
 
       let successMsg = `Upload complete! ${summary.recordsAdded} added, ${summary.recordsUpdated} updated`;
       if (summary.recordsFailed > 0) {
@@ -207,9 +264,8 @@ const SalesDataUpload = () => {
       }
       setSuccess(successMsg);
 
-      if (errors && errors.length > 0) {
-        setError(`Some records failed: ${errors.slice(0, 5).map(e => `Row ${e.row}: ${e.error}`).join(', ')}`);
-      }
+      // Store full upload result for detailed display
+      setUploadResult({ summary, errors, unmatchedProducts, unmatchedLocations });
 
       // Reset form
       setFile(null);
@@ -230,7 +286,7 @@ const SalesDataUpload = () => {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Sales Data Upload</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Upload Excel files containing historical sales data for order suggestions. Dates should be included in the Excel file.
+            Upload Excel files containing historical sales data. The system will use this data to calculate sales velocity and suggest order quantities.
           </p>
         </div>
 
@@ -256,7 +312,7 @@ const SalesDataUpload = () => {
                   hover:file:bg-blue-100"
               />
               <p className="mt-1 text-xs text-gray-500">
-                Expected columns: UPC (recommended) or Product Name, Quantity, Location (optional). Dates will be auto-detected.
+                Expected columns: UPC (recommended) or Product Name, Quantity, Location (optional), Sale Date (optional - used to determine date range).
               </p>
             </div>
 
@@ -287,6 +343,60 @@ const SalesDataUpload = () => {
               </div>
             )}
 
+            {/* Date Range (Optional - Override) */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Start Date Override (optional)
+                </label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Leave blank to auto-detect from Sale Date column
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  End Date Override (optional)
+                </label>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Leave blank to auto-detect from Sale Date column
+                </p>
+              </div>
+            </div>
+
+            {/* Location Selection */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Location (optional)
+              </label>
+              <select
+                value={selectedLocation}
+                onChange={(e) => setSelectedLocation(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+              >
+                <option value="">-- All Locations / From File --</option>
+                {locations.map((loc) => (
+                  <option key={loc.id} value={loc.id}>
+                    {loc.name} ({loc.code})
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500">
+                Select a location or leave blank to use location from file data
+              </p>
+            </div>
+
             {/* Preview Button */}
             <div>
               <button
@@ -311,6 +421,118 @@ const SalesDataUpload = () => {
             )}
           </div>
         </div>
+
+        {/* Upload Result Details */}
+        {uploadResult && (
+          <div className="bg-white shadow rounded-lg p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-gray-900">Upload Results</h2>
+
+            {/* Summary Stats */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-blue-50 p-3 rounded-md">
+                <div className="text-sm text-blue-600">Processed</div>
+                <div className="text-xl font-bold text-blue-900">{uploadResult.summary.recordsProcessed}</div>
+              </div>
+              <div className="bg-green-50 p-3 rounded-md">
+                <div className="text-sm text-green-600">Added</div>
+                <div className="text-xl font-bold text-green-900">{uploadResult.summary.recordsAdded}</div>
+              </div>
+              <div className="bg-yellow-50 p-3 rounded-md">
+                <div className="text-sm text-yellow-600">Updated</div>
+                <div className="text-xl font-bold text-yellow-900">{uploadResult.summary.recordsUpdated}</div>
+              </div>
+              <div className="bg-red-50 p-3 rounded-md">
+                <div className="text-sm text-red-600">Failed</div>
+                <div className="text-xl font-bold text-red-900">{uploadResult.summary.recordsFailed}</div>
+              </div>
+            </div>
+
+            {/* Date Range Info */}
+            {uploadResult.summary.dateRange && (
+              <div className="bg-purple-50 border border-purple-200 rounded-md p-4">
+                <h3 className="font-medium text-purple-800 mb-1">Data Period</h3>
+                <div className="text-sm text-purple-700">
+                  <span className="font-semibold">
+                    {new Date(uploadResult.summary.dateRange.start).toLocaleDateString()} - {new Date(uploadResult.summary.dateRange.end).toLocaleDateString()}
+                  </span>
+                  <span className="ml-2 text-purple-500">({uploadResult.summary.dateRange.source})</span>
+                </div>
+                <p className="text-xs text-purple-600 mt-1">
+                  {Math.ceil((new Date(uploadResult.summary.dateRange.end) - new Date(uploadResult.summary.dateRange.start)) / (1000 * 60 * 60 * 24))} days of sales data
+                </p>
+              </div>
+            )}
+
+            {/* Unmatched Locations */}
+            {uploadResult.unmatchedLocations && uploadResult.unmatchedLocations.length > 0 && (
+              <div className="border border-orange-200 rounded-md p-4 bg-orange-50">
+                <h3 className="font-medium text-orange-800 mb-2">
+                  Unmatched Locations ({uploadResult.summary.uniqueUnmatchedLocations} unique)
+                </h3>
+                <p className="text-sm text-orange-700 mb-2">
+                  These location names in your file didn't match any locations in the system.
+                  Add them to the Locations list or select a location from the dropdown above.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {uploadResult.unmatchedLocations.map((loc, idx) => (
+                    <span key={idx} className="px-2 py-1 bg-orange-100 text-orange-800 text-xs rounded">
+                      "{loc.name}" ({loc.count} rows)
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Unmatched Products */}
+            {uploadResult.unmatchedProducts && uploadResult.unmatchedProducts.length > 0 && (
+              <div className="border border-red-200 rounded-md p-4 bg-red-50">
+                <h3 className="font-medium text-red-800 mb-2">
+                  Unmatched Products ({uploadResult.summary.uniqueUnmatchedProducts} unique)
+                </h3>
+                <p className="text-sm text-red-700 mb-2">
+                  These products (by UPC or name) were not found in your catalog.
+                  Upload product catalogs first to include sales data for these items.
+                </p>
+                <div className="max-h-64 overflow-y-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="sticky top-0 bg-red-100">
+                      <tr className="border-b border-red-200">
+                        <th className="text-left py-1 px-2 text-red-800">UPC</th>
+                        <th className="text-left py-1 px-2 text-red-800">Product Name</th>
+                        <th className="text-right py-1 px-2 text-red-800">Rows</th>
+                        <th className="text-right py-1 px-2 text-red-800">Total Qty</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {uploadResult.unmatchedProducts.slice(0, 30).map((prod, idx) => (
+                        <tr key={idx} className="border-b border-red-100">
+                          <td className="py-1 px-2 text-red-900 font-mono text-xs">{prod.upc || '-'}</td>
+                          <td className="py-1 px-2 text-red-900 text-xs max-w-xs truncate" title={prod.name}>
+                            {prod.name || '-'}
+                          </td>
+                          <td className="py-1 px-2 text-right text-red-700">{prod.count}</td>
+                          <td className="py-1 px-2 text-right text-red-700">{prod.quantity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {uploadResult.unmatchedProducts.length > 30 && (
+                    <p className="text-xs text-red-600 mt-2 text-center">
+                      ... and {uploadResult.unmatchedProducts.length - 30} more
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={() => setUploadResult(null)}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Preview Section */}
         {preview && (
@@ -479,12 +701,15 @@ const SalesDataUpload = () => {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     Uploaded
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {uploads.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-4 text-center text-sm text-gray-500">
+                    <td colSpan={7} className="px-6 py-4 text-center text-sm text-gray-500">
                       No uploads yet
                     </td>
                   </tr>
@@ -521,6 +746,15 @@ const SalesDataUpload = () => {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         <div>{new Date(upload.created_at).toLocaleDateString()}</div>
                         <div className="text-xs text-gray-400">{upload.uploaded_by_email}</div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <button
+                          onClick={() => handleDeleteUpload(upload.id, upload.filename)}
+                          disabled={deleting === upload.id}
+                          className="text-red-600 hover:text-red-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                        >
+                          {deleting === upload.id ? 'Deleting...' : 'Delete'}
+                        </button>
                       </td>
                     </tr>
                   ))

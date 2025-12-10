@@ -12,6 +12,8 @@ const productFamiliesRoutes = require('./routes/product-families');
 const ordersRoutes = require('./routes/orders');
 const locationsRoutes = require('./routes/locations');
 const salesDataRoutes = require('./routes/sales-data');
+const exportsRoutes = require('./routes/exports');
+const brandTemplatesRoutes = require('./routes/brand-templates');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -47,6 +49,8 @@ app.use('/api/product-families', productFamiliesRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/locations', locationsRoutes);
 app.use('/api/sales-data', salesDataRoutes);
+app.use('/api/exports', exportsRoutes);
+app.use('/api/brand-templates', brandTemplatesRoutes);
 
 // 404 handler
 app.use((req, res) => {

@@ -37,10 +37,7 @@ const Layout = ({ children }) => {
               </div>
               <div className="ml-10 flex items-baseline space-x-4">
                 <Link to="/" className={navLinkClass('/')}>
-                  Dashboard
-                </Link>
-                <Link to="/seasons" className={navLinkClass('/seasons')}>
-                  Seasons
+                  Orders
                 </Link>
                 <Link to="/products" className={navLinkClass('/products')}>
                   Products
@@ -55,6 +52,9 @@ const Layout = ({ children }) => {
                     </Link>
                     <Link to="/sales-data-upload" className={navLinkClass('/sales-data-upload')}>
                       Sales Data
+                    </Link>
+                    <Link to="/order-suggestions" className={navLinkClass('/order-suggestions')}>
+                      Suggestions
                     </Link>
                   </>
                 )}

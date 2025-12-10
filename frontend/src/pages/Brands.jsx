@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { brandAPI } from '../services/api';
 import Layout from '../components/Layout';
+import BrandTemplateManager from '../components/BrandTemplateManager';
 
 const Brands = () => {
   const { isAdmin } = useAuth();
@@ -11,6 +12,7 @@ const Brands = () => {
   const [showModal, setShowModal] = useState(false);
   const [editingBrand, setEditingBrand] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [expandedBrandId, setExpandedBrandId] = useState(null);
   const [formData, setFormData] = useState({
     name: '',
     vendorCode: '',
@@ -183,43 +185,67 @@ const Brands = () => {
                 </tr>
               ) : (
                 filteredBrands.map((brand) => (
-                  <tr key={brand.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-gray-900">{brand.name}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {brand.vendorCode || 'N/A'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {brand.contactName ? (
-                        <div className="text-sm">
-                          <div className="text-gray-900">{brand.contactName}</div>
-                          {brand.contactEmail && (
-                            <div className="text-gray-500">{brand.contactEmail}</div>
-                          )}
+                  <>
+                    <tr key={brand.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setExpandedBrandId(expandedBrandId === brand.id ? null : brand.id)}
+                            className="text-gray-400 hover:text-gray-600"
+                          >
+                            <svg
+                              className={`w-4 h-4 transition-transform ${expandedBrandId === brand.id ? 'rotate-90' : ''}`}
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                          </button>
+                          <div className="text-sm font-medium text-gray-900">{brand.name}</div>
                         </div>
-                      ) : (
-                        <span className="text-sm text-gray-500">No contact</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                        brand.active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-                      }`}>
-                        {brand.active ? 'Active' : 'Inactive'}
-                      </span>
-                    </td>
-                    {isAdmin() && (
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                        <button
-                          onClick={() => handleOpenModal(brand)}
-                          className="text-blue-600 hover:text-blue-900"
-                        >
-                          Edit
-                        </button>
                       </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {brand.vendorCode || 'N/A'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {brand.contactName ? (
+                          <div className="text-sm">
+                            <div className="text-gray-900">{brand.contactName}</div>
+                            {brand.contactEmail && (
+                              <div className="text-gray-500">{brand.contactEmail}</div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-sm text-gray-500">No contact</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                          brand.active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          {brand.active ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      {isAdmin() && (
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                          <button
+                            onClick={() => handleOpenModal(brand)}
+                            className="text-blue-600 hover:text-blue-900"
+                          >
+                            Edit
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                    {expandedBrandId === brand.id && (
+                      <tr key={`${brand.id}-templates`}>
+                        <td colSpan={isAdmin() ? 5 : 4} className="px-6 py-4 bg-gray-50">
+                          <BrandTemplateManager brandId={brand.id} brandName={brand.name} />
+                        </td>
+                      </tr>
                     )}
-                  </tr>
+                  </>
                 ))
               )}
             </tbody>

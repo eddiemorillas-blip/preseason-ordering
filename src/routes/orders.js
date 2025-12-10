@@ -3,6 +3,131 @@ const router = express.Router();
 const pool = require('../config/database');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
+// Month abbreviations for order numbers
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+// Generate readable order number: MAR26-PRA-SLC
+function generateOrderNumber(shipDate, brandCode, locationCode) {
+  // Use ship date if provided, otherwise use current date
+  const date = shipDate ? new Date(shipDate) : new Date();
+  const month = MONTHS[date.getMonth()];
+  const year = String(date.getFullYear()).slice(-2);
+  return `${month}${year}-${brandCode}-${locationCode}`;
+}
+
+// GET /api/orders/product-breakdown - Get product breakdown across all orders
+router.get('/product-breakdown', authenticateToken, async (req, res) => {
+  try {
+    let { brandId, seasonId } = req.query;
+
+    // Handle multiple brandIds (can be array or single value)
+    const brandIds = Array.isArray(brandId) ? brandId : (brandId ? [brandId] : []);
+
+    // Build WHERE clause with optional filters
+    let whereClause = "o.status != 'cancelled'";
+    const params = [];
+    let paramIndex = 1;
+
+    if (brandIds.length > 0) {
+      const placeholders = brandIds.map((_, i) => `$${paramIndex + i}`).join(', ');
+      whereClause += ` AND o.brand_id IN (${placeholders})`;
+      params.push(...brandIds);
+      paramIndex += brandIds.length;
+    }
+
+    if (seasonId) {
+      whereClause += ` AND o.season_id = $${paramIndex}`;
+      params.push(seasonId);
+      paramIndex++;
+    }
+
+    // Get breakdown by gender (normalize similar values)
+    const genderResult = await pool.query(`
+      SELECT
+        CASE
+          WHEN LOWER(p.gender) IN ('male', 'mens', 'men', 'm', 'man') THEN 'Men'
+          WHEN LOWER(p.gender) IN ('female', 'womens', 'women', 'w', 'woman', 'ladies') THEN 'Women'
+          WHEN LOWER(p.gender) IN ('unisex', 'uni') THEN 'Unisex'
+          WHEN LOWER(p.gender) IN ('kids', 'kid', 'youth', 'boys', 'girls', 'children', 'child') THEN 'Kids'
+          WHEN p.gender IS NULL OR TRIM(p.gender) = '' THEN 'Unknown'
+          ELSE INITCAP(p.gender)
+        END as name,
+        SUM(oi.quantity) as quantity,
+        SUM(oi.line_total) as value
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE ${whereClause}
+      GROUP BY CASE
+          WHEN LOWER(p.gender) IN ('male', 'mens', 'men', 'm', 'man') THEN 'Men'
+          WHEN LOWER(p.gender) IN ('female', 'womens', 'women', 'w', 'woman', 'ladies') THEN 'Women'
+          WHEN LOWER(p.gender) IN ('unisex', 'uni') THEN 'Unisex'
+          WHEN LOWER(p.gender) IN ('kids', 'kid', 'youth', 'boys', 'girls', 'children', 'child') THEN 'Kids'
+          WHEN p.gender IS NULL OR TRIM(p.gender) = '' THEN 'Unknown'
+          ELSE INITCAP(p.gender)
+        END
+      ORDER BY SUM(oi.quantity) DESC
+    `, params);
+
+    // Get breakdown by category
+    const categoryResult = await pool.query(`
+      SELECT
+        COALESCE(p.category, 'Unknown') as name,
+        SUM(oi.quantity) as quantity,
+        SUM(oi.line_total) as value
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE ${whereClause}
+      GROUP BY p.category
+      ORDER BY SUM(oi.quantity) DESC
+    `, params);
+
+    // Get breakdown by color (top 10)
+    const colorResult = await pool.query(`
+      SELECT
+        COALESCE(p.color, 'Unknown') as name,
+        SUM(oi.quantity) as quantity,
+        SUM(oi.line_total) as value
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE ${whereClause}
+      GROUP BY p.color
+      ORDER BY SUM(oi.quantity) DESC
+      LIMIT 10
+    `, params);
+
+    // Get totals (wholesale and retail)
+    const totalsResult = await pool.query(`
+      SELECT
+        SUM(oi.quantity) as total_quantity,
+        SUM(oi.line_total) as total_wholesale,
+        SUM(oi.quantity * COALESCE(p.msrp, 0)) as total_retail
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE ${whereClause}
+    `, params);
+
+    const totals = totalsResult.rows[0] || { total_quantity: 0, total_wholesale: 0, total_retail: 0 };
+
+    res.json({
+      gender: genderResult.rows,
+      category: categoryResult.rows,
+      color: colorResult.rows,
+      totals: {
+        quantity: parseInt(totals.total_quantity) || 0,
+        wholesale: parseFloat(totals.total_wholesale) || 0,
+        retail: parseFloat(totals.total_retail) || 0
+      }
+    });
+  } catch (error) {
+    console.error('Get product breakdown error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/orders - List orders with filtering
 router.get('/', authenticateToken, async (req, res) => {
   try {
@@ -91,8 +216,17 @@ router.post('/', authenticateToken, authorizeRoles('admin', 'buyer'), async (req
       });
     }
 
+    // Get brand and location codes for order number
+    const [brandResult, locationResult] = await Promise.all([
+      pool.query('SELECT code, name FROM brands WHERE id = $1', [brand_id]),
+      pool.query('SELECT code FROM locations WHERE id = $1', [location_id])
+    ]);
+
+    const brandCode = brandResult.rows[0]?.code || brandResult.rows[0]?.name?.substring(0, 3).toUpperCase() || 'UNK';
+    const locationCode = locationResult.rows[0]?.code || 'UNK';
+
     // Generate order number
-    const orderNumber = `${new Date().getFullYear()}-${Date.now()}`;
+    const orderNumber = generateOrderNumber(ship_date, brandCode, locationCode);
 
     const result = await pool.query(
       `INSERT INTO orders (
@@ -317,8 +451,18 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
 
       const sourceOrder = sourceOrderResult.rows[0];
 
+      // Get brand and location codes for order number
+      const [brandResult, locationResult] = await Promise.all([
+        client.query('SELECT code, name FROM brands WHERE id = $1', [sourceOrder.brand_id]),
+        client.query('SELECT code FROM locations WHERE id = $1', [targetLocationId])
+      ]);
+
+      const brandCode = brandResult.rows[0]?.code || brandResult.rows[0]?.name?.substring(0, 3).toUpperCase() || 'UNK';
+      const locationCode = locationResult.rows[0]?.code || 'UNK';
+
       // Create new order
-      const newOrderNumber = `${new Date().getFullYear()}-${Date.now()}`;
+      const effectiveShipDate = shipDate || sourceOrder.ship_date;
+      const newOrderNumber = generateOrderNumber(effectiveShipDate, brandCode, locationCode);
       const newOrderResult = await client.query(
         `INSERT INTO orders (
           order_number,
@@ -339,7 +483,7 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
           sourceOrder.season_id,
           sourceOrder.brand_id,
           targetLocationId,
-          shipDate || sourceOrder.ship_date,
+          effectiveShipDate,
           sourceOrder.order_type,
           notes || `Copied from order ${sourceOrder.order_number}`,
           sourceOrder.budget_total,
@@ -460,6 +604,132 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
   } catch (error) {
     console.error('Copy order error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// PATCH /api/orders/:orderId/items/:itemId - Update order item
+router.patch('/:orderId/items/:itemId', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { orderId, itemId } = req.params;
+    const { quantity, unit_price, notes } = req.body;
+
+    // Verify order exists and is editable (draft status)
+    const orderResult = await client.query(
+      'SELECT * FROM orders WHERE id = $1',
+      [orderId]
+    );
+
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Verify item exists and belongs to this order
+    const itemResult = await client.query(
+      'SELECT * FROM order_items WHERE id = $1 AND order_id = $2',
+      [itemId, orderId]
+    );
+
+    if (itemResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order item not found' });
+    }
+
+    await client.query('BEGIN');
+
+    // Update the item
+    const updateResult = await client.query(
+      `UPDATE order_items
+       SET quantity = COALESCE($1, quantity),
+           unit_cost = COALESCE($2, unit_cost),
+           notes = COALESCE($3, notes)
+       WHERE id = $4
+       RETURNING *`,
+      [quantity, unit_price, notes, itemId]
+    );
+
+    // Update order total
+    await client.query(
+      `UPDATE orders
+       SET current_total = (
+         SELECT COALESCE(SUM(line_total), 0)
+         FROM order_items
+         WHERE order_id = $1
+       ),
+       updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [orderId]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      message: 'Item updated successfully',
+      item: updateResult.rows[0]
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Update order item error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
+// DELETE /api/orders/:orderId/items/:itemId - Remove item from order
+router.delete('/:orderId/items/:itemId', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { orderId, itemId } = req.params;
+
+    // Verify order exists and is editable (draft status)
+    const orderResult = await client.query(
+      'SELECT * FROM orders WHERE id = $1',
+      [orderId]
+    );
+
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Verify item exists and belongs to this order
+    const itemResult = await client.query(
+      'SELECT * FROM order_items WHERE id = $1 AND order_id = $2',
+      [itemId, orderId]
+    );
+
+    if (itemResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order item not found' });
+    }
+
+    await client.query('BEGIN');
+
+    // Delete the item
+    await client.query('DELETE FROM order_items WHERE id = $1', [itemId]);
+
+    // Update order total
+    await client.query(
+      `UPDATE orders
+       SET current_total = (
+         SELECT COALESCE(SUM(line_total), 0)
+         FROM order_items
+         WHERE order_id = $1
+       ),
+       updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [orderId]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({ message: 'Item removed successfully' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Delete order item error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 

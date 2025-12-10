@@ -97,6 +97,43 @@ router.patch('/:id', authenticateToken, authorizeRoles('admin'), async (req, res
   }
 });
 
+// DELETE /api/seasons/:id - Delete season (admin only)
+router.delete('/:id', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if there are any orders for this season
+    const ordersCheck = await pool.query(
+      'SELECT COUNT(*) FROM orders WHERE season_id = $1',
+      [id]
+    );
+
+    if (parseInt(ordersCheck.rows[0].count) > 0) {
+      return res.status(400).json({
+        error: 'Cannot delete season with existing orders. Delete the orders first.'
+      });
+    }
+
+    // Delete associated budgets first
+    await pool.query('DELETE FROM season_budgets WHERE season_id = $1', [id]);
+
+    // Delete the season
+    const result = await pool.query(
+      'DELETE FROM seasons WHERE id = $1 RETURNING *',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Season not found' });
+    }
+
+    res.json({ message: 'Season deleted successfully' });
+  } catch (error) {
+    console.error('Delete season error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/seasons/:id/summary - Get budget summary by location/brand
 router.get('/:id/summary', authenticateToken, async (req, res) => {
   try {
@@ -225,6 +262,124 @@ router.post('/:id/budgets', authenticateToken, authorizeRoles('admin', 'buyer'),
   } catch (error) {
     console.error('Set season budgets error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/seasons/:id/product-breakdown - Get product breakdown by gender, category, color, size
+router.get('/:id/product-breakdown', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { brandId } = req.query;
+
+    // Build query with optional brand filter
+    let whereClause = 'o.season_id = $1 AND o.status != $2';
+    const params = [id, 'cancelled'];
+
+    if (brandId) {
+      whereClause += ' AND o.brand_id = $3';
+      params.push(brandId);
+    }
+
+    // Get breakdown by gender (normalize similar values)
+    const genderResult = await pool.query(`
+      SELECT
+        CASE
+          WHEN LOWER(p.gender) IN ('male', 'mens', 'men', 'm', 'man') THEN 'Men'
+          WHEN LOWER(p.gender) IN ('female', 'womens', 'women', 'w', 'woman', 'ladies') THEN 'Women'
+          WHEN LOWER(p.gender) IN ('unisex', 'uni') THEN 'Unisex'
+          WHEN LOWER(p.gender) IN ('kids', 'kid', 'youth', 'boys', 'girls', 'children', 'child') THEN 'Kids'
+          WHEN p.gender IS NULL OR TRIM(p.gender) = '' THEN 'Unknown'
+          ELSE INITCAP(p.gender)
+        END as name,
+        SUM(oi.quantity) as quantity,
+        SUM(oi.line_total) as value
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE ${whereClause}
+      GROUP BY CASE
+          WHEN LOWER(p.gender) IN ('male', 'mens', 'men', 'm', 'man') THEN 'Men'
+          WHEN LOWER(p.gender) IN ('female', 'womens', 'women', 'w', 'woman', 'ladies') THEN 'Women'
+          WHEN LOWER(p.gender) IN ('unisex', 'uni') THEN 'Unisex'
+          WHEN LOWER(p.gender) IN ('kids', 'kid', 'youth', 'boys', 'girls', 'children', 'child') THEN 'Kids'
+          WHEN p.gender IS NULL OR TRIM(p.gender) = '' THEN 'Unknown'
+          ELSE INITCAP(p.gender)
+        END
+      ORDER BY SUM(oi.quantity) DESC
+    `, params);
+
+    // Get breakdown by category
+    const categoryResult = await pool.query(`
+      SELECT
+        COALESCE(p.category, 'Unknown') as name,
+        SUM(oi.quantity) as quantity,
+        SUM(oi.line_total) as value
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE ${whereClause}
+      GROUP BY p.category
+      ORDER BY SUM(oi.quantity) DESC
+    `, params);
+
+    // Get breakdown by color (top 10)
+    const colorResult = await pool.query(`
+      SELECT
+        COALESCE(p.color, 'Unknown') as name,
+        SUM(oi.quantity) as quantity,
+        SUM(oi.line_total) as value
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE ${whereClause}
+      GROUP BY p.color
+      ORDER BY SUM(oi.quantity) DESC
+      LIMIT 10
+    `, params);
+
+    // Get breakdown by size (top 15)
+    const sizeResult = await pool.query(`
+      SELECT
+        COALESCE(p.size, 'Unknown') as name,
+        SUM(oi.quantity) as quantity,
+        SUM(oi.line_total) as value
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE ${whereClause}
+      GROUP BY p.size
+      ORDER BY SUM(oi.quantity) DESC
+      LIMIT 15
+    `, params);
+
+    // Get totals (wholesale and retail)
+    const totalsResult = await pool.query(`
+      SELECT
+        SUM(oi.quantity) as total_quantity,
+        SUM(oi.line_total) as total_wholesale,
+        SUM(oi.quantity * COALESCE(p.msrp, 0)) as total_retail
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE ${whereClause}
+    `, params);
+
+    const totals = totalsResult.rows[0] || { total_quantity: 0, total_wholesale: 0, total_retail: 0 };
+
+    res.json({
+      gender: genderResult.rows,
+      category: categoryResult.rows,
+      color: colorResult.rows,
+      size: sizeResult.rows,
+      totals: {
+        quantity: parseInt(totals.total_quantity) || 0,
+        wholesale: parseFloat(totals.total_wholesale) || 0,
+        retail: parseFloat(totals.total_retail) || 0
+      }
+    });
+  } catch (error) {
+    console.error('Get product breakdown error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

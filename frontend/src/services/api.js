@@ -75,4 +75,41 @@ export const migrationAPI = {
   addGenderColumn: () => api.post('/migrations/add-gender-column'),
 };
 
+// Order API calls
+export const orderAPI = {
+  getAll: (params) => api.get('/orders', { params }),
+  getById: (id) => api.get(`/orders/${id}`),
+  create: (orderData) => api.post('/orders', orderData),
+  update: (id, orderData) => api.patch(`/orders/${id}`, orderData),
+  delete: (id) => api.delete(`/orders/${id}`),
+  addItem: (orderId, itemData) => api.post(`/orders/${orderId}/items`, itemData),
+  updateItem: (orderId, itemId, itemData) => api.patch(`/orders/${orderId}/items/${itemId}`, itemData),
+  deleteItem: (orderId, itemId) => api.delete(`/orders/${orderId}/items/${itemId}`),
+  copy: (orderId, copyData) => api.post(`/orders/${orderId}/copy`, copyData),
+  getFamilyGroups: (orderId) => api.get(`/orders/${orderId}/family-groups`),
+};
+
+// Brand Template API calls
+export const brandTemplateAPI = {
+  getAll: (brandId) => api.get('/brand-templates', { params: brandId ? { brandId } : {} }),
+  getById: (id) => api.get(`/brand-templates/${id}`),
+  preview: (formData) => api.post('/brand-templates/preview', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
+  create: (formData) => api.post('/brand-templates', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
+  update: (id, formData) => api.put(`/brand-templates/${id}`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
+  delete: (id) => api.delete(`/brand-templates/${id}`),
+  download: (id) => api.get(`/brand-templates/${id}/download`, {
+    responseType: 'blob'
+  }),
+  exportWithTemplate: (orderIds, templateId) => api.post('/exports/orders/brand-template',
+    { orderIds, templateId },
+    { responseType: 'blob' }
+  ),
+};
+
 export default api;
