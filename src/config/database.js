@@ -1,13 +1,26 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
+// Parse DATABASE_URL and configure pool
 const poolConfig = {
   connectionString: process.env.DATABASE_URL,
 };
 
-// Only use SSL for Railway internal connections, not for public proxy
+// For Railway internal connections, use SSL
 if (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('.railway.internal')) {
   poolConfig.ssl = { rejectUnauthorized: false };
+}
+
+// Force IPv4 for Railway internal networking
+if (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('.railway.internal')) {
+  const url = new URL(process.env.DATABASE_URL);
+  poolConfig.host = url.hostname;
+  poolConfig.port = url.port || 5432;
+  poolConfig.user = url.username;
+  poolConfig.password = url.password;
+  poolConfig.database = url.pathname.slice(1);
+  poolConfig.family = 4; // Force IPv4
+  delete poolConfig.connectionString;
 }
 
 const pool = new Pool(poolConfig);
