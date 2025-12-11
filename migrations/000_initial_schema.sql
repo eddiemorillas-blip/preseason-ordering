@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS products (
     active BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(brand_id, sku)
+    UNIQUE(upc)
 );
 
 -- 5. Create catalog_uploads table
