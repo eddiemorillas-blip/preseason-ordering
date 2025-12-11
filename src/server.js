@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
@@ -30,7 +31,7 @@ app.use((req, res, next) => {
 });
 
 // Health check endpoint
-app.get('/', (req, res) => {
+app.get('/api/health', (req, res) => {
   res.json({
     message: 'Preseason Ordering System API',
     version: '1.0.0',
@@ -52,7 +53,19 @@ app.use('/api/sales-data', salesDataRoutes);
 app.use('/api/exports', exportsRoutes);
 app.use('/api/brand-templates', brandTemplatesRoutes);
 
-// 404 handler
+// Serve static files from frontend build in production
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../frontend/dist')));
+
+  // Handle React routing - serve index.html for all non-API routes
+  app.get('*', (req, res) => {
+    if (!req.path.startsWith('/api')) {
+      res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+    }
+  });
+}
+
+// 404 handler for API routes
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
