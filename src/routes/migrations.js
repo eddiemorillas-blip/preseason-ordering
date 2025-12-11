@@ -138,4 +138,34 @@ router.post('/add-missing-product-columns', authenticateToken, authorizeRoles('a
   }
 });
 
+// Run migration to add unique constraint on upc
+router.post('/add-upc-constraint', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    // First check if constraint exists
+    const checkResult = await pool.query(`
+      SELECT constraint_name FROM information_schema.table_constraints
+      WHERE table_name = 'products' AND constraint_type = 'UNIQUE' AND constraint_name = 'products_upc_key'
+    `);
+
+    if (checkResult.rows.length === 0) {
+      // Add unique constraint on upc column
+      await pool.query(`
+        ALTER TABLE products ADD CONSTRAINT products_upc_key UNIQUE (upc);
+      `);
+    }
+
+    res.json({
+      success: true,
+      message: 'UPC unique constraint added successfully'
+    });
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to add UPC constraint',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;
