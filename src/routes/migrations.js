@@ -180,6 +180,12 @@ router.post('/delete-brand-with-products', authenticateToken, authorizeRoles('ad
     // Delete products first
     const productsResult = await pool.query('DELETE FROM products WHERE brand_id = $1', [brandId]);
 
+    // Delete catalog uploads for this brand
+    await pool.query('DELETE FROM catalog_uploads WHERE brand_id = $1', [brandId]);
+
+    // Delete brand templates for this brand
+    await pool.query('DELETE FROM brand_order_templates WHERE brand_id = $1', [brandId]);
+
     // Delete the brand
     const brandResult = await pool.query('DELETE FROM brands WHERE id = $1 RETURNING name', [brandId]);
 
