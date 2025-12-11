@@ -57,4 +57,36 @@ router.post('/add-upc-to-sales-data', authenticateToken, authorizeRoles('admin')
   }
 });
 
+// Run migration to add season_id columns
+router.post('/add-season-id-columns', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    // Add season_id column to products if it doesn't exist
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id);
+    `);
+
+    // Add season_id column to catalog_uploads if it doesn't exist
+    await pool.query(`
+      ALTER TABLE catalog_uploads ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id);
+    `);
+
+    // Add index for better query performance
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_products_season ON products(season_id);
+    `);
+
+    res.json({
+      success: true,
+      message: 'Season ID columns added successfully'
+    });
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to add season_id columns',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;
