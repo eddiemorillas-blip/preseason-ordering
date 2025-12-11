@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { catalogAPI, brandAPI } from '../services/api';
+import api, { catalogAPI, brandAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Layout from '../components/Layout';
 
 const CatalogUpload = () => {
   const { isAdmin } = useAuth();
   const [brands, setBrands] = useState([]);
+  const [seasons, setSeasons] = useState([]);
   const [selectedBrand, setSelectedBrand] = useState('');
+  const [selectedSeason, setSelectedSeason] = useState('');
   const [brandName, setBrandName] = useState('');
   const [useExistingBrand, setUseExistingBrand] = useState(true);
   const [file, setFile] = useState(null);
@@ -97,6 +99,7 @@ const CatalogUpload = () => {
 
   useEffect(() => {
     fetchBrands();
+    fetchSeasons();
     fetchUploadHistory();
   }, []);
 
@@ -106,6 +109,15 @@ const CatalogUpload = () => {
       setBrands(response.data.brands || []);
     } catch (err) {
       console.error('Error fetching brands:', err);
+    }
+  };
+
+  const fetchSeasons = async () => {
+    try {
+      const response = await api.get('/seasons');
+      setSeasons(response.data.seasons || []);
+    } catch (err) {
+      console.error('Error fetching seasons:', err);
     }
   };
 
@@ -417,6 +429,10 @@ const CatalogUpload = () => {
         formData.append('brandName', brandName.trim());
       }
 
+      if (selectedSeason) {
+        formData.append('seasonId', selectedSeason);
+      }
+
       formData.append('columnMapping', JSON.stringify(columnMapping));
       formData.append('headerRow', headerRow.toString());
       if (selectedSheets && selectedSheets.length > 0) {
@@ -584,6 +600,29 @@ const CatalogUpload = () => {
                 </p>
               </div>
             )}
+          </div>
+
+          {/* Season Selection */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Season (Optional)
+            </label>
+            <select
+              value={selectedSeason}
+              onChange={(e) => setSelectedSeason(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              disabled={uploading}
+            >
+              <option value="">No season selected</option>
+              {seasons.map((season) => (
+                <option key={season.id} value={season.id}>
+                  {season.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Optionally associate this catalog with a specific season
+            </p>
           </div>
 
           {/* File Upload Area */}

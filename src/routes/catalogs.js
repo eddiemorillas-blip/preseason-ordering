@@ -417,7 +417,7 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
   const client = await pool.connect();
 
   try {
-    const { brandId, brandName, columnMapping, headerRow: headerRowParam, sheetNames: sheetNamesParam } = req.body;
+    const { brandId, brandName, seasonId, columnMapping, headerRow: headerRowParam, sheetNames: sheetNamesParam } = req.body;
     const file = req.file;
 
     // Parse headerRow from form data (comes as string)
@@ -630,7 +630,7 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
 
         for (const product of batchProducts) {
           placeholders.push(
-            `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}, $${paramIndex + 12})`
+            `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}, $${paramIndex + 12}, $${paramIndex + 13})`
           );
           values.push(
             product.brand_id,
@@ -645,15 +645,16 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
             product.color,
             product.gender,
             product.inseam,
-            product.active
+            product.active,
+            seasonId || null
           );
-          paramIndex += 13;
+          paramIndex += 14;
         }
 
         const batchQuery = `
           INSERT INTO products (
             brand_id, upc, sku, name, category, subcategory,
-            wholesale_cost, msrp, size, color, gender, inseam, active
+            wholesale_cost, msrp, size, color, gender, inseam, active, season_id
           ) VALUES ${placeholders.join(', ')}
           ON CONFLICT (upc) DO UPDATE SET
             brand_id = EXCLUDED.brand_id,
@@ -668,6 +669,7 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
             gender = EXCLUDED.gender,
             inseam = EXCLUDED.inseam,
             active = EXCLUDED.active,
+            season_id = COALESCE(EXCLUDED.season_id, products.season_id),
             updated_at = CURRENT_TIMESTAMP
         `;
 
@@ -682,11 +684,12 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
     const uploadStatus = errors.length > 0 ? 'completed_with_errors' : 'completed';
     await client.query(
       `INSERT INTO catalog_uploads (
-        brand_id, file_name, products_added, products_updated,
+        brand_id, season_id, file_name, products_added, products_updated,
         products_deactivated, upload_status, error_count
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         actualBrandId,
+        seasonId || null,
         file.originalname,
         productsAdded,
         productsUpdated,
