@@ -284,3 +284,4 @@ The backend expects the following tables to exist in your PostgreSQL database:
 4. Implement pagination for list endpoints
 5. Add input validation with a library like Joi or express-validator
 6. Add API documentation with Swagger/OpenAPI
+# Trigger deploy
