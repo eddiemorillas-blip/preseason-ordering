@@ -11,7 +11,8 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../../uploads');
+    // Use global uploads directory set in server.js
+    const uploadDir = global.UPLOADS_DIR || path.join(__dirname, '../../uploads');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }

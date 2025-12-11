@@ -10,7 +10,9 @@ const { authenticateToken } = require('../middleware/auth');
 // Configure multer for template uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../../uploads/templates');
+    // Use global uploads directory set in server.js
+    const baseDir = global.UPLOADS_DIR || path.join(__dirname, '../../uploads');
+    const uploadDir = path.join(baseDir, 'templates');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
