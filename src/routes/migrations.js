@@ -168,4 +168,37 @@ router.post('/add-upc-constraint', authenticateToken, authorizeRoles('admin'), a
   }
 });
 
+// Delete brand and all its products (admin utility)
+router.post('/delete-brand-with-products', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const { brandId } = req.body;
+
+    if (!brandId) {
+      return res.status(400).json({ error: 'Brand ID is required' });
+    }
+
+    // Delete products first
+    const productsResult = await pool.query('DELETE FROM products WHERE brand_id = $1', [brandId]);
+
+    // Delete the brand
+    const brandResult = await pool.query('DELETE FROM brands WHERE id = $1 RETURNING name', [brandId]);
+
+    if (brandResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Brand not found' });
+    }
+
+    res.json({
+      success: true,
+      message: `Brand "${brandResult.rows[0].name}" and ${productsResult.rowCount} products deleted successfully`
+    });
+  } catch (error) {
+    console.error('Delete brand error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete brand',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;
