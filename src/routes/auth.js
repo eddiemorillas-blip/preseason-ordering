@@ -126,6 +126,32 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// Get all users (admin only)
+router.get('/users', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, first_name, last_name, email, role, active, created_at, last_login FROM users ORDER BY created_at DESC'
+    );
+
+    // Transform to camelCase for frontend
+    const users = result.rows.map(user => ({
+      id: user.id,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      email: user.email,
+      role: user.role,
+      active: user.active,
+      createdAt: user.created_at,
+      lastLogin: user.last_login
+    }));
+
+    res.json({ users });
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get current user (protected route)
 router.get('/me', authenticateToken, async (req, res) => {
   try {
