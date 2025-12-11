@@ -58,7 +58,14 @@ const Users = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await authAPI.register(formData);
+      // Convert camelCase to snake_case for backend
+      await authAPI.register({
+        first_name: formData.firstName,
+        last_name: formData.lastName,
+        email: formData.email,
+        password: formData.password,
+        role: formData.role
+      });
       await fetchUsers();
       handleCloseModal();
     } catch (err) {
