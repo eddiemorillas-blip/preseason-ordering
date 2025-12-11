@@ -1,12 +1,16 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-const pool = new Pool({
+const poolConfig = {
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
-});
+};
+
+// Only use SSL for Railway internal connections, not for public proxy
+if (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('.railway.internal')) {
+  poolConfig.ssl = { rejectUnauthorized: false };
+}
+
+const pool = new Pool(poolConfig);
 
 // Test the connection on startup
 pool.query('SELECT NOW()', (err, res) => {
