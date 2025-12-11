@@ -286,6 +286,28 @@ router.post('/sync-all-schema', authenticateToken, authorizeRoles('admin'), asyn
   }
 });
 
+// Fix products constraint - remove brand_id+sku unique constraint
+router.post('/fix-products-constraints', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    // Drop the brand_id+sku unique constraint if it exists (UPC is the true unique identifier)
+    await pool.query(`
+      ALTER TABLE products DROP CONSTRAINT IF EXISTS products_brand_id_sku_key
+    `);
+
+    res.json({
+      success: true,
+      message: 'Products constraints fixed - brand_id+sku unique constraint removed'
+    });
+  } catch (error) {
+    console.error('Fix constraints error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fix constraints',
+      message: error.message
+    });
+  }
+});
+
 // Delete brand and all its products (admin utility)
 router.post('/delete-brand-with-products', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
