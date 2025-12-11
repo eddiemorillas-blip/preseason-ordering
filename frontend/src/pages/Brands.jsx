@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { brandAPI } from '../services/api';
+import api, { brandAPI } from '../services/api';
 import Layout from '../components/Layout';
 import BrandTemplateManager from '../components/BrandTemplateManager';
 
@@ -98,20 +98,38 @@ const Brands = () => {
     }
   };
 
-  const handleDelete = async (brand) => {
-    if (!window.confirm(`Are you sure you want to delete "${brand.name}"? This action cannot be undone.`)) {
-      return;
+  const handleDelete = async (brand, forceDelete = false) => {
+    if (!forceDelete) {
+      if (!window.confirm(`Are you sure you want to delete "${brand.name}"? This action cannot be undone.`)) {
+        return;
+      }
     }
 
     try {
-      await brandAPI.delete(brand.id);
-      await fetchBrands();
+      if (forceDelete) {
+        // Use the migration endpoint to force delete with products
+        const response = await api.post('/migrations/delete-brand-with-products', { brandId: brand.id });
+        if (response.data.success) {
+          await fetchBrands();
+        }
+      } else {
+        await brandAPI.delete(brand.id);
+        await fetchBrands();
+      }
     } catch (err) {
       console.error('Error deleting brand:', err);
       const errorMessage = err.response?.data?.error || 'Failed to delete brand.';
       const productCount = err.response?.data?.productCount;
       if (productCount) {
-        alert(`${errorMessage} This brand has ${productCount} product(s) associated with it.`);
+        // Offer to force delete
+        const confirmForce = window.confirm(
+          `This brand has ${productCount} product(s) associated with it.\n\n` +
+          `Do you want to delete the brand AND all ${productCount} products?\n\n` +
+          `WARNING: This will permanently delete all products for "${brand.name}". This cannot be undone.`
+        );
+        if (confirmForce) {
+          await handleDelete(brand, true);
+        }
       } else {
         alert(errorMessage);
       }
