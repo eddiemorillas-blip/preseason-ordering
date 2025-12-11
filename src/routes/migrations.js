@@ -89,4 +89,53 @@ router.post('/add-season-id-columns', authenticateToken, authorizeRoles('admin')
   }
 });
 
+// Run migration to add all missing product columns
+router.post('/add-missing-product-columns', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    // Add all potentially missing columns to products table
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS subcategory VARCHAR(255);
+    `);
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS inseam VARCHAR(50);
+    `);
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS gender VARCHAR(50);
+    `);
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS color VARCHAR(255);
+    `);
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS size VARCHAR(100);
+    `);
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR(255);
+    `);
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS wholesale_cost DECIMAL(10, 2);
+    `);
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS msrp DECIMAL(10, 2);
+    `);
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true;
+    `);
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id);
+    `);
+
+    res.json({
+      success: true,
+      message: 'All missing product columns added successfully'
+    });
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to add missing product columns',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;
