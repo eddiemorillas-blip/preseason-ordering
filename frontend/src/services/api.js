@@ -1,8 +1,20 @@
 import axios from 'axios';
 
-// Use environment variable for API URL, fallback to localhost for development
+// In production, use relative URL (frontend served from same server as API)
+// In development, use localhost
+const getBaseURL = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  // Check if we're on the production domain
+  if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return '/api'; // Relative URL for production
+  }
+  return 'http://localhost:5000/api'; // Development
+};
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
+  baseURL: getBaseURL()
 });
 
 // Add token to all requests

@@ -13,6 +13,7 @@ import OrderBuilder from './pages/OrderBuilder';
 import AddProducts from './pages/AddProducts';
 import SalesDataUpload from './pages/SalesDataUpload';
 import OrderSuggestions from './pages/OrderSuggestions';
+import Help from './pages/Help';
 
 function App() {
   return (
@@ -96,6 +97,14 @@ function App() {
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <OrderSuggestions />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/help"
+            element={
+              <ProtectedRoute>
+                <Help />
               </ProtectedRoute>
             }
           />
