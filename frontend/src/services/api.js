@@ -58,6 +58,7 @@ export const brandAPI = {
   getById: (id) => api.get(`/brands/${id}`),
   create: (brandData) => api.post('/brands', brandData),
   update: (id, brandData) => api.patch(`/brands/${id}`, brandData),
+  delete: (id) => api.delete(`/brands/${id}`),
   getStats: (id) => api.get(`/brands/${id}/stats`),
 };
 

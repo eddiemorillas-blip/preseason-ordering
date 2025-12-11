@@ -98,6 +98,26 @@ const Brands = () => {
     }
   };
 
+  const handleDelete = async (brand) => {
+    if (!window.confirm(`Are you sure you want to delete "${brand.name}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      await brandAPI.delete(brand.id);
+      await fetchBrands();
+    } catch (err) {
+      console.error('Error deleting brand:', err);
+      const errorMessage = err.response?.data?.error || 'Failed to delete brand.';
+      const productCount = err.response?.data?.productCount;
+      if (productCount) {
+        alert(`${errorMessage} This brand has ${productCount} product(s) associated with it.`);
+      } else {
+        alert(errorMessage);
+      }
+    }
+  };
+
   const filteredBrands = brands.filter(brand =>
     brand.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (brand.vendorCode && brand.vendorCode.toLowerCase().includes(searchTerm.toLowerCase()))
@@ -228,12 +248,18 @@ const Brands = () => {
                         </span>
                       </td>
                       {isAdmin() && (
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-3">
                           <button
                             onClick={() => handleOpenModal(brand)}
                             className="text-blue-600 hover:text-blue-900"
                           >
                             Edit
+                          </button>
+                          <button
+                            onClick={() => handleDelete(brand)}
+                            className="text-red-600 hover:text-red-900"
+                          >
+                            Delete
                           </button>
                         </td>
                       )}
