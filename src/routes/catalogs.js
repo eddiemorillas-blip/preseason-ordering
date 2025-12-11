@@ -95,22 +95,7 @@ const parseExcelFile = (filePath, headerRow = 1, sheetName = null) => {
   const targetSheet = sheetName || workbook.SheetNames[0];
   const worksheet = workbook.Sheets[targetSheet];
 
-  if (headerRow === 1) {
-    // Standard parsing - first row is header
-    const data = XLSX.utils.sheet_to_json(worksheet, { raw: false });
-    // Get headers from first row
-    const allRows = XLSX.utils.sheet_to_json(worksheet, {
-      raw: false,
-      header: 1,
-      defval: ''
-    });
-    const headers = allRows.length > 0
-      ? allRows[0].map((h, idx) => String(h || '').trim() || `Column_${idx + 1}`)
-      : [];
-    return { data, headers };
-  }
-
-  // For custom header row, read as array of arrays and manually construct objects
+  // Always read as array of arrays for consistent handling
   const allRows = XLSX.utils.sheet_to_json(worksheet, {
     raw: false,
     header: 1,  // Returns array of arrays
@@ -136,8 +121,9 @@ const parseExcelFile = (filePath, headerRow = 1, sheetName = null) => {
 
     headers.forEach((header, idx) => {
       const value = row[idx];
+      // Include all values, even empty ones, so columns show in preview
+      obj[header] = (value !== undefined && value !== null) ? value : '';
       if (value !== undefined && value !== null && value !== '') {
-        obj[header] = value;
         hasData = true;
       }
     });
