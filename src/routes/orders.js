@@ -303,6 +303,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
         p.base_name,
         p.size,
         p.color,
+        p.inseam,
         p.wholesale_cost,
         p.msrp
       FROM order_items oi
