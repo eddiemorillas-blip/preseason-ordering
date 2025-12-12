@@ -136,10 +136,20 @@ const OrderBuilder = () => {
     }
   };
 
-  // Handle key press in quantity input (Enter to save, Escape to cancel)
+  // Handle key press in quantity input (Enter to save and advance, Escape to cancel)
   const handleQuantityKeyDown = (e, itemId, originalQuantity) => {
     if (e.key === 'Enter') {
+      e.preventDefault();
       handleSaveQuantity(itemId);
+
+      // Find and focus the next quantity input
+      const allInputs = Array.from(document.querySelectorAll('input[type="number"]'));
+      const currentIndex = allInputs.findIndex(input => input === e.target);
+      if (currentIndex !== -1 && currentIndex < allInputs.length - 1) {
+        const nextInput = allInputs[currentIndex + 1];
+        nextInput.focus();
+        nextInput.select();
+      }
     } else if (e.key === 'Escape') {
       const newEditing = { ...editingQuantities };
       delete newEditing[itemId];
