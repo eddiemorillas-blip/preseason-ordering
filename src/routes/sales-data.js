@@ -533,7 +533,7 @@ router.get('/uploads', authenticateToken, async (req, res) => {
 // GET /api/sales-data/suggestions - Get order suggestions based on prior sales
 router.get('/suggestions', authenticateToken, async (req, res) => {
   try {
-    const { brandId, locationId, salesMonths } = req.query;
+    const { brandId, locationId, salesMonths, startDate, endDate } = req.query;
 
     if (!brandId) {
       return res.status(400).json({ error: 'brandId is required' });
@@ -543,11 +543,24 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'locationId is required' });
     }
 
-    // Default to last 6 months of sales data
-    const monthsBack = parseInt(salesMonths) || 6;
-    const salesStartDate = new Date();
-    salesStartDate.setMonth(salesStartDate.getMonth() - monthsBack);
-    const salesStartDateStr = salesStartDate.toISOString().split('T')[0];
+    // Determine date range - custom dates take precedence over salesMonths
+    let salesStartDateStr, salesEndDateStr;
+    let periodDescription;
+
+    if (startDate && endDate) {
+      // Custom date range
+      salesStartDateStr = startDate;
+      salesEndDateStr = endDate;
+      periodDescription = `${startDate} to ${endDate}`;
+    } else {
+      // Default to last N months of sales data
+      const monthsBack = parseInt(salesMonths) || 6;
+      const salesStartDate = new Date();
+      salesStartDate.setMonth(salesStartDate.getMonth() - monthsBack);
+      salesStartDateStr = salesStartDate.toISOString().split('T')[0];
+      salesEndDateStr = new Date().toISOString().split('T')[0];
+      periodDescription = `Last ${monthsBack} months`;
+    }
 
     // Build the query to get suggestions based on prior sales
     // Filter by sale date (start_date) being within the requested period
@@ -577,6 +590,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
       LEFT JOIN sales_data sd ON sd.product_id = p.id
         AND sd.location_id = l.id
         AND sd.start_date >= $1
+        AND sd.start_date <= $4
       WHERE p.brand_id = $2
         AND l.id = $3
       GROUP BY p.id, p.name, p.sku, p.upc, p.base_name, p.category, p.subcategory,
@@ -586,7 +600,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
       ORDER BY p.base_name, p.color, p.size
     `;
 
-    const result = await pool.query(query, [salesStartDateStr, brandId, locationId]);
+    const result = await pool.query(query, [salesStartDateStr, brandId, locationId, salesEndDateStr]);
 
     // Get the actual date range from the data
     let overallStartDate = null;

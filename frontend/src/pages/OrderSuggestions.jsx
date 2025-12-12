@@ -16,7 +16,9 @@ const OrderSuggestions = () => {
   const [selectedBrand, setSelectedBrand] = useState('');
   const [selectedLocation, setSelectedLocation] = useState('');
   const [selectedSeason, setSelectedSeason] = useState('');
-  const [salesMonths, setSalesMonths] = useState(6); // Default last 6 months
+  const [salesMonths, setSalesMonths] = useState('6'); // Default last 6 months
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
 
   // Suggestions state
   const [suggestions, setSuggestions] = useState([]);
@@ -67,9 +69,16 @@ const OrderSuggestions = () => {
     try {
       const params = new URLSearchParams({
         brandId: selectedBrand,
-        locationId: selectedLocation,
-        salesMonths: salesMonths.toString()
+        locationId: selectedLocation
       });
+
+      // Use custom dates if selected, otherwise use months preset
+      if (salesMonths === 'custom' && customStartDate && customEndDate) {
+        params.append('startDate', customStartDate);
+        params.append('endDate', customEndDate);
+      } else if (salesMonths !== 'custom') {
+        params.append('salesMonths', salesMonths);
+      }
 
       const response = await api.get(`/sales-data/suggestions?${params}`);
       setSuggestions(response.data.suggestions || []);
@@ -458,15 +467,45 @@ const OrderSuggestions = () => {
               </label>
               <select
                 value={salesMonths}
-                onChange={(e) => setSalesMonths(parseInt(e.target.value))}
+                onChange={(e) => setSalesMonths(e.target.value)}
                 className="w-full px-3 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
               >
-                <option value={3}>Last 3 months</option>
-                <option value={6}>Last 6 months</option>
-                <option value={9}>Last 9 months</option>
-                <option value={12}>Last 12 months</option>
+                <option value="3">Last 3 months</option>
+                <option value="6">Last 6 months</option>
+                <option value="9">Last 9 months</option>
+                <option value="12">Last 12 months</option>
+                <option value="18">Last 18 months</option>
+                <option value="24">Last 24 months</option>
+                <option value="custom">Custom Date Range</option>
               </select>
             </div>
+
+            {salesMonths === 'custom' && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Start Date
+                  </label>
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    End Date
+                  </label>
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </>
+            )}
 
             <div className="flex items-end">
               <button
