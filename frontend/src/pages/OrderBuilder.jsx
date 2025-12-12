@@ -777,6 +777,9 @@ const OrderBuilder = () => {
                             Size
                           </th>
                           <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                            Color
+                          </th>
+                          <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
                             Inseam
                           </th>
                           <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">
@@ -808,6 +811,9 @@ const OrderBuilder = () => {
                               </td>
                               <td className="px-4 py-3 text-sm text-gray-600">
                                 {item.size || '-'}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-600">
+                                {item.color || '-'}
                               </td>
                               <td className="px-4 py-3 text-sm text-gray-600">
                                 {item.inseam || '-'}
