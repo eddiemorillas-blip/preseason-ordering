@@ -100,6 +100,8 @@ const OrderManager = () => {
   const [deleting, setDeleting] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState(new Set());
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
+  const [showBulkStatusDropdown, setShowBulkStatusDropdown] = useState(false);
+  const [updatingBulkStatus, setUpdatingBulkStatus] = useState(false);
 
   const [newSeason, setNewSeason] = useState({
     name: '',
@@ -132,16 +134,19 @@ const OrderManager = () => {
     }
   }, [selectedBrandId]);
 
-  // Close export dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (showExportDropdown && !event.target.closest('.export-dropdown')) {
         setShowExportDropdown(false);
       }
+      if (showBulkStatusDropdown && !event.target.closest('.bulk-status-dropdown')) {
+        setShowBulkStatusDropdown(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showExportDropdown]);
+  }, [showExportDropdown, showBulkStatusDropdown]);
 
   const fetchInitialData = async () => {
     try {
@@ -327,6 +332,34 @@ const OrderManager = () => {
   const isGroupPartiallySelected = (groupOrders) => {
     const selectedCount = groupOrders.filter(o => selectedOrders.has(o.id)).length;
     return selectedCount > 0 && selectedCount < groupOrders.length;
+  };
+
+  // Bulk status update
+  const handleBulkStatusUpdate = async (newStatus) => {
+    if (selectedOrders.size === 0) return;
+
+    setUpdatingBulkStatus(true);
+    try {
+      const orderIds = Array.from(selectedOrders);
+      await Promise.all(orderIds.map(id =>
+        api.patch(`/orders/${id}`, { status: newStatus })
+      ));
+
+      // Update local state
+      setOrders(orders.map(order =>
+        selectedOrders.has(order.id)
+          ? { ...order, status: newStatus }
+          : order
+      ));
+
+      setSelectedOrders(new Set());
+      setShowBulkStatusDropdown(false);
+    } catch (error) {
+      console.error('Error updating order statuses:', error);
+      alert('Failed to update some orders. Please try again.');
+    } finally {
+      setUpdatingBulkStatus(false);
+    }
   };
 
   const toggleGroupCollapse = (groupKey) => {
@@ -773,7 +806,31 @@ const OrderManager = () => {
                     {selectedOrders.size === orders.length && orders.length > 0 ? 'Deselect All' : 'Select All'}
                   </button>
                   {selectedOrders.size > 0 && (
-                    <span className="text-xs text-gray-500">{selectedOrders.size} selected</span>
+                    <>
+                      <span className="text-xs text-gray-500">{selectedOrders.size} selected</span>
+                      <div className="relative bulk-status-dropdown">
+                        <button
+                          onClick={() => setShowBulkStatusDropdown(!showBulkStatusDropdown)}
+                          disabled={updatingBulkStatus}
+                          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+                        >
+                          {updatingBulkStatus ? 'Updating...' : 'Set Status ▾'}
+                        </button>
+                        {showBulkStatusDropdown && (
+                          <div className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20 min-w-32 overflow-hidden">
+                            {['draft', 'submitted', 'confirmed', 'shipped', 'cancelled'].map((status) => (
+                              <button
+                                key={status}
+                                onClick={() => handleBulkStatusUpdate(status)}
+                                className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
+                              >
+                                {status}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </>
                   )}
                   {orders.length > 0 && (
                     <button
