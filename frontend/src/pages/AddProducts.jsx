@@ -756,6 +756,19 @@ const AddProducts = () => {
                         min="0"
                         value={quantities[product.id] || ''}
                         onChange={(e) => handleQuantityChange(product.id, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            // Find and focus the next quantity input
+                            const allInputs = Array.from(document.querySelectorAll('table input[type="number"]'));
+                            const currentIndex = allInputs.findIndex(input => input === e.target);
+                            if (currentIndex !== -1 && currentIndex < allInputs.length - 1) {
+                              const nextInput = allInputs[currentIndex + 1];
+                              nextInput.focus();
+                              nextInput.select();
+                            }
+                          }
+                        }}
                         className="w-20 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         placeholder="0"
                       />
