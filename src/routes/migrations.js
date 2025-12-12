@@ -298,6 +298,40 @@ router.post('/sync-all-schema', authenticateToken, authorizeRoles('admin'), asyn
   }
 });
 
+// Fix order items line_total for existing items
+router.post('/fix-order-item-totals', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    // Update all order items to calculate line_total from unit_cost * quantity
+    const result = await pool.query(`
+      UPDATE order_items
+      SET line_total = COALESCE(unit_cost, 0) * quantity
+      WHERE line_total IS NULL OR line_total = 0
+    `);
+
+    // Also update order current_total from sum of line_totals
+    await pool.query(`
+      UPDATE orders o
+      SET current_total = (
+        SELECT COALESCE(SUM(line_total), 0)
+        FROM order_items oi
+        WHERE oi.order_id = o.id
+      )
+    `);
+
+    res.json({
+      success: true,
+      message: `Fixed ${result.rowCount} order items and updated order totals`
+    });
+  } catch (error) {
+    console.error('Fix order item totals error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fix order item totals',
+      message: error.message
+    });
+  }
+});
+
 // Fix products constraint - remove brand_id+sku unique constraint
 router.post('/fix-products-constraints', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
