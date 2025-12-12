@@ -42,6 +42,10 @@ const OrderBuilder = () => {
   const [editingShipDate, setEditingShipDate] = useState(false);
   const [shipDateValue, setShipDateValue] = useState('');
   const [savingShipDate, setSavingShipDate] = useState(false);
+  const [editingFamilyColor, setEditingFamilyColor] = useState(null); // { familyName, currentColor }
+  const [availableColors, setAvailableColors] = useState([]);
+  const [loadingColors, setLoadingColors] = useState(false);
+  const [changingColor, setChangingColor] = useState(false);
 
   useEffect(() => {
     fetchOrder();
@@ -117,6 +121,56 @@ const OrderBuilder = () => {
   const handleCancelShipDate = () => {
     setEditingShipDate(false);
     setShipDateValue('');
+  };
+
+  // Handle opening color picker for a family
+  const handleEditFamilyColor = async (familyName, familyItems) => {
+    // Get the current color from the first item (all items in a color group have same color)
+    const currentColor = familyItems[0]?.color;
+
+    setEditingFamilyColor({ familyName, currentColor });
+    setLoadingColors(true);
+
+    try {
+      const response = await api.get(`/orders/${id}/family-colors`, {
+        params: { baseName: familyName, currentColor }
+      });
+      setAvailableColors(response.data.colors || []);
+    } catch (err) {
+      console.error('Error fetching colors:', err);
+      setError('Failed to load available colors');
+      setEditingFamilyColor(null);
+    } finally {
+      setLoadingColors(false);
+    }
+  };
+
+  // Handle changing color for a family
+  const handleChangeColor = async (newColor) => {
+    if (!editingFamilyColor || changingColor) return;
+
+    setChangingColor(true);
+    try {
+      await api.post(`/orders/${id}/change-family-color`, {
+        baseName: editingFamilyColor.familyName,
+        currentColor: editingFamilyColor.currentColor,
+        newColor
+      });
+      // Refresh order to get updated items
+      await fetchOrder();
+      setEditingFamilyColor(null);
+      setAvailableColors([]);
+    } catch (err) {
+      console.error('Error changing color:', err);
+      setError(err.response?.data?.error || 'Failed to change color');
+    } finally {
+      setChangingColor(false);
+    }
+  };
+
+  const handleCancelColorEdit = () => {
+    setEditingFamilyColor(null);
+    setAvailableColors([]);
   };
 
   const handleDeleteOrder = async () => {
@@ -309,13 +363,19 @@ const OrderBuilder = () => {
     }
   };
 
-  // Group items by product family (base_name, fallback to product_name)
+  // Group items by product family (base_name) and color
   const groupedItems = items.reduce((acc, item) => {
-    const key = item.base_name || item.product_name || 'Ungrouped';
+    const baseName = item.base_name || item.product_name || 'Ungrouped';
+    const color = item.color || 'No Color';
+    const key = `${baseName}|||${color}`; // Use ||| as separator
     if (!acc[key]) {
-      acc[key] = [];
+      acc[key] = {
+        baseName,
+        color,
+        items: []
+      };
     }
-    acc[key].push(item);
+    acc[key].items.push(item);
     return acc;
   }, {});
 
@@ -634,29 +694,67 @@ const OrderBuilder = () => {
             </div>
           ) : (
             <div className="divide-y divide-gray-200">
-              {Object.entries(groupedItems).map(([familyName, familyItems]) => (
-                <div key={familyName}>
+              {Object.entries(groupedItems).map(([groupKey, group]) => (
+                <div key={groupKey}>
                   <div
                     className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50"
-                    onClick={() => toggleFamilyCollapse(familyName)}
+                    onClick={() => toggleFamilyCollapse(groupKey)}
                   >
                     <div className="flex items-center gap-2">
                       <svg
-                        className={`w-4 h-4 text-gray-500 transition-transform ${collapsedFamilies.has(familyName) ? '' : 'rotate-90'}`}
+                        className={`w-4 h-4 text-gray-500 transition-transform ${collapsedFamilies.has(groupKey) ? '' : 'rotate-90'}`}
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
                       >
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                       </svg>
-                      <h3 className="font-semibold text-gray-900">{familyName}</h3>
+                      <h3 className="font-semibold text-gray-900">{group.baseName}</h3>
+                      <span className="px-2 py-0.5 bg-gray-100 text-gray-700 text-sm rounded">{group.color}</span>
+                      {canEdit && editingFamilyColor?.familyName === group.baseName && editingFamilyColor?.currentColor === group.color ? (
+                        <div className="flex items-center gap-2 ml-2" onClick={(e) => e.stopPropagation()}>
+                          {loadingColors ? (
+                            <span className="text-sm text-gray-500">Loading colors...</span>
+                          ) : (
+                            <>
+                              <select
+                                className="text-sm border border-gray-300 rounded px-2 py-1"
+                                onChange={(e) => e.target.value && handleChangeColor(e.target.value)}
+                                disabled={changingColor}
+                                defaultValue=""
+                              >
+                                <option value="" disabled>Change to...</option>
+                                {availableColors.filter(c => c !== group.color).map(color => (
+                                  <option key={color} value={color}>{color}</option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={handleCancelColorEdit}
+                                className="text-sm text-gray-500 hover:text-gray-700"
+                                disabled={changingColor}
+                              >
+                                Cancel
+                              </button>
+                              {changingColor && <span className="text-sm text-gray-500">Changing...</span>}
+                            </>
+                          )}
+                        </div>
+                      ) : canEdit && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleEditFamilyColor(group.baseName, group.items); }}
+                          className="ml-2 text-xs text-blue-600 hover:text-blue-800 px-2 py-0.5 rounded hover:bg-blue-50"
+                          title="Change color for this family"
+                        >
+                          Change Color
+                        </button>
+                      )}
                       <span className="text-sm text-gray-500">
-                        ({familyItems.length} items &bull; {formatCurrency(familyItems.reduce((sum, item) => sum + parseFloat(item.line_total), 0))})
+                        ({group.items.length} items &bull; {formatCurrency(group.items.reduce((sum, item) => sum + parseFloat(item.line_total), 0))})
                       </span>
                     </div>
                     {canEdit && (
                       <button
-                        onClick={(e) => { e.stopPropagation(); setFamilyToDelete({ name: familyName, items: familyItems }); }}
+                        onClick={(e) => { e.stopPropagation(); setFamilyToDelete({ name: groupKey, items: group.items }); }}
                         className="flex items-center text-sm text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-50"
                         title="Remove entire family"
                       >
@@ -667,7 +765,7 @@ const OrderBuilder = () => {
                       </button>
                     )}
                   </div>
-                  {!collapsedFamilies.has(familyName) && (
+                  {!collapsedFamilies.has(groupKey) && (
                   <div className="px-6 pb-6 overflow-x-auto">
                     <table className="min-w-full">
                       <thead className="bg-gray-50">
@@ -677,9 +775,6 @@ const OrderBuilder = () => {
                           </th>
                           <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
                             Size
-                          </th>
-                          <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                            Color
                           </th>
                           <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
                             Inseam
@@ -701,7 +796,7 @@ const OrderBuilder = () => {
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-100">
-                        {familyItems.map((item) => {
+                        {group.items.map((item) => {
                           const isEditing = editingQuantities[item.id] !== undefined;
                           const isSaving = savingItems.has(item.id);
                           const displayQuantity = isEditing ? editingQuantities[item.id] : item.quantity;
@@ -713,9 +808,6 @@ const OrderBuilder = () => {
                               </td>
                               <td className="px-4 py-3 text-sm text-gray-600">
                                 {item.size || '-'}
-                              </td>
-                              <td className="px-4 py-3 text-sm text-gray-600">
-                                {item.color || '-'}
                               </td>
                               <td className="px-4 py-3 text-sm text-gray-600">
                                 {item.inseam || '-'}

@@ -986,6 +986,163 @@ router.delete('/:orderId/items/:itemId', authenticateToken, authorizeRoles('admi
   }
 });
 
+// GET /api/orders/:orderId/family-colors - Get available colors for a product family in an order
+router.get('/:orderId/family-colors', authenticateToken, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { baseName, currentColor } = req.query;
+
+    if (!baseName) {
+      return res.status(400).json({ error: 'baseName is required' });
+    }
+
+    // Get the order to find brand_id and season_id
+    const orderResult = await pool.query(
+      'SELECT brand_id, season_id FROM orders WHERE id = $1',
+      [orderId]
+    );
+
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const { brand_id, season_id } = orderResult.rows[0];
+
+    // Find all distinct colors for products with same base_name, brand, and season
+    const colorsResult = await pool.query(`
+      SELECT DISTINCT color
+      FROM products
+      WHERE base_name = $1
+        AND brand_id = $2
+        AND (season_id = $3 OR season_id IS NULL)
+        AND active = true
+        AND color IS NOT NULL
+      ORDER BY color
+    `, [baseName, brand_id, season_id]);
+
+    const colors = colorsResult.rows.map(r => r.color);
+
+    res.json({ colors, currentColor });
+  } catch (error) {
+    console.error('Get family colors error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/orders/:orderId/change-family-color - Change color for all items in a family
+router.post('/:orderId/change-family-color', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { orderId } = req.params;
+    const { baseName, currentColor, newColor } = req.body;
+
+    if (!baseName || !newColor) {
+      return res.status(400).json({ error: 'baseName and newColor are required' });
+    }
+
+    // Get the order to find brand_id and season_id
+    const orderResult = await client.query(
+      'SELECT brand_id, season_id FROM orders WHERE id = $1',
+      [orderId]
+    );
+
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const { brand_id, season_id } = orderResult.rows[0];
+
+    await client.query('BEGIN');
+
+    // Get all order items for this family with the current color
+    const itemsResult = await client.query(`
+      SELECT oi.id, oi.product_id, oi.quantity, oi.unit_cost, oi.notes, p.size, p.inseam
+      FROM order_items oi
+      JOIN products p ON oi.product_id = p.id
+      WHERE oi.order_id = $1
+        AND p.base_name = $2
+        AND (p.color = $3 OR ($3 IS NULL AND p.color IS NULL))
+    `, [orderId, baseName, currentColor]);
+
+    if (itemsResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No items found for this family and color' });
+    }
+
+    const updatedItems = [];
+    const notFoundItems = [];
+
+    // For each item, find the corresponding product with the new color
+    for (const item of itemsResult.rows) {
+      // Find product with same base_name, size, inseam but new color
+      const newProductResult = await client.query(`
+        SELECT id, wholesale_cost
+        FROM products
+        WHERE base_name = $1
+          AND brand_id = $2
+          AND (season_id = $3 OR season_id IS NULL)
+          AND size = $4
+          AND (inseam = $5 OR ($5 IS NULL AND inseam IS NULL))
+          AND color = $6
+          AND active = true
+        LIMIT 1
+      `, [baseName, brand_id, season_id, item.size, item.inseam, newColor]);
+
+      if (newProductResult.rows.length > 0) {
+        const newProduct = newProductResult.rows[0];
+        const unitCost = newProduct.wholesale_cost || item.unit_cost;
+        const lineTotal = parseFloat(unitCost || 0) * parseInt(item.quantity || 0);
+
+        // Update the order item to point to the new product
+        await client.query(`
+          UPDATE order_items
+          SET product_id = $1, unit_cost = $2, line_total = $3
+          WHERE id = $4
+        `, [newProduct.id, unitCost, lineTotal, item.id]);
+
+        updatedItems.push({
+          itemId: item.id,
+          size: item.size,
+          inseam: item.inseam,
+          newProductId: newProduct.id
+        });
+      } else {
+        notFoundItems.push({
+          itemId: item.id,
+          size: item.size,
+          inseam: item.inseam
+        });
+      }
+    }
+
+    // Update order total
+    const totalResult = await client.query(`
+      SELECT COALESCE(SUM(line_total), 0) as total
+      FROM order_items
+      WHERE order_id = $1
+    `, [orderId]);
+
+    await client.query(`
+      UPDATE orders SET current_total = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2
+    `, [totalResult.rows[0].total, orderId]);
+
+    await client.query('COMMIT');
+
+    res.json({
+      message: `Changed color from "${currentColor}" to "${newColor}" for ${updatedItems.length} items`,
+      updatedItems,
+      notFoundItems: notFoundItems.length > 0 ? notFoundItems : undefined
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Change family color error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
 // PATCH /api/orders/:id - Update order
 router.patch('/:id', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
