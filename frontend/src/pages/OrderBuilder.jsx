@@ -65,12 +65,15 @@ const OrderBuilder = () => {
   const fetchOrder = async () => {
     try {
       setLoading(true);
+      console.log('Fetching order with id:', id);
       const response = await api.get(`/orders/${id}`);
+      console.log('Order response:', response.data);
       setOrder(response.data.order);
       setItems(response.data.items || []);
     } catch (err) {
       console.error('Error fetching order:', err);
-      setError('Failed to load order');
+      console.error('Error response:', err.response?.data);
+      setError(`Failed to load order: ${err.response?.data?.error || err.message}`);
     } finally {
       setLoading(false);
     }
@@ -448,12 +451,13 @@ const OrderBuilder = () => {
     return (
       <Layout>
         <div className="text-center py-12">
-          <p className="text-red-600">Order not found</p>
+          <p className="text-red-600">{error || 'Order not found'}</p>
+          <p className="text-gray-500 text-sm mt-2">Order ID: {id}</p>
           <button
-            onClick={() => navigate('/seasons')}
+            onClick={() => navigate('/')}
             className="mt-4 text-blue-600 hover:text-blue-800"
           >
-            Back to Seasons
+            Back to Home
           </button>
         </div>
       </Layout>
