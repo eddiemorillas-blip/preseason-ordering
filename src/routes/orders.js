@@ -11,8 +11,18 @@ function generateOrderNumber(shipDate, brandCode, locationCode) {
   // Use ship date if provided, otherwise use current date
   let date;
   if (shipDate) {
+    // Handle various date formats: ISO timestamp, Date object, or date string
+    let dateStr;
+    if (shipDate instanceof Date) {
+      dateStr = shipDate.toISOString().substring(0, 10);
+    } else if (typeof shipDate === 'string') {
+      // Extract just the date portion (handles both "2026-08-28" and "2026-08-28T00:00:00.000Z")
+      dateStr = shipDate.substring(0, 10);
+    } else {
+      dateStr = String(shipDate).substring(0, 10);
+    }
     // Parse date string as local date (add noon time to avoid timezone shifts)
-    date = new Date(shipDate + 'T12:00:00');
+    date = new Date(dateStr + 'T12:00:00');
   } else {
     date = new Date();
   }
