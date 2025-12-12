@@ -546,6 +546,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
     // Determine date range - custom dates take precedence over salesMonths
     let salesStartDateStr, salesEndDateStr;
     let periodDescription;
+    let monthsBack = null;
 
     if (startDate && endDate) {
       // Custom date range
@@ -554,7 +555,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
       periodDescription = `${startDate} to ${endDate}`;
     } else {
       // Default to last N months of sales data
-      const monthsBack = parseInt(salesMonths) || 6;
+      monthsBack = parseInt(salesMonths) || 6;
       const salesStartDate = new Date();
       salesStartDate.setMonth(salesStartDate.getMonth() - monthsBack);
       salesStartDateStr = salesStartDate.toISOString().split('T')[0];
@@ -678,6 +679,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
         total_suggested_qty: totalSuggestedQty,
         total_suggested_cost: totalSuggestedCost,
         sales_months: monthsBack,
+        period_description: periodDescription,
         sales_period_start: overallStartDate ? overallStartDate.toISOString().split('T')[0] : null,
         sales_period_end: overallEndDate ? overallEndDate.toISOString().split('T')[0] : null
       }
