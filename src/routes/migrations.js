@@ -379,6 +379,33 @@ router.post('/fix-products-constraints', authenticateToken, authorizeRoles('admi
   }
 });
 
+// Add source_order_id column to track copied orders
+router.post('/add-source-order-tracking', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    // Add source_order_id column to orders table
+    await pool.query(`
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS source_order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL
+    `);
+
+    // Add index for finding copies of an order
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_source ON orders(source_order_id)
+    `);
+
+    res.json({
+      success: true,
+      message: 'Source order tracking column added successfully'
+    });
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to add source order tracking',
+      message: error.message
+    });
+  }
+});
+
 // Delete brand and all its products (admin utility)
 router.post('/delete-brand-with-products', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {

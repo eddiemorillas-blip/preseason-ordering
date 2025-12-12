@@ -477,8 +477,9 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
           notes,
           budget_total,
           created_by,
+          source_order_id,
           status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *`,
         [
           newOrderNumber,
@@ -490,6 +491,7 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
           notes || `Copied from order ${sourceOrder.order_number}`,
           sourceOrder.budget_total,
           req.user.id,
+          id, // source_order_id - track which order this was copied from
           'draft'
         ]
       );
@@ -615,6 +617,194 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
   } catch (error) {
     console.error('Copy order error:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// GET /api/orders/:id/copies - Get all orders that were copied from this order
+router.get('/:id/copies', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(`
+      SELECT
+        o.*,
+        l.name as location_name,
+        l.code as location_code,
+        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,
+        (SELECT COALESCE(SUM(quantity), 0) FROM order_items WHERE order_id = o.id) as total_quantity
+      FROM orders o
+      JOIN locations l ON o.location_id = l.id
+      WHERE o.source_order_id = $1
+      ORDER BY o.created_at DESC
+    `, [id]);
+
+    res.json({ copies: result.rows });
+  } catch (error) {
+    console.error('Get order copies error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/orders/:id/push-updates - Push updates from source order to all copies
+router.post('/:id/push-updates', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { id } = req.params;
+    const { targetOrderIds } = req.body; // Optional: specific orders to update, or all if not provided
+
+    await client.query('BEGIN');
+
+    // Get source order and its items
+    const sourceOrder = await client.query('SELECT * FROM orders WHERE id = $1', [id]);
+    if (sourceOrder.rows.length === 0) {
+      throw new Error('Source order not found');
+    }
+
+    const sourceItems = await client.query(`
+      SELECT
+        oi.*,
+        p.base_name,
+        p.size,
+        p.color
+      FROM order_items oi
+      JOIN products p ON oi.product_id = p.id
+      WHERE oi.order_id = $1
+    `, [id]);
+
+    // Get all copied orders (or specific ones if provided)
+    let copiesQuery = `
+      SELECT o.*, l.name as location_name
+      FROM orders o
+      JOIN locations l ON o.location_id = l.id
+      WHERE o.source_order_id = $1 AND o.status = 'draft'
+    `;
+    const queryParams = [id];
+
+    if (targetOrderIds && targetOrderIds.length > 0) {
+      copiesQuery += ` AND o.id = ANY($2)`;
+      queryParams.push(targetOrderIds);
+    }
+
+    const copies = await client.query(copiesQuery, queryParams);
+
+    if (copies.rows.length === 0) {
+      throw new Error('No draft copies found to update');
+    }
+
+    const results = [];
+
+    // For each copied order
+    for (const copy of copies.rows) {
+      let itemsAdded = 0;
+      let itemsUpdated = 0;
+      let itemsRemoved = 0;
+
+      // Get existing items in the copy
+      const copyItems = await client.query(`
+        SELECT
+          oi.*,
+          p.base_name,
+          p.size,
+          p.color
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        WHERE oi.order_id = $1
+      `, [copy.id]);
+
+      // Create a map of copy items by base_name+size for easy lookup
+      const copyItemMap = new Map();
+      for (const item of copyItems.rows) {
+        const key = `${item.base_name}|${item.size}`;
+        copyItemMap.set(key, item);
+      }
+
+      // Track which items in the copy have been matched
+      const matchedCopyItemIds = new Set();
+
+      // Process each source item
+      for (const sourceItem of sourceItems.rows) {
+        const key = `${sourceItem.base_name}|${sourceItem.size}`;
+        const existingCopyItem = copyItemMap.get(key);
+
+        if (existingCopyItem) {
+          // Item exists in copy - update quantity if different
+          matchedCopyItemIds.add(existingCopyItem.id);
+
+          if (existingCopyItem.quantity !== sourceItem.quantity) {
+            const lineTotal = parseFloat(existingCopyItem.unit_cost || 0) * parseInt(sourceItem.quantity);
+            await client.query(`
+              UPDATE order_items
+              SET quantity = $1, line_total = $2
+              WHERE id = $3
+            `, [sourceItem.quantity, lineTotal, existingCopyItem.id]);
+            itemsUpdated++;
+          }
+        } else {
+          // Item doesn't exist in copy - find matching product for this location
+          // Try to find product with same base_name and size (may have different color)
+          const matchingProduct = await client.query(`
+            SELECT id, wholesale_cost FROM products
+            WHERE base_name = $1 AND size = $2 AND brand_id = $3 AND active = true
+            LIMIT 1
+          `, [sourceItem.base_name, sourceItem.size, sourceOrder.rows[0].brand_id]);
+
+          if (matchingProduct.rows.length > 0) {
+            const product = matchingProduct.rows[0];
+            const unitCost = product.wholesale_cost || sourceItem.unit_cost || 0;
+            const lineTotal = parseFloat(unitCost) * parseInt(sourceItem.quantity);
+
+            await client.query(`
+              INSERT INTO order_items (order_id, product_id, quantity, unit_cost, line_total)
+              VALUES ($1, $2, $3, $4, $5)
+            `, [copy.id, product.id, sourceItem.quantity, unitCost, lineTotal]);
+            itemsAdded++;
+          }
+        }
+      }
+
+      // Remove items that are in copy but not in source
+      for (const copyItem of copyItems.rows) {
+        if (!matchedCopyItemIds.has(copyItem.id)) {
+          await client.query('DELETE FROM order_items WHERE id = $1', [copyItem.id]);
+          itemsRemoved++;
+        }
+      }
+
+      // Update the copy's total
+      await client.query(`
+        UPDATE orders
+        SET current_total = (
+          SELECT COALESCE(SUM(line_total), 0)
+          FROM order_items
+          WHERE order_id = $1
+        ),
+        updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [copy.id]);
+
+      results.push({
+        orderId: copy.id,
+        orderNumber: copy.order_number,
+        location: copy.location_name,
+        itemsAdded,
+        itemsUpdated,
+        itemsRemoved
+      });
+    }
+
+    await client.query('COMMIT');
+
+    res.json({
+      message: `Updates pushed to ${results.length} orders`,
+      results
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Push updates error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 

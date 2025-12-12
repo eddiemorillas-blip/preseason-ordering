@@ -25,6 +25,9 @@ const OrderBuilder = () => {
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [collapsedFamilies, setCollapsedFamilies] = useState(new Set());
+  const [showPushUpdatesModal, setShowPushUpdatesModal] = useState(false);
+  const [orderCopies, setOrderCopies] = useState([]);
+  const [loadingCopies, setLoadingCopies] = useState(false);
 
   useEffect(() => {
     fetchOrder();
@@ -214,6 +217,22 @@ const OrderBuilder = () => {
       setError(err.response?.data?.error || 'Failed to remove product family');
     } finally {
       setDeletingFamily(false);
+    }
+  };
+
+  // Fetch copies of this order and open the push updates modal
+  const handleOpenPushUpdates = async () => {
+    setLoadingCopies(true);
+    setError('');
+    try {
+      const response = await api.get(`/orders/${id}/copies`);
+      setOrderCopies(response.data.copies || []);
+      setShowPushUpdatesModal(true);
+    } catch (err) {
+      console.error('Error fetching copies:', err);
+      setError('Failed to load order copies');
+    } finally {
+      setLoadingCopies(false);
     }
   };
 
@@ -454,6 +473,14 @@ const OrderBuilder = () => {
                 >
                   Copy Order
                 </button>
+                <button
+                  onClick={handleOpenPushUpdates}
+                  disabled={loadingCopies}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:bg-gray-400"
+                  title="Push changes to orders copied from this one"
+                >
+                  {loadingCopies ? 'Loading...' : 'Push Updates'}
+                </button>
               </>
             )}
             {isAdmin() && (
@@ -675,6 +702,16 @@ const OrderBuilder = () => {
             onClose={() => {
               setShowCopyOrderModal(false);
             }}
+          />
+        )}
+
+        {/* Push Updates Modal */}
+        {showPushUpdatesModal && (
+          <PushUpdatesModal
+            orderId={id}
+            order={order}
+            copies={orderCopies}
+            onClose={() => setShowPushUpdatesModal(false)}
           />
         )}
 
@@ -1125,6 +1162,225 @@ const CopyOrderModal = ({ orderId, order, onClose }) => {
                   {loading ? 'Copying...' : `Copy ${familyGroups.length - skipFamilies.size} Families`}
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Push Updates Modal Component
+const PushUpdatesModal = ({ orderId, order, copies, onClose }) => {
+  const [selectedCopies, setSelectedCopies] = useState(new Set(copies.filter(c => c.status === 'draft').map(c => c.id)));
+  const [pushing, setPushing] = useState(false);
+  const [error, setError] = useState('');
+  const [results, setResults] = useState(null);
+
+  const draftCopies = copies.filter(c => c.status === 'draft');
+  const nonDraftCopies = copies.filter(c => c.status !== 'draft');
+
+  const toggleCopy = (copyId) => {
+    const newSelected = new Set(selectedCopies);
+    if (newSelected.has(copyId)) {
+      newSelected.delete(copyId);
+    } else {
+      newSelected.add(copyId);
+    }
+    setSelectedCopies(newSelected);
+  };
+
+  const toggleAll = () => {
+    if (selectedCopies.size === draftCopies.length) {
+      setSelectedCopies(new Set());
+    } else {
+      setSelectedCopies(new Set(draftCopies.map(c => c.id)));
+    }
+  };
+
+  const handlePushUpdates = async () => {
+    if (selectedCopies.size === 0) {
+      setError('Please select at least one order to update');
+      return;
+    }
+
+    setPushing(true);
+    setError('');
+    setResults(null);
+
+    try {
+      const response = await api.post(`/orders/${orderId}/push-updates`, {
+        targetOrderIds: Array.from(selectedCopies)
+      });
+      setResults(response.data.results);
+    } catch (err) {
+      console.error('Error pushing updates:', err);
+      setError(err.response?.data?.error || 'Failed to push updates');
+    } finally {
+      setPushing(false);
+    }
+  };
+
+  const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(amount || 0);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
+      <div className="bg-white rounded-lg p-6 max-w-2xl w-full my-8 max-h-[90vh] overflow-y-auto">
+        <h2 className="text-xl font-bold mb-4">Push Updates to Copied Orders</h2>
+
+        {error && (
+          <div className="mb-4 bg-red-50 border border-red-200 rounded-md p-3">
+            <p className="text-sm text-red-800">{error}</p>
+          </div>
+        )}
+
+        {results ? (
+          // Show results after pushing
+          <div className="space-y-4">
+            <div className="bg-green-50 border border-green-200 rounded-md p-4">
+              <p className="text-sm text-green-800 font-medium">
+                Updates pushed successfully to {results.length} orders
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {results.map((result) => (
+                <div key={result.orderId} className="border border-gray-200 rounded-md p-3">
+                  <div className="font-medium text-gray-900">{result.orderNumber}</div>
+                  <div className="text-sm text-gray-600">{result.location}</div>
+                  <div className="mt-2 flex gap-4 text-sm">
+                    {result.itemsAdded > 0 && (
+                      <span className="text-green-600">+{result.itemsAdded} added</span>
+                    )}
+                    {result.itemsUpdated > 0 && (
+                      <span className="text-blue-600">{result.itemsUpdated} updated</span>
+                    )}
+                    {result.itemsRemoved > 0 && (
+                      <span className="text-red-600">-{result.itemsRemoved} removed</span>
+                    )}
+                    {result.itemsAdded === 0 && result.itemsUpdated === 0 && result.itemsRemoved === 0 && (
+                      <span className="text-gray-500">No changes needed</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end pt-4 border-t">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        ) : copies.length === 0 ? (
+          // No copies exist
+          <div className="text-center py-8">
+            <p className="text-gray-600 mb-4">
+              This order has not been copied to any other locations yet.
+            </p>
+            <p className="text-sm text-gray-500">
+              Use "Copy Order" to create copies for other locations first.
+            </p>
+            <div className="flex justify-end pt-4">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          // Show selection UI
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Push the current items and quantities from this order to its copies.
+              Only draft orders can be updated.
+            </p>
+
+            {draftCopies.length > 0 && (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-700">
+                    Select orders to update:
+                  </span>
+                  <button
+                    onClick={toggleAll}
+                    className="text-sm text-blue-600 hover:text-blue-800"
+                  >
+                    {selectedCopies.size === draftCopies.length ? 'Deselect All' : 'Select All'}
+                  </button>
+                </div>
+
+                <div className="space-y-2 max-h-64 overflow-y-auto border border-gray-200 rounded-md p-2">
+                  {draftCopies.map((copy) => (
+                    <label
+                      key={copy.id}
+                      className="flex items-center p-2 rounded hover:bg-gray-50 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedCopies.has(copy.id)}
+                        onChange={() => toggleCopy(copy.id)}
+                        className="mr-3 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                      />
+                      <div className="flex-1">
+                        <div className="font-medium text-gray-900">
+                          {copy.order_number}
+                        </div>
+                        <div className="text-sm text-gray-600">
+                          {copy.location_name} ({copy.location_code})
+                        </div>
+                      </div>
+                      <div className="text-right text-sm text-gray-500">
+                        <div>{copy.item_count} items</div>
+                        <div>{formatCurrency(copy.current_total)}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {nonDraftCopies.length > 0 && (
+              <div className="mt-4">
+                <p className="text-sm font-medium text-gray-500 mb-2">
+                  Cannot update (not in draft status):
+                </p>
+                <div className="space-y-1 text-sm text-gray-400">
+                  {nonDraftCopies.map((copy) => (
+                    <div key={copy.id} className="flex justify-between">
+                      <span>{copy.order_number} - {copy.location_name}</span>
+                      <span className="capitalize">{copy.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end space-x-2 pt-4 border-t">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                disabled={pushing}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handlePushUpdates}
+                className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:bg-gray-400"
+                disabled={pushing || selectedCopies.size === 0}
+              >
+                {pushing ? 'Pushing...' : `Push to ${selectedCopies.size} Order${selectedCopies.size !== 1 ? 's' : ''}`}
+              </button>
             </div>
           </div>
         )}

@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS orders (
     brand_id INTEGER REFERENCES brands(id),
     location_id INTEGER REFERENCES locations(id),
     created_by INTEGER REFERENCES users(id),
+    source_order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL,
     status VARCHAR(50) DEFAULT 'draft' CHECK (status IN ('draft', 'submitted', 'approved', 'ordered', 'received', 'cancelled')),
     ship_date DATE,
     order_type VARCHAR(50) DEFAULT 'preseason',
@@ -188,6 +189,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_location ON orders(location_id);
 CREATE INDEX IF NOT EXISTS idx_orders_season ON orders(season_id);
 CREATE INDEX IF NOT EXISTS idx_orders_brand ON orders(brand_id);
 CREATE INDEX IF NOT EXISTS idx_orders_season_brand_location ON orders(season_id, brand_id, location_id);
+CREATE INDEX IF NOT EXISTS idx_orders_source ON orders(source_order_id);
 CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items(product_id);
 CREATE INDEX IF NOT EXISTS idx_season_budgets_lookup ON season_budgets(season_id, brand_id, location_id);
