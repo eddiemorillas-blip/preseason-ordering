@@ -445,4 +445,57 @@ router.post('/delete-brand-with-products', authenticateToken, authorizeRoles('ad
   }
 });
 
+// Fix order numbers to match their ship dates
+router.post('/fix-order-numbers', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const fixed = [];
+
+  try {
+    // Get all orders with ship dates and brand/location info
+    const orders = await pool.query(`
+      SELECT o.id, o.order_number, o.ship_date, b.code as brand_code, b.name as brand_name, l.code as location_code
+      FROM orders o
+      LEFT JOIN brands b ON o.brand_id = b.id
+      LEFT JOIN locations l ON o.location_id = l.id
+      WHERE o.ship_date IS NOT NULL
+    `);
+
+    for (const order of orders.rows) {
+      // Parse date with noon time to avoid timezone issues
+      const dateStr = order.ship_date instanceof Date
+        ? order.ship_date.toISOString().substring(0, 10)
+        : String(order.ship_date).substring(0, 10);
+      const date = new Date(dateStr + 'T12:00:00');
+
+      const month = MONTHS[date.getMonth()];
+      const year = String(date.getFullYear()).slice(-2);
+      const brandCode = order.brand_code || order.brand_name?.substring(0, 3).toUpperCase() || 'UNK';
+      const locationCode = order.location_code || 'UNK';
+      const expectedOrderNumber = `${month}${year}-${brandCode}-${locationCode}`;
+
+      if (order.order_number !== expectedOrderNumber) {
+        await pool.query('UPDATE orders SET order_number = $1 WHERE id = $2', [expectedOrderNumber, order.id]);
+        fixed.push({
+          id: order.id,
+          old: order.order_number,
+          new: expectedOrderNumber
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Fixed ${fixed.length} order numbers`,
+      fixed
+    });
+  } catch (error) {
+    console.error('Fix order numbers error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fix order numbers',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;

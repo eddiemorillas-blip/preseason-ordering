@@ -1011,8 +1011,15 @@ router.patch('/:id', authenticateToken, authorizeRoles('admin', 'buyer'), async 
 
     // Check if ship_date is being updated and would change the month/year in order number
     if (ship_date !== undefined) {
-      const oldDate = order.ship_date ? new Date(order.ship_date) : null;
-      const newDate = ship_date ? new Date(ship_date + 'T12:00:00') : null; // Add noon time to avoid timezone issues
+      // Parse old date - extract YYYY-MM-DD and add noon to avoid timezone issues
+      let oldDate = null;
+      if (order.ship_date) {
+        const oldDateStr = order.ship_date instanceof Date
+          ? order.ship_date.toISOString().substring(0, 10)
+          : String(order.ship_date).substring(0, 10);
+        oldDate = new Date(oldDateStr + 'T12:00:00');
+      }
+      const newDate = ship_date ? new Date(ship_date + 'T12:00:00') : null;
 
       // If date changed and would affect the order number prefix
       if (newDate && (!oldDate ||
