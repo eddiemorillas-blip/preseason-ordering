@@ -46,21 +46,25 @@ const OrderBuilder = () => {
   const [availableColors, setAvailableColors] = useState([]);
   const [loadingColors, setLoadingColors] = useState(false);
   const [changingColor, setChangingColor] = useState(false);
+  const [showStatusDropdown, setShowStatusDropdown] = useState(false);
 
   useEffect(() => {
     fetchOrder();
   }, [id]);
 
-  // Close export dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (showExportDropdown && !event.target.closest('.export-dropdown')) {
         setShowExportDropdown(false);
       }
+      if (showStatusDropdown && !event.target.closest('.status-dropdown')) {
+        setShowStatusDropdown(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showExportDropdown]);
+  }, [showExportDropdown, showStatusDropdown]);
 
   const fetchOrder = async () => {
     try {
@@ -478,9 +482,32 @@ const OrderBuilder = () => {
             </button>
             <div className="flex items-center space-x-3">
               <h1 className="text-3xl font-bold text-gray-900">{order.order_number}</h1>
-              <span className={`px-3 py-1 inline-flex text-sm font-semibold rounded-full ${getStatusColor(order.status)}`}>
-                {order.status}
-              </span>
+              <div className="relative status-dropdown">
+                <button
+                  onClick={() => setShowStatusDropdown(!showStatusDropdown)}
+                  className={`px-3 py-1 inline-flex text-sm font-semibold rounded-full cursor-pointer hover:opacity-80 ${getStatusColor(order.status)}`}
+                  title="Click to change status"
+                >
+                  {order.status} ▾
+                </button>
+                {showStatusDropdown && (
+                  <div className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 min-w-32 overflow-hidden">
+                    {['draft', 'submitted', 'confirmed', 'shipped', 'cancelled'].map((status) => (
+                      <button
+                        key={status}
+                        onClick={() => {
+                          handleUpdateStatus(status);
+                          setShowStatusDropdown(false);
+                        }}
+                        className={`block w-full text-left px-3 py-2 text-sm hover:bg-gray-100 ${order.status === status ? 'font-bold bg-gray-50' : ''}`}
+                      >
+                        <span className={`inline-block w-3 h-3 rounded-full mr-2 ${getStatusColor(status)}`}></span>
+                        {status}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="mt-2 text-sm text-gray-600 space-y-1">
               <div><strong>Season:</strong> {order.season_name}</div>
