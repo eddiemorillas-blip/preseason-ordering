@@ -1065,13 +1065,29 @@ const CopyOrderModal = ({ orderId, order, onClose }) => {
       return;
     }
 
-    // Fetch available variants for each family
+    // Check if any families have base_name - only fetch variants if they do
+    const familiesWithBaseName = familyGroups.filter(f => f.base_name);
+
+    if (familiesWithBaseName.length === 0) {
+      // No base_names means no variant selection possible - skip to step 2 with empty variants
+      setAvailableVariants({});
+      setStep(2);
+      return;
+    }
+
+    // Fetch available variants for each family that has a base_name
     setLoading(true);
     try {
       const variantsData = {};
-      for (const family of familyGroups) {
-        const response = await api.get(`/product-families/variants?brandId=${order.brand_id}&baseName=${encodeURIComponent(family.base_name)}`);
-        variantsData[family.base_name] = response.data.colorGroups || {};
+      for (const family of familiesWithBaseName) {
+        try {
+          const response = await api.get(`/product-families/variants?brandId=${order.brand_id}&baseName=${encodeURIComponent(family.base_name)}`);
+          variantsData[family.base_name] = response.data.colorGroups || {};
+        } catch (variantErr) {
+          // If variant fetch fails for a family, skip it (will copy as-is)
+          console.warn(`Could not fetch variants for ${family.base_name}:`, variantErr);
+          variantsData[family.base_name] = {};
+        }
       }
       setAvailableVariants(variantsData);
       setStep(2);
