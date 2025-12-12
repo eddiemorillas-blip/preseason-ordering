@@ -4,6 +4,17 @@ import api from '../services/api';
 import Layout from '../components/Layout';
 import { useAuth } from '../context/AuthContext';
 
+// Helper to format date without timezone shift
+const formatDate = (dateStr) => {
+  if (!dateStr) return 'Not set';
+  // Extract YYYY-MM-DD and parse with noon time to avoid timezone issues
+  const datePart = typeof dateStr === 'string' && dateStr.match(/^\d{4}-\d{2}-\d{2}/)
+    ? dateStr.substring(0, 10)
+    : dateStr;
+  const d = new Date(datePart + 'T12:00:00');
+  return d.toLocaleDateString();
+};
+
 const OrderBuilder = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -72,8 +83,18 @@ const OrderBuilder = () => {
   };
 
   const handleEditShipDate = () => {
-    // Format date for input (YYYY-MM-DD)
-    const currentDate = order.ship_date ? new Date(order.ship_date).toISOString().split('T')[0] : '';
+    // Format date for input (YYYY-MM-DD) - extract directly without Date object to avoid timezone issues
+    let currentDate = '';
+    if (order.ship_date) {
+      // If it's already YYYY-MM-DD format, use it directly
+      if (typeof order.ship_date === 'string' && order.ship_date.match(/^\d{4}-\d{2}-\d{2}/)) {
+        currentDate = order.ship_date.substring(0, 10);
+      } else {
+        // Fallback: parse with noon time to avoid timezone shift
+        const d = new Date(order.ship_date + 'T12:00:00');
+        currentDate = d.toISOString().split('T')[0];
+      }
+    }
     setShipDateValue(currentDate);
     setEditingShipDate(true);
   };
@@ -432,7 +453,7 @@ const OrderBuilder = () => {
                     className={(isAdmin || isBuyer) ? 'cursor-pointer hover:text-blue-600 hover:underline' : ''}
                     title={(isAdmin || isBuyer) ? 'Click to edit' : ''}
                   >
-                    {order.ship_date ? new Date(order.ship_date).toLocaleDateString() : 'Not set'}
+                    {formatDate(order.ship_date)}
                     {(isAdmin || isBuyer) && (
                       <svg className="w-3 h-3 inline ml-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
