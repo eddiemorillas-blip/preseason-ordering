@@ -428,7 +428,9 @@ router.post('/:id/items', authenticateToken, authorizeRoles('admin', 'buyer'), a
 router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { targetLocationId, variantMapping, shipDate, notes } = req.body;
+    const { targetLocationId, variantMapping, shipDate, notes, skipFamilies } = req.body;
+
+    // skipFamilies is an array of base_name strings to exclude from the copy
 
     if (!targetLocationId) {
       return res.status(400).json({ error: 'Target location ID is required' });
@@ -474,9 +476,8 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
           notes,
           budget_total,
           created_by,
-          duplicated_from_order_id,
           status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *`,
         [
           newOrderNumber,
@@ -488,7 +489,6 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
           notes || `Copied from order ${sourceOrder.order_number}`,
           sourceOrder.budget_total,
           req.user.id,
-          sourceOrder.id,
           'draft'
         ]
       );
@@ -510,7 +510,14 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
       `, [id]);
 
       // Copy items with variant mapping
+      const skipSet = new Set(skipFamilies || []);
+
       for (const sourceItem of sourceItemsResult.rows) {
+        // Skip this family if it's in the skip list
+        if (skipSet.has(sourceItem.base_name)) {
+          continue;
+        }
+
         let targetProductId = sourceItem.product_id;
 
         // Check if variant mapping exists for this product family
@@ -543,11 +550,14 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
           }
         }
 
-        // Insert item into new order
+        // Calculate line_total
+        const lineTotal = parseFloat(sourceItem.unit_cost || 0) * parseInt(sourceItem.quantity || 0);
+
+        // Insert item into new order with line_total
         await client.query(
-          `INSERT INTO order_items (order_id, product_id, quantity, unit_cost, notes)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [newOrder.id, targetProductId, sourceItem.quantity, sourceItem.unit_cost, sourceItem.notes]
+          `INSERT INTO order_items (order_id, product_id, quantity, unit_cost, line_total, notes)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [newOrder.id, targetProductId, sourceItem.quantity, sourceItem.unit_cost, lineTotal, sourceItem.notes]
         );
       }
 

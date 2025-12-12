@@ -798,6 +798,7 @@ const CopyOrderModal = ({ orderId, order, onClose }) => {
   const [familyGroups, setFamilyGroups] = useState([]);
   const [variantMapping, setVariantMapping] = useState({});
   const [availableVariants, setAvailableVariants] = useState({});
+  const [skipFamilies, setSkipFamilies] = useState(new Set()); // Families to exclude from copy
 
   useEffect(() => {
     fetchLocations();
@@ -858,6 +859,16 @@ const CopyOrderModal = ({ orderId, order, onClose }) => {
     });
   };
 
+  const toggleSkipFamily = (baseName) => {
+    const newSkip = new Set(skipFamilies);
+    if (newSkip.has(baseName)) {
+      newSkip.delete(baseName);
+    } else {
+      newSkip.add(baseName);
+    }
+    setSkipFamilies(newSkip);
+  };
+
   const buildVariantMappingPayload = () => {
     // Transform the mapping into the format expected by the backend
     const mapping = {};
@@ -899,6 +910,11 @@ const CopyOrderModal = ({ orderId, order, onClose }) => {
       const mappingPayload = buildVariantMappingPayload();
       if (Object.keys(mappingPayload).length > 0) {
         payload.variantMapping = mappingPayload;
+      }
+
+      // Add skip families if any are selected
+      if (skipFamilies.size > 0) {
+        payload.skipFamilies = Array.from(skipFamilies);
       }
 
       const response = await api.post(`/orders/${orderId}/copy`, payload);
@@ -1008,15 +1024,29 @@ const CopyOrderModal = ({ orderId, order, onClose }) => {
               {familyGroups.map((family) => {
                 const colors = Object.keys(availableVariants[family.base_name] || {});
                 const sourceColor = family.color || 'default';
+                const isSkipped = skipFamilies.has(family.base_name);
 
                 return (
-                  <div key={family.base_name} className="border border-gray-200 rounded-md p-4">
-                    <h3 className="font-semibold text-gray-900 mb-2">{family.base_name}</h3>
+                  <div key={family.base_name} className={`border rounded-md p-4 ${isSkipped ? 'border-gray-300 bg-gray-50 opacity-60' : 'border-gray-200'}`}>
+                    <div className="flex items-start justify-between mb-2">
+                      <h3 className={`font-semibold ${isSkipped ? 'text-gray-500 line-through' : 'text-gray-900'}`}>
+                        {family.base_name}
+                      </h3>
+                      <label className="flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={isSkipped}
+                          onChange={() => toggleSkipFamily(family.base_name)}
+                          className="mr-2 h-4 w-4 text-red-600 border-gray-300 rounded focus:ring-red-500"
+                        />
+                        <span className="text-sm text-gray-600">Skip</span>
+                      </label>
+                    </div>
                     <div className="text-sm text-gray-600 mb-3">
                       {family.items.length} items in source order (Color: {sourceColor})
                     </div>
 
-                    {colors.length > 1 ? (
+                    {!isSkipped && colors.length > 1 ? (
                       <div className="flex items-center space-x-3">
                         <span className="text-sm text-gray-700">Map color:</span>
                         <span className="px-3 py-1 bg-gray-100 rounded text-sm font-medium">
@@ -1036,15 +1066,26 @@ const CopyOrderModal = ({ orderId, order, onClose }) => {
                           ))}
                         </select>
                       </div>
-                    ) : (
+                    ) : !isSkipped ? (
                       <div className="text-sm text-gray-500">
                         Only one color available - no mapping needed
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 );
               })}
             </div>
+
+            {skipFamilies.size > 0 && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3">
+                <p className="text-sm text-yellow-800">
+                  <strong>{skipFamilies.size}</strong> of {familyGroups.length} product families will be skipped.
+                  {familyGroups.length - skipFamilies.size === 0 && (
+                    <span className="text-red-600 ml-1">Warning: No products will be copied!</span>
+                  )}
+                </p>
+              </div>
+            )}
 
             <div className="flex justify-between space-x-2 mt-6 pt-4 border-t">
               <button
@@ -1067,9 +1108,9 @@ const CopyOrderModal = ({ orderId, order, onClose }) => {
                 <button
                   onClick={handleCopyOrder}
                   className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
-                  disabled={loading}
+                  disabled={loading || familyGroups.length - skipFamilies.size === 0}
                 >
-                  {loading ? 'Copying...' : 'Copy Order'}
+                  {loading ? 'Copying...' : `Copy ${familyGroups.length - skipFamilies.size} Families`}
                 </button>
               </div>
             </div>
