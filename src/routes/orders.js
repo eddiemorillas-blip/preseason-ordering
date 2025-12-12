@@ -313,19 +313,19 @@ router.get('/:id', authenticateToken, async (req, res) => {
         CASE
           WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
           ELSE 0
-        END DESC,
+        END ASC,
         CASE p.size
-          WHEN 'XXXL' THEN 1 WHEN '3XL' THEN 1
-          WHEN 'XXL' THEN 2 WHEN '2XL' THEN 2
-          WHEN 'XL' THEN 3
-          WHEN 'L' THEN 4
-          WHEN 'M' THEN 5
-          WHEN 'S' THEN 6
-          WHEN 'XS' THEN 7
-          WHEN 'XXS' THEN 8 WHEN '2XS' THEN 8
+          WHEN 'XXS' THEN 1 WHEN '2XS' THEN 1
+          WHEN 'XS' THEN 2
+          WHEN 'S' THEN 3
+          WHEN 'M' THEN 4
+          WHEN 'L' THEN 5
+          WHEN 'XL' THEN 6
+          WHEN 'XXL' THEN 7 WHEN '2XL' THEN 7
+          WHEN 'XXXL' THEN 8 WHEN '3XL' THEN 8
           ELSE 50
         END,
-        p.size DESC
+        p.size ASC
     `, [id]);
 
     res.json({
@@ -361,19 +361,19 @@ router.get('/:id/family-groups', authenticateToken, async (req, res) => {
             CASE
               WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
               ELSE 0
-            END DESC,
+            END ASC,
             CASE p.size
-              WHEN 'XXXL' THEN 1 WHEN '3XL' THEN 1
-              WHEN 'XXL' THEN 2 WHEN '2XL' THEN 2
-              WHEN 'XL' THEN 3
-              WHEN 'L' THEN 4
-              WHEN 'M' THEN 5
-              WHEN 'S' THEN 6
-              WHEN 'XS' THEN 7
-              WHEN 'XXS' THEN 8 WHEN '2XS' THEN 8
+              WHEN 'XXS' THEN 1 WHEN '2XS' THEN 1
+              WHEN 'XS' THEN 2
+              WHEN 'S' THEN 3
+              WHEN 'M' THEN 4
+              WHEN 'L' THEN 5
+              WHEN 'XL' THEN 6
+              WHEN 'XXL' THEN 7 WHEN '2XL' THEN 7
+              WHEN 'XXXL' THEN 8 WHEN '3XL' THEN 8
               ELSE 50
             END,
-            p.size DESC
+            p.size ASC
         ) as items
       FROM order_items oi
       JOIN products p ON oi.product_id = p.id
