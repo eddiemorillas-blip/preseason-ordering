@@ -538,6 +538,7 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
           p.base_name,
           p.size,
           p.color,
+          p.inseam,
           p.name as product_name
         FROM order_items oi
         JOIN products p ON oi.product_id = p.id
@@ -561,7 +562,7 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
           const sizeMapping = familyMapping[sourceItem.size];
 
           if (sizeMapping) {
-            // Find product with same base_name, size, but different color
+            // Find product with same base_name, size, inseam but different color
             const targetColor = sizeMapping.to;
             const targetProductResult = await client.query(`
               SELECT id FROM products
@@ -569,6 +570,7 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
               AND brand_id = $2
               AND size = $3
               AND (color = $4 OR name ILIKE $5)
+              AND (inseam = $6 OR (inseam IS NULL AND $6 IS NULL))
               AND active = true
               LIMIT 1
             `, [
@@ -576,7 +578,8 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
               sourceOrder.brand_id,
               sourceItem.size,
               targetColor,
-              `%${targetColor}%`
+              `%${targetColor}%`,
+              sourceItem.inseam
             ]);
 
             if (targetProductResult.rows.length > 0) {
@@ -698,7 +701,8 @@ router.post('/:id/push-updates', authenticateToken, authorizeRoles('admin', 'buy
         oi.*,
         p.base_name,
         p.size,
-        p.color
+        p.color,
+        p.inseam
       FROM order_items oi
       JOIN products p ON oi.product_id = p.id
       WHERE oi.order_id = $1
@@ -738,16 +742,17 @@ router.post('/:id/push-updates', authenticateToken, authorizeRoles('admin', 'buy
           oi.*,
           p.base_name,
           p.size,
-          p.color
+          p.color,
+          p.inseam
         FROM order_items oi
         JOIN products p ON oi.product_id = p.id
         WHERE oi.order_id = $1
       `, [copy.id]);
 
-      // Create a map of copy items by base_name+size for easy lookup
+      // Create a map of copy items by base_name+size+inseam for easy lookup
       const copyItemMap = new Map();
       for (const item of copyItems.rows) {
-        const key = `${item.base_name}|${item.size}`;
+        const key = `${item.base_name}|${item.size}|${item.inseam || ''}`;
         copyItemMap.set(key, item);
       }
 
@@ -756,7 +761,7 @@ router.post('/:id/push-updates', authenticateToken, authorizeRoles('admin', 'buy
 
       // Process each source item
       for (const sourceItem of sourceItems.rows) {
-        const key = `${sourceItem.base_name}|${sourceItem.size}`;
+        const key = `${sourceItem.base_name}|${sourceItem.size}|${sourceItem.inseam || ''}`;
         const existingCopyItem = copyItemMap.get(key);
 
         if (existingCopyItem) {
@@ -774,12 +779,14 @@ router.post('/:id/push-updates', authenticateToken, authorizeRoles('admin', 'buy
           }
         } else {
           // Item doesn't exist in copy - find matching product for this location
-          // Try to find product with same base_name and size (may have different color)
+          // Try to find product with same base_name, size, and inseam (may have different color)
           const matchingProduct = await client.query(`
             SELECT id, wholesale_cost FROM products
-            WHERE base_name = $1 AND size = $2 AND brand_id = $3 AND active = true
+            WHERE base_name = $1 AND size = $2 AND brand_id = $3
+            AND (inseam = $4 OR (inseam IS NULL AND $4 IS NULL))
+            AND active = true
             LIMIT 1
-          `, [sourceItem.base_name, sourceItem.size, sourceOrder.rows[0].brand_id]);
+          `, [sourceItem.base_name, sourceItem.size, sourceOrder.rows[0].brand_id, sourceItem.inseam]);
 
           if (matchingProduct.rows.length > 0) {
             const product = matchingProduct.rows[0];
