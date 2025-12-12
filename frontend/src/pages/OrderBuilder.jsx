@@ -28,6 +28,9 @@ const OrderBuilder = () => {
   const [showPushUpdatesModal, setShowPushUpdatesModal] = useState(false);
   const [orderCopies, setOrderCopies] = useState([]);
   const [loadingCopies, setLoadingCopies] = useState(false);
+  const [editingShipDate, setEditingShipDate] = useState(false);
+  const [shipDateValue, setShipDateValue] = useState('');
+  const [savingShipDate, setSavingShipDate] = useState(false);
 
   useEffect(() => {
     fetchOrder();
@@ -66,6 +69,32 @@ const OrderBuilder = () => {
       console.error('Error updating status:', err);
       setError('Failed to update order status');
     }
+  };
+
+  const handleEditShipDate = () => {
+    // Format date for input (YYYY-MM-DD)
+    const currentDate = order.ship_date ? new Date(order.ship_date).toISOString().split('T')[0] : '';
+    setShipDateValue(currentDate);
+    setEditingShipDate(true);
+  };
+
+  const handleSaveShipDate = async () => {
+    try {
+      setSavingShipDate(true);
+      await api.patch(`/orders/${id}`, { ship_date: shipDateValue || null });
+      setOrder({ ...order, ship_date: shipDateValue || null });
+      setEditingShipDate(false);
+    } catch (err) {
+      console.error('Error updating ship date:', err);
+      setError('Failed to update ship date');
+    } finally {
+      setSavingShipDate(false);
+    }
+  };
+
+  const handleCancelShipDate = () => {
+    setEditingShipDate(false);
+    setShipDateValue('');
   };
 
   const handleDeleteOrder = async () => {
@@ -371,9 +400,46 @@ const OrderBuilder = () => {
               <div><strong>Season:</strong> {order.season_name}</div>
               <div><strong>Brand:</strong> {order.brand_name}</div>
               <div><strong>Location:</strong> {order.location_name} ({order.location_code})</div>
-              {order.ship_date && (
-                <div><strong>Ship Date:</strong> {new Date(order.ship_date).toLocaleDateString()}</div>
-              )}
+              <div className="flex items-center gap-2">
+                <strong>Ship Date:</strong>
+                {editingShipDate ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      value={shipDateValue}
+                      onChange={(e) => setShipDateValue(e.target.value)}
+                      className="px-2 py-1 border border-gray-300 rounded text-sm"
+                    />
+                    <button
+                      onClick={handleSaveShipDate}
+                      disabled={savingShipDate}
+                      className="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:bg-gray-400"
+                    >
+                      {savingShipDate ? 'Saving...' : 'Save'}
+                    </button>
+                    <button
+                      onClick={handleCancelShipDate}
+                      disabled={savingShipDate}
+                      className="px-2 py-1 bg-gray-300 text-gray-700 text-xs rounded hover:bg-gray-400"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <span
+                    onClick={(isAdmin || isBuyer) ? handleEditShipDate : undefined}
+                    className={(isAdmin || isBuyer) ? 'cursor-pointer hover:text-blue-600 hover:underline' : ''}
+                    title={(isAdmin || isBuyer) ? 'Click to edit' : ''}
+                  >
+                    {order.ship_date ? new Date(order.ship_date).toLocaleDateString() : 'Not set'}
+                    {(isAdmin || isBuyer) && (
+                      <svg className="w-3 h-3 inline ml-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                      </svg>
+                    )}
+                  </span>
+                )}
+              </div>
               {order.notes && (
                 <div><strong>Notes:</strong> {order.notes}</div>
               )}
