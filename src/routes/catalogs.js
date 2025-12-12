@@ -616,7 +616,7 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
 
         for (const product of batchProducts) {
           placeholders.push(
-            `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}, $${paramIndex + 12}, $${paramIndex + 13})`
+            `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14})`
           );
           values.push(
             product.brand_id,
@@ -632,15 +632,16 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
             product.gender,
             product.inseam,
             product.active,
-            seasonId || null
+            seasonId || null,
+            product.name // base_name defaults to product name for family grouping
           );
-          paramIndex += 14;
+          paramIndex += 15;
         }
 
         const batchQuery = `
           INSERT INTO products (
             brand_id, upc, sku, name, category, subcategory,
-            wholesale_cost, msrp, size, color, gender, inseam, active, season_id
+            wholesale_cost, msrp, size, color, gender, inseam, active, season_id, base_name
           ) VALUES ${placeholders.join(', ')}
           ON CONFLICT (upc) DO UPDATE SET
             brand_id = EXCLUDED.brand_id,
@@ -656,6 +657,7 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
             inseam = EXCLUDED.inseam,
             active = EXCLUDED.active,
             season_id = COALESCE(EXCLUDED.season_id, products.season_id),
+            base_name = COALESCE(EXCLUDED.base_name, products.base_name),
             updated_at = CURRENT_TIMESTAMP
         `;
 
