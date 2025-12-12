@@ -309,7 +309,23 @@ router.get('/:id', authenticateToken, async (req, res) => {
       FROM order_items oi
       JOIN products p ON oi.product_id = p.id
       WHERE oi.order_id = $1
-      ORDER BY p.base_name, p.name
+      ORDER BY p.base_name,
+        CASE
+          WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
+          ELSE 0
+        END DESC,
+        CASE p.size
+          WHEN 'XXXL' THEN 1 WHEN '3XL' THEN 1
+          WHEN 'XXL' THEN 2 WHEN '2XL' THEN 2
+          WHEN 'XL' THEN 3
+          WHEN 'L' THEN 4
+          WHEN 'M' THEN 5
+          WHEN 'S' THEN 6
+          WHEN 'XS' THEN 7
+          WHEN 'XXS' THEN 8 WHEN '2XS' THEN 8
+          ELSE 50
+        END,
+        p.size DESC
     `, [id]);
 
     res.json({
@@ -341,7 +357,23 @@ router.get('/:id/family-groups', authenticateToken, async (req, res) => {
             'quantity', oi.quantity,
             'unit_price', oi.unit_cost,
             'line_total', oi.line_total
-          ) ORDER BY p.size
+          ) ORDER BY
+            CASE
+              WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
+              ELSE 0
+            END DESC,
+            CASE p.size
+              WHEN 'XXXL' THEN 1 WHEN '3XL' THEN 1
+              WHEN 'XXL' THEN 2 WHEN '2XL' THEN 2
+              WHEN 'XL' THEN 3
+              WHEN 'L' THEN 4
+              WHEN 'M' THEN 5
+              WHEN 'S' THEN 6
+              WHEN 'XS' THEN 7
+              WHEN 'XXS' THEN 8 WHEN '2XS' THEN 8
+              ELSE 50
+            END,
+            p.size DESC
         ) as items
       FROM order_items oi
       JOIN products p ON oi.product_id = p.id
