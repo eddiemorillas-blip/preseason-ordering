@@ -81,8 +81,9 @@ const OrderBuilder = () => {
   const handleSaveShipDate = async () => {
     try {
       setSavingShipDate(true);
-      await api.patch(`/orders/${id}`, { ship_date: shipDateValue || null });
-      setOrder({ ...order, ship_date: shipDateValue || null });
+      const response = await api.patch(`/orders/${id}`, { ship_date: shipDateValue || null });
+      // Update order with response data (includes updated order_number if month changed)
+      setOrder({ ...order, ...response.data.order });
       setEditingShipDate(false);
     } catch (err) {
       console.error('Error updating ship date:', err);

@@ -9,7 +9,13 @@ const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', '
 // Generate readable order number: MAR26-PRA-SLC
 function generateOrderNumber(shipDate, brandCode, locationCode) {
   // Use ship date if provided, otherwise use current date
-  const date = shipDate ? new Date(shipDate) : new Date();
+  let date;
+  if (shipDate) {
+    // Parse date string as local date (add noon time to avoid timezone shifts)
+    date = new Date(shipDate + 'T12:00:00');
+  } else {
+    date = new Date();
+  }
   const month = MONTHS[date.getMonth()];
   const year = String(date.getFullYear()).slice(-2);
   return `${month}${year}-${brandCode}-${locationCode}`;
@@ -986,21 +992,50 @@ router.patch('/:id', authenticateToken, authorizeRoles('admin', 'buyer'), async 
     const { id } = req.params;
     const { ship_date, notes, status, budget_total } = req.body;
 
+    // Get current order to check if we need to update order_number
+    const currentOrder = await pool.query(
+      `SELECT o.*, b.code as brand_code, b.name as brand_name, l.code as location_code
+       FROM orders o
+       LEFT JOIN brands b ON o.brand_id = b.id
+       LEFT JOIN locations l ON o.location_id = l.id
+       WHERE o.id = $1`,
+      [id]
+    );
+
+    if (currentOrder.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = currentOrder.rows[0];
+    let newOrderNumber = order.order_number;
+
+    // Check if ship_date is being updated and would change the month/year in order number
+    if (ship_date !== undefined) {
+      const oldDate = order.ship_date ? new Date(order.ship_date) : null;
+      const newDate = ship_date ? new Date(ship_date + 'T12:00:00') : null; // Add noon time to avoid timezone issues
+
+      // If date changed and would affect the order number prefix
+      if (newDate && (!oldDate ||
+          oldDate.getMonth() !== newDate.getMonth() ||
+          oldDate.getFullYear() !== newDate.getFullYear())) {
+        const brandCode = order.brand_code || order.brand_name?.substring(0, 3).toUpperCase() || 'UNK';
+        const locationCode = order.location_code || 'UNK';
+        newOrderNumber = generateOrderNumber(ship_date, brandCode, locationCode);
+      }
+    }
+
     const result = await pool.query(
       `UPDATE orders
        SET ship_date = COALESCE($1, ship_date),
            notes = COALESCE($2, notes),
            status = COALESCE($3, status),
            budget_total = COALESCE($4, budget_total),
+           order_number = $5,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $5
+       WHERE id = $6
        RETURNING *`,
-      [ship_date, notes, status, budget_total, id]
+      [ship_date, notes, status, budget_total, newOrderNumber, id]
     );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
 
     res.json({
       message: 'Order updated successfully',
