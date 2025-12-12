@@ -298,6 +298,31 @@ router.post('/sync-all-schema', authenticateToken, authorizeRoles('admin'), asyn
   }
 });
 
+// Populate base_name for all products
+router.post('/populate-base-names', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    // Set base_name to the product name for all products where it's NULL
+    // This creates product families based on the product name
+    const result = await pool.query(`
+      UPDATE products
+      SET base_name = name
+      WHERE base_name IS NULL
+    `);
+
+    res.json({
+      success: true,
+      message: `Populated base_name for ${result.rowCount} products`
+    });
+  } catch (error) {
+    console.error('Populate base names error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to populate base names',
+      message: error.message
+    });
+  }
+});
+
 // Fix order items line_total for existing items
 router.post('/fix-order-item-totals', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
