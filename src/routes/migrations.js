@@ -207,7 +207,17 @@ router.post('/sync-all-schema', authenticateToken, authorizeRoles('admin'), asyn
     await pool.query(`ALTER TABLE order_items ADD COLUMN IF NOT EXISTS line_total DECIMAL(10, 2)`);
     results.push('order_items.line_total');
 
-    // 4. Orders table - current_total
+    // 4. Orders table - all columns needed
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id)`);
+    results.push('orders.season_id');
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand_id INTEGER REFERENCES brands(id)`);
+    results.push('orders.brand_id');
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_date DATE`);
+    results.push('orders.ship_date');
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(50) DEFAULT 'preseason'`);
+    results.push('orders.order_type');
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS budget_total DECIMAL(12, 2)`);
+    results.push('orders.budget_total');
     await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS current_total DECIMAL(10, 2) DEFAULT 0`);
     results.push('orders.current_total');
 
@@ -232,6 +242,8 @@ router.post('/sync-all-schema', authenticateToken, authorizeRoles('admin'), asyn
     results.push('products.active');
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id)`);
     results.push('products.season_id');
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS base_name VARCHAR(500)`);
+    results.push('products.base_name');
 
     // 6. Catalog uploads table
     await pool.query(`ALTER TABLE catalog_uploads ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id)`);
