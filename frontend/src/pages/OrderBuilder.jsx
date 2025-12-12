@@ -710,7 +710,6 @@ const OrderBuilder = () => {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                       </svg>
                       <h3 className="font-semibold text-gray-900">{group.baseName}</h3>
-                      <span className="px-2 py-0.5 bg-gray-100 text-gray-700 text-sm rounded">{group.color}</span>
                       {canEdit && editingFamilyColor?.familyName === group.baseName && editingFamilyColor?.currentColor === group.color ? (
                         <div className="flex items-center gap-2 ml-2" onClick={(e) => e.stopPropagation()}>
                           {loadingColors ? (
