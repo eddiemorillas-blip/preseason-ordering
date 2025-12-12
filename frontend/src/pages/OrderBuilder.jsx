@@ -111,19 +111,21 @@ const OrderBuilder = () => {
       await api.patch(`/orders/${id}/items/${itemId}`, { quantity });
 
       // Update local state
-      setItems(items.map(item =>
+      const updatedItems = items.map(item =>
         item.id === itemId
           ? { ...item, quantity, line_total: quantity * parseFloat(item.unit_price || 0) }
           : item
-      ));
+      );
+      setItems(updatedItems);
+
+      // Update order total locally
+      const newTotal = updatedItems.reduce((sum, item) => sum + parseFloat(item.line_total || 0), 0);
+      setOrder(prev => ({ ...prev, current_total: newTotal }));
 
       // Clear editing state for this item
       const newEditing = { ...editingQuantities };
       delete newEditing[itemId];
       setEditingQuantities(newEditing);
-
-      // Refresh order to get updated total
-      fetchOrder();
     } catch (err) {
       console.error('Error updating quantity:', err);
       setError(err.response?.data?.error || 'Failed to update quantity');
@@ -166,11 +168,13 @@ const OrderBuilder = () => {
       await api.delete(`/orders/${id}/items/${itemId}`);
 
       // Update local state
-      setItems(items.filter(item => item.id !== itemId));
+      const updatedItems = items.filter(item => item.id !== itemId);
+      setItems(updatedItems);
       setItemToDelete(null);
 
-      // Refresh order to get updated total
-      fetchOrder();
+      // Update order total locally
+      const newTotal = updatedItems.reduce((sum, item) => sum + parseFloat(item.line_total || 0), 0);
+      setOrder(prev => ({ ...prev, current_total: newTotal }));
     } catch (err) {
       console.error('Error deleting item:', err);
       setError(err.response?.data?.error || 'Failed to remove item');
@@ -198,11 +202,13 @@ const OrderBuilder = () => {
 
       // Update local state
       const deletedIds = new Set(familyToDelete.items.map(i => i.id));
-      setItems(items.filter(item => !deletedIds.has(item.id)));
+      const updatedItems = items.filter(item => !deletedIds.has(item.id));
+      setItems(updatedItems);
       setFamilyToDelete(null);
 
-      // Refresh order to get updated total
-      fetchOrder();
+      // Update order total locally
+      const newTotal = updatedItems.reduce((sum, item) => sum + parseFloat(item.line_total || 0), 0);
+      setOrder(prev => ({ ...prev, current_total: newTotal }));
     } catch (err) {
       console.error('Error deleting family:', err);
       setError(err.response?.data?.error || 'Failed to remove product family');
