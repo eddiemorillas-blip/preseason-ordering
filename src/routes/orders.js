@@ -309,7 +309,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
       FROM order_items oi
       JOIN products p ON oi.product_id = p.id
       WHERE oi.order_id = $1
-      ORDER BY p.base_name,
+      ORDER BY p.base_name, p.color,
         CASE
           WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
           ELSE 0
