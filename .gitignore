@@ -33,8 +33,9 @@ coverage/
 .nyc_output/
 
 # Build
-dist/
 build/
+# Keep frontend/dist for deployment
+!frontend/dist/
 
 # Temporary files
 tmp/
