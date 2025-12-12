@@ -387,10 +387,10 @@ router.post('/:id/items', authenticateToken, authorizeRoles('admin', 'buyer'), a
 
       // Insert order item
       const itemResult = await client.query(
-        `INSERT INTO order_items (order_id, product_id, quantity, unit_cost, notes)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO order_items (order_id, product_id, quantity, unit_cost, line_total, notes)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *`,
-        [id, product_id, quantity, price, notes || null]
+        [id, product_id, quantity, price, lineTotal, notes || null]
       );
 
       // Update order total
@@ -637,15 +637,22 @@ router.patch('/:orderId/items/:itemId', authenticateToken, authorizeRoles('admin
 
     await client.query('BEGIN');
 
+    // Get current item to calculate line_total
+    const currentItem = itemResult.rows[0];
+    const newQuantity = quantity !== undefined ? quantity : currentItem.quantity;
+    const newUnitCost = unit_price !== undefined ? unit_price : currentItem.unit_cost;
+    const newLineTotal = parseFloat(newUnitCost || 0) * parseInt(newQuantity || 0);
+
     // Update the item
     const updateResult = await client.query(
       `UPDATE order_items
        SET quantity = COALESCE($1, quantity),
            unit_cost = COALESCE($2, unit_cost),
-           notes = COALESCE($3, notes)
-       WHERE id = $4
+           line_total = $3,
+           notes = COALESCE($4, notes)
+       WHERE id = $5
        RETURNING *`,
-      [quantity, unit_price, notes, itemId]
+      [quantity, unit_price, newLineTotal, notes, itemId]
     );
 
     // Update order total
