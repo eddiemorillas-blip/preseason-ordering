@@ -13,6 +13,8 @@ import OrderBuilder from './pages/OrderBuilder';
 import AddProducts from './pages/AddProducts';
 import SalesDataUpload from './pages/SalesDataUpload';
 import OrderSuggestions from './pages/OrderSuggestions';
+import SeasonPriceComparison from './pages/SeasonPriceComparison';
+import PriceHistory from './pages/PriceHistory';
 import Help from './pages/Help';
 
 function App() {
@@ -85,6 +87,14 @@ function App() {
             }
           />
           <Route
+            path="/add-products"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <AddProducts />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/sales-data-upload"
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
@@ -97,6 +107,22 @@ function App() {
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <OrderSuggestions />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/prices/compare"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <SeasonPriceComparison />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/prices/history"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <PriceHistory />
               </ProtectedRoute>
             }
           />

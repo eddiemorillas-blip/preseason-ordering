@@ -348,6 +348,27 @@ const OrderBuilder = () => {
     }
   };
 
+  // Navigate to add products page with this order + all related copies
+  const handleAddProductsToMultiple = async () => {
+    setLoadingCopies(true);
+    setError('');
+    try {
+      const response = await api.get(`/orders/${id}/copies`);
+      const copies = response.data.copies || [];
+
+      // Build list of all order IDs (this order + copies)
+      const allOrderIds = [parseInt(id), ...copies.map(c => c.id)];
+
+      // Navigate to add-products with orderIds as query param
+      navigate(`/add-products?orderIds=${allOrderIds.join(',')}&brandId=${order.brand_id}`);
+    } catch (err) {
+      console.error('Error fetching copies:', err);
+      setError('Failed to load related orders');
+    } finally {
+      setLoadingCopies(false);
+    }
+  };
+
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -645,6 +666,14 @@ const OrderBuilder = () => {
                   className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
                 >
                   + Add Products
+                </button>
+                <button
+                  onClick={handleAddProductsToMultiple}
+                  disabled={loadingCopies}
+                  className="px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700 disabled:bg-gray-400"
+                  title="Add products to this order and related ship dates"
+                >
+                  {loadingCopies ? 'Loading...' : '+ Add to All Ships'}
                 </button>
                 <button
                   onClick={() => setShowCopyOrderModal(true)}

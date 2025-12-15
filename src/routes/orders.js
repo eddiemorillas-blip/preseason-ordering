@@ -238,11 +238,42 @@ router.post('/', authenticateToken, authorizeRoles('admin', 'buyer'), async (req
       pool.query('SELECT code FROM locations WHERE id = $1', [location_id])
     ]);
 
-    const brandCode = brandResult.rows[0]?.code || brandResult.rows[0]?.name?.substring(0, 3).toUpperCase() || 'UNK';
+    // Generate brand code - use code if set, otherwise first 3 letters of first word (trimmed, no spaces)
+    let brandCode = brandResult.rows[0]?.code;
+    if (!brandCode) {
+      const brandName = brandResult.rows[0]?.name || 'UNK';
+      // Get first word only, trim, take first 3 chars, uppercase, remove any non-alphanumeric
+      brandCode = brandName.split(' ')[0].trim().substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!brandCode) brandCode = 'UNK';
+    }
     const locationCode = locationResult.rows[0]?.code || 'UNK';
 
-    // Generate order number
-    const orderNumber = generateOrderNumber(ship_date, brandCode, locationCode);
+    // Generate order number with uniqueness handling
+    let orderNumber = generateOrderNumber(ship_date, brandCode, locationCode);
+
+    // Check if order number already exists, if so append a counter
+    const existingOrders = await pool.query(
+      'SELECT order_number FROM orders WHERE order_number LIKE $1 ORDER BY order_number DESC',
+      [orderNumber + '%']
+    );
+
+    if (existingOrders.rows.length > 0) {
+      // Find the highest counter suffix
+      let maxCounter = 0;
+      for (const row of existingOrders.rows) {
+        if (row.order_number === orderNumber) {
+          maxCounter = Math.max(maxCounter, 1);
+        } else {
+          const match = row.order_number.match(new RegExp(`^${orderNumber.replace(/[-]/g, '\\-')}-(\\d+)$`));
+          if (match) {
+            maxCounter = Math.max(maxCounter, parseInt(match[1], 10));
+          }
+        }
+      }
+      if (maxCounter > 0) {
+        orderNumber = `${orderNumber}-${maxCounter + 1}`;
+      }
+    }
 
     const result = await pool.query(
       `INSERT INTO orders (
@@ -508,12 +539,42 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
         client.query('SELECT code FROM locations WHERE id = $1', [targetLocationId])
       ]);
 
-      const brandCode = brandResult.rows[0]?.code || brandResult.rows[0]?.name?.substring(0, 3).toUpperCase() || 'UNK';
+      // Generate brand code - use code if set, otherwise first 3 letters of first word (trimmed, no spaces)
+      let brandCode = brandResult.rows[0]?.code;
+      if (!brandCode) {
+        const brandName = brandResult.rows[0]?.name || 'UNK';
+        brandCode = brandName.split(' ')[0].trim().substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (!brandCode) brandCode = 'UNK';
+      }
       const locationCode = locationResult.rows[0]?.code || 'UNK';
 
       // Create new order
       const effectiveShipDate = shipDate || sourceOrder.ship_date;
-      const newOrderNumber = generateOrderNumber(effectiveShipDate, brandCode, locationCode);
+      let newOrderNumber = generateOrderNumber(effectiveShipDate, brandCode, locationCode);
+
+      // Check if order number already exists, if so append a counter
+      const existingOrders = await client.query(
+        'SELECT order_number FROM orders WHERE order_number LIKE $1 ORDER BY order_number DESC',
+        [newOrderNumber + '%']
+      );
+
+      if (existingOrders.rows.length > 0) {
+        let maxCounter = 0;
+        for (const row of existingOrders.rows) {
+          if (row.order_number === newOrderNumber) {
+            maxCounter = Math.max(maxCounter, 1);
+          } else {
+            const match = row.order_number.match(new RegExp(`^${newOrderNumber.replace(/[-]/g, '\\-')}-(\\d+)$`));
+            if (match) {
+              maxCounter = Math.max(maxCounter, parseInt(match[1], 10));
+            }
+          }
+        }
+        if (maxCounter > 0) {
+          newOrderNumber = `${newOrderNumber}-${maxCounter + 1}`;
+        }
+      }
+
       const newOrderResult = await client.query(
         `INSERT INTO orders (
           order_number,

@@ -71,22 +71,46 @@ router.get('/', authenticateToken, async (req, res) => {
 });
 
 // Fuzzy search products (all authenticated users) or get all products
+// Supports optional seasonId parameter to return season-specific prices
 router.get('/search', authenticateToken, async (req, res) => {
   try {
-    const { q, brandId, limit = 50, offset = 0 } = req.query;
+    const { q, brandId, seasonId, limit = 50, offset = 0 } = req.query;
 
-    // Build query with optional brand filter
+    // Build query with optional brand filter and season-specific pricing
+    let priceSelect = 'p.wholesale_cost, p.msrp';
+    let priceJoin = '';
+    const params = [];
+    let paramIndex = 1;
+
+    if (seasonId) {
+      // Join with season_prices to get season-specific pricing
+      priceSelect = `
+        COALESCE(sp.wholesale_cost, p.wholesale_cost) as wholesale_cost,
+        COALESCE(sp.msrp, p.msrp) as msrp,
+        sp.wholesale_cost as season_wholesale_cost,
+        sp.msrp as season_msrp,
+        CASE WHEN sp.id IS NOT NULL THEN true ELSE false END as has_season_price
+      `;
+      priceJoin = `LEFT JOIN season_prices sp ON p.id = sp.product_id AND sp.season_id = $${paramIndex}`;
+      params.push(seasonId);
+      paramIndex++;
+    }
+
     let query = `
-      SELECT p.*, b.name as brand_name
+      SELECT p.id, p.brand_id, p.upc, p.sku, p.name, p.base_name, p.category, p.subcategory,
+             p.gender, p.size, p.color, p.inseam, p.active, p.season_id, p.created_at, p.updated_at,
+             ${priceSelect},
+             b.name as brand_name
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
+      ${priceJoin}
       WHERE p.active = true
     `;
-    const params = [];
 
     if (brandId) {
-      query += ` AND p.brand_id = $1`;
+      query += ` AND p.brand_id = $${paramIndex}`;
       params.push(brandId);
+      paramIndex++;
     }
 
     query += ' ORDER BY p.created_at DESC';

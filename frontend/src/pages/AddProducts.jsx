@@ -18,7 +18,14 @@ const AddProducts = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
+  // Multi-order mode: get orderIds from query params (comma-separated)
+  const multiOrderIds = searchParams.get('orderIds')?.split(',').map(id => parseInt(id)).filter(Boolean) || [];
+  const isMultiOrderMode = multiOrderIds.length > 0;
+  const brandIdFromParams = searchParams.get('brandId');
+
   const [order, setOrder] = useState(null);
+  const [multiOrders, setMultiOrders] = useState([]); // For multi-order mode
+  const [selectedOrderIds, setSelectedOrderIds] = useState(new Set(multiOrderIds)); // Which orders to add to
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -52,19 +59,34 @@ const AddProducts = () => {
 
   useEffect(() => {
     fetchData();
-  }, [orderId]);
+  }, [orderId, isMultiOrderMode]);
 
   const fetchData = async () => {
     try {
       setLoading(true);
 
-      // Fetch order details
-      const orderRes = await api.get(`/orders/${orderId}`);
-      setOrder(orderRes.data.order);
+      if (isMultiOrderMode) {
+        // Multi-order mode: fetch all orders and use brandId from params
+        const orderPromises = multiOrderIds.map(id => api.get(`/orders/${id}`));
+        const orderResponses = await Promise.all(orderPromises);
+        const orders = orderResponses.map(res => res.data.order);
+        setMultiOrders(orders);
 
-      // Fetch all products for the brand
-      const productsRes = await api.get(`/products/search?brandId=${orderRes.data.order.brand_id}&limit=10000`);
-      setProducts(productsRes.data.products || []);
+        // Use the first order's brand or the brandId from params
+        const brandId = brandIdFromParams || orders[0]?.brand_id;
+        if (brandId) {
+          const productsRes = await api.get(`/products/search?brandId=${brandId}&limit=10000`);
+          setProducts(productsRes.data.products || []);
+        }
+      } else {
+        // Single order mode
+        const orderRes = await api.get(`/orders/${orderId}`);
+        setOrder(orderRes.data.order);
+
+        // Fetch all products for the brand
+        const productsRes = await api.get(`/products/search?brandId=${orderRes.data.order.brand_id}&limit=10000`);
+        setProducts(productsRes.data.products || []);
+      }
 
     } catch (err) {
       console.error('Error fetching data:', err);
@@ -349,6 +371,19 @@ const AddProducts = () => {
     setQuantities(prev => ({ ...prev, ...newQuantities }));
   };
 
+  // Toggle order selection in multi-order mode
+  const toggleOrderSelection = (orderId) => {
+    setSelectedOrderIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(orderId)) {
+        newSet.delete(orderId);
+      } else {
+        newSet.add(orderId);
+      }
+      return newSet;
+    });
+  };
+
   const handleAddProducts = async () => {
     try {
       setSaving(true);
@@ -367,13 +402,61 @@ const AddProducts = () => {
         return;
       }
 
-      // Add each product to the order
-      for (const product of productsToAdd) {
-        await api.post(`/orders/${orderId}/items`, product);
-      }
+      if (isMultiOrderMode) {
+        // Multi-order mode: distribute quantities across selected orders
+        const targetOrderIds = Array.from(selectedOrderIds);
+        if (targetOrderIds.length === 0) {
+          setError('Please select at least one order');
+          setSaving(false);
+          return;
+        }
 
-      // Clear quantities and stay on page
-      setQuantities({});
+        const numOrders = targetOrderIds.length;
+
+        // For each product, distribute quantity across orders (round-robin)
+        for (let i = 0; i < productsToAdd.length; i++) {
+          const product = productsToAdd[i];
+          const totalQty = product.quantity;
+
+          // Calculate splits for this product
+          const splits = Array(numOrders).fill(0);
+          const startOffset = i % numOrders; // Round-robin offset for balance
+
+          for (let unit = 0; unit < totalQty; unit++) {
+            const orderIndex = (startOffset + unit) % numOrders;
+            splits[orderIndex]++;
+          }
+
+          // Add to each order
+          for (let j = 0; j < numOrders; j++) {
+            const qtyForOrder = splits[j];
+            if (qtyForOrder > 0) {
+              await api.post(`/orders/${targetOrderIds[j]}/items`, {
+                product_id: product.product_id,
+                quantity: qtyForOrder
+              });
+            }
+          }
+        }
+
+        // Clear quantities and navigate back
+        setQuantities({});
+        // Navigate to the first order or season
+        const firstOrder = multiOrders.find(o => selectedOrderIds.has(o.id));
+        if (firstOrder?.season_id) {
+          navigate(`/seasons/${firstOrder.season_id}`);
+        } else {
+          navigate('/orders');
+        }
+      } else {
+        // Single order mode
+        for (const product of productsToAdd) {
+          await api.post(`/orders/${orderId}/items`, product);
+        }
+
+        // Clear quantities and stay on page
+        setQuantities({});
+      }
     } catch (err) {
       console.error('Error adding products:', err);
       setError(err.response?.data?.error || 'Failed to add products');
@@ -399,7 +482,7 @@ const AddProducts = () => {
     );
   }
 
-  if (!order) {
+  if (!isMultiOrderMode && !order) {
     return (
       <Layout>
         <div className="text-center py-12">
@@ -415,6 +498,13 @@ const AddProducts = () => {
     );
   }
 
+  // Helper to format ship date
+  const formatShipDate = (dateStr) => {
+    if (!dateStr) return 'No date';
+    const d = new Date(dateStr + 'T12:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
   return (
     <Layout>
       <div className="space-y-4">
@@ -422,30 +512,69 @@ const AddProducts = () => {
         <div className="flex justify-between items-start">
           <div>
             <button
-              onClick={() => navigate(`/orders/${orderId}`)}
+              onClick={() => isMultiOrderMode ? navigate(-1) : navigate(`/orders/${orderId}`)}
               className="text-sm text-blue-600 hover:text-blue-800 mb-2"
             >
-              &larr; Back to Order
+              &larr; {isMultiOrderMode ? 'Back' : 'Back to Order'}
             </button>
-            <h1 className="text-2xl font-bold text-gray-900">Add Products</h1>
-            <p className="text-sm text-gray-600 mt-1">
-              Order: {order.order_number} &bull; {order.brand_name} &bull; {order.location_name}
-            </p>
+            <h1 className="text-2xl font-bold text-gray-900">
+              {isMultiOrderMode ? 'Add Products to Orders' : 'Add Products'}
+            </h1>
+            {isMultiOrderMode ? (
+              <p className="text-sm text-gray-600 mt-1">
+                {multiOrders[0]?.brand_name} &bull; {multiOrders[0]?.location_name} &bull; {multiOrders.length} orders
+              </p>
+            ) : (
+              <p className="text-sm text-gray-600 mt-1">
+                Order: {order.order_number} &bull; {order.brand_name} &bull; {order.location_name}
+              </p>
+            )}
           </div>
           <div className="flex items-center space-x-4">
             <div className="text-right">
               <div className="text-sm text-gray-600">Products selected: <span className="font-semibold">{productsWithQuantity}</span></div>
               <div className="text-sm text-gray-600">Total units: <span className="font-semibold">{totalQuantity}</span></div>
+              {isMultiOrderMode && selectedOrderIds.size > 0 && (
+                <div className="text-sm text-gray-600">Per order: ~<span className="font-semibold">{Math.floor(totalQuantity / selectedOrderIds.size)}</span> units</div>
+              )}
             </div>
             <button
               onClick={handleAddProducts}
-              disabled={saving || productsWithQuantity === 0}
+              disabled={saving || productsWithQuantity === 0 || (isMultiOrderMode && selectedOrderIds.size === 0)}
               className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
             >
-              {saving ? 'Adding...' : `Add ${productsWithQuantity} Products`}
+              {saving ? 'Adding...' : isMultiOrderMode ? `Add to ${selectedOrderIds.size} Orders` : `Add ${productsWithQuantity} Products`}
             </button>
           </div>
         </div>
+
+        {/* Order Selection for Multi-Order Mode */}
+        {isMultiOrderMode && multiOrders.length > 0 && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <h3 className="text-sm font-medium text-blue-900 mb-2">Select orders to add products to:</h3>
+            <div className="flex flex-wrap gap-2">
+              {multiOrders.map((o, idx) => (
+                <button
+                  key={o.id}
+                  onClick={() => toggleOrderSelection(o.id)}
+                  className={`px-3 py-2 rounded-md border text-sm ${
+                    selectedOrderIds.has(o.id)
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:border-blue-500'
+                  }`}
+                >
+                  Ship {idx + 1}
+                  <span className="ml-1 opacity-75">
+                    ({formatShipDate(o.ship_date)})
+                  </span>
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-blue-700 mt-2">
+              Quantities will be split evenly across selected orders using round-robin distribution
+            </p>
+          </div>
+        )}
 
         {/* Error */}
         {error && (

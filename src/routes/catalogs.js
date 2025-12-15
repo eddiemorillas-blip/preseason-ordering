@@ -666,9 +666,72 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
       }
 
       console.log(`Batch upsert complete: ${productsAdded} added, ${productsUpdated} updated`);
+
+      // Step 3b: If seasonId is provided, insert/update prices in season_prices table
+      if (seasonId) {
+        console.log(`Writing prices to season_prices for season ${seasonId}...`);
+
+        // Get all products we just upserted (by UPC) to get their IDs and current prices
+        const upcList = deduplicatedProducts.map(p => p.upc);
+
+        // Process in batches for the price inserts too
+        const PRICE_BATCH_SIZE = 1000;
+        for (let i = 0; i < upcList.length; i += PRICE_BATCH_SIZE) {
+          const batchUpcs = upcList.slice(i, i + PRICE_BATCH_SIZE);
+
+          // Get product IDs and their new prices
+          const productsResult = await client.query(`
+            SELECT id, upc, wholesale_cost, msrp FROM products WHERE upc = ANY($1)
+          `, [batchUpcs]);
+
+          if (productsResult.rows.length > 0) {
+            // Build season_prices upsert
+            const priceValues = [];
+            const pricePlaceholders = [];
+            let priceParamIndex = 1;
+
+            for (const prod of productsResult.rows) {
+              pricePlaceholders.push(
+                `($${priceParamIndex}, $${priceParamIndex + 1}, $${priceParamIndex + 2}, $${priceParamIndex + 3})`
+              );
+              priceValues.push(prod.id, seasonId, prod.wholesale_cost, prod.msrp);
+              priceParamIndex += 4;
+            }
+
+            // Upsert season prices
+            await client.query(`
+              INSERT INTO season_prices (product_id, season_id, wholesale_cost, msrp)
+              VALUES ${pricePlaceholders.join(', ')}
+              ON CONFLICT (product_id, season_id) DO UPDATE SET
+                wholesale_cost = EXCLUDED.wholesale_cost,
+                msrp = EXCLUDED.msrp,
+                updated_at = CURRENT_TIMESTAMP
+            `, priceValues);
+
+            // Record price history for audit trail
+            const historyValues = [];
+            const historyPlaceholders = [];
+            let historyParamIndex = 1;
+
+            for (const prod of productsResult.rows) {
+              historyPlaceholders.push(
+                `($${historyParamIndex}, $${historyParamIndex + 1}, $${historyParamIndex + 2}, $${historyParamIndex + 3}, $${historyParamIndex + 4})`
+              );
+              historyValues.push(prod.id, seasonId, prod.wholesale_cost, prod.msrp, 'catalog_upload');
+              historyParamIndex += 5;
+            }
+
+            await client.query(`
+              INSERT INTO price_history (product_id, season_id, new_wholesale_cost, new_msrp, change_reason)
+              VALUES ${historyPlaceholders.join(', ')}
+            `, historyValues);
+          }
+        }
+        console.log(`Season prices written for ${upcList.length} products`);
+      }
     }
 
-    // Step 3: Log the upload
+    // Step 4: Log the upload
     const uploadStatus = errors.length > 0 ? 'completed_with_errors' : 'completed';
     await client.query(
       `INSERT INTO catalog_uploads (

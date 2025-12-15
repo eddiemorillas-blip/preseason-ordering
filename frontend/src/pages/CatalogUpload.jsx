@@ -605,24 +605,32 @@ const CatalogUpload = () => {
           {/* Season Selection */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Season (Optional)
+              Season <span className="text-blue-600">(Recommended)</span>
             </label>
             <select
               value={selectedSeason}
               onChange={(e) => setSelectedSeason(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className={`w-full px-4 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                !selectedSeason ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+              }`}
               disabled={uploading}
             >
-              <option value="">No season selected</option>
+              <option value="">Select a season...</option>
               {seasons.map((season) => (
                 <option key={season.id} value={season.id}>
                   {season.name}
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-xs text-gray-500">
-              Optionally associate this catalog with a specific season
-            </p>
+            {selectedSeason ? (
+              <p className="mt-1 text-xs text-green-600">
+                Prices will be saved for this season. You can compare prices across seasons later.
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-yellow-700">
+                Select a season to enable price tracking and comparison across seasons.
+              </p>
+            )}
           </div>
 
           {/* File Upload Area */}

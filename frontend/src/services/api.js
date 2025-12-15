@@ -102,6 +102,22 @@ export const orderAPI = {
   getFamilyGroups: (orderId) => api.get(`/orders/${orderId}/family-groups`),
 };
 
+// Price API calls (seasonal pricing)
+export const priceAPI = {
+  compare: (season1, season2, brandId) => api.get('/prices/compare', {
+    params: { season1, season2, ...(brandId && { brandId }) }
+  }),
+  getProductHistory: (productId) => api.get(`/prices/product/${productId}/history`),
+  getSeasonPrices: (seasonId, params) => api.get(`/prices/season/${seasonId}`, { params }),
+  getCarryover: (seasonId, brandId) => api.get(`/prices/carryover/${seasonId}`, {
+    params: brandId ? { brandId } : {}
+  }),
+  getSeasonsWithPrices: (brandId) => api.get('/prices/seasons-with-prices', {
+    params: brandId ? { brandId } : {}
+  }),
+  update: (priceData) => api.post('/prices', priceData),
+};
+
 // Brand Template API calls
 export const brandTemplateAPI = {
   getAll: (brandId) => api.get('/brand-templates', { params: brandId ? { brandId } : {} }),
