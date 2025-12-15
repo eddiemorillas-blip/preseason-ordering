@@ -54,6 +54,28 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Debug endpoint to check database tables
+app.get('/api/debug/tables', async (req, res) => {
+  const pool = require('./config/database');
+  try {
+    const tables = await pool.query(`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public'
+      ORDER BY table_name
+    `);
+    const seasonPricesCount = await pool.query('SELECT COUNT(*) as cnt FROM season_prices').catch(() => ({ rows: [{ cnt: 'error' }] }));
+    const seasonsCount = await pool.query('SELECT COUNT(*) as cnt FROM seasons').catch(() => ({ rows: [{ cnt: 'error' }] }));
+    res.json({
+      tables: tables.rows.map(r => r.table_name),
+      season_prices_count: seasonPricesCount.rows[0].cnt,
+      seasons_count: seasonsCount.rows[0].cnt,
+      db_url_set: !!process.env.DATABASE_URL
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/brands', brandsRoutes);
