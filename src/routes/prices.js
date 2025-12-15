@@ -3,6 +3,29 @@ const router = express.Router();
 const pool = require('../config/database');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
+// Ensure price_history table exists (auto-create if missing)
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS price_history (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        season_id INTEGER REFERENCES seasons(id) ON DELETE SET NULL,
+        old_wholesale_cost DECIMAL(10, 2),
+        new_wholesale_cost DECIMAL(10, 2),
+        old_msrp DECIMAL(10, 2),
+        new_msrp DECIMAL(10, 2),
+        change_reason VARCHAR(255),
+        changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_price_history_product_id ON price_history(product_id)');
+    console.log('price_history table verified/created');
+  } catch (err) {
+    console.error('Error creating price_history table:', err.message);
+  }
+})();
+
 // GET /api/prices/compare - Side-by-side price comparison between two seasons
 router.get('/compare', authenticateToken, async (req, res) => {
   try {
