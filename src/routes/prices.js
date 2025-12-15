@@ -427,3 +427,4 @@ router.get('/seasons-with-prices', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
+// Trigger redeploy - Mon Dec 15 14:39:59 MST 2025
