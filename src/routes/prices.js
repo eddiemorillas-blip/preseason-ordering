@@ -95,7 +95,10 @@ router.get('/compare', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Compare prices error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    });
   }
 });
 
@@ -148,7 +151,10 @@ router.get('/product/:productId/history', authenticateToken, async (req, res) =>
     });
   } catch (error) {
     console.error('Get product price history error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    });
   }
 });
 
@@ -231,7 +237,10 @@ router.get('/carryover/:seasonId', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get carryover products error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    });
   }
 });
 
@@ -304,7 +313,10 @@ router.get('/season/:seasonId', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get season prices error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    });
   }
 });
 
@@ -368,7 +380,10 @@ router.post('/', authenticateToken, authorizeRoles('admin', 'buyer'), async (req
     }
   } catch (error) {
     console.error('Create/update price error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    });
   }
 });
 
@@ -404,7 +419,10 @@ router.get('/seasons-with-prices', authenticateToken, async (req, res) => {
     res.json({ seasons: result.rows });
   } catch (error) {
     console.error('Get seasons with prices error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({
+      error: 'Internal server error',
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
+    });
   }
 });
 
