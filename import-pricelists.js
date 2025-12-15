@@ -1,8 +1,9 @@
 const XLSX = require('xlsx');
 const { Pool } = require('pg');
+require('dotenv').config();
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:lbjrVtcycGRpLVONnCjzJStVejGHEDuB@gondola.proxy.rlwy.net:33630/railway'
+  connectionString: process.env.DATABASE_URL
 });
 
 const EXCEL_FILE = '/mnt/c/Users/EddieMorillas/The Front Climbing Club/Retail - Documents/Buying/Best Retail Workbooks Ever/Best Retail Workbook Ever.xlsm';
