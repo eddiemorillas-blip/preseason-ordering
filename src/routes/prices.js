@@ -3,9 +3,27 @@ const router = express.Router();
 const pool = require('../config/database');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 
-// Ensure price_history table exists (auto-create if missing)
+// Ensure pricing tables exist (auto-create if missing)
 (async () => {
   try {
+    // Create season_prices table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS season_prices (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        season_id INTEGER NOT NULL REFERENCES seasons(id) ON DELETE CASCADE,
+        wholesale_cost DECIMAL(10, 2),
+        msrp DECIMAL(10, 2),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(product_id, season_id)
+      )
+    `);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_season_prices_product_id ON season_prices(product_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_season_prices_season_id ON season_prices(season_id)');
+    console.log('season_prices table verified/created');
+
+    // Create price_history table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS price_history (
         id SERIAL PRIMARY KEY,
@@ -22,7 +40,7 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_price_history_product_id ON price_history(product_id)');
     console.log('price_history table verified/created');
   } catch (err) {
-    console.error('Error creating price_history table:', err.message);
+    console.error('Error creating pricing tables:', err.message);
   }
 })();
 
