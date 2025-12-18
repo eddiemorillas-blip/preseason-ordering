@@ -321,103 +321,85 @@ const OrderAdjustment = () => {
         {/* Inventory Table */}
         {!loading && inventory.length > 0 && (
           <div className="bg-white shadow rounded-lg overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Product
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      SKU / UPC
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Size
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Color
-                    </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Original Qty
-                    </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Adjusted Qty
-                    </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Unit Cost
-                    </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Line Total
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Order
-                    </th>
+            <table className="w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                    Product
+                  </th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                    Size
+                  </th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                    Color
+                  </th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">
+                    Orig
+                  </th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">
+                    Adj
+                  </th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">
+                    Cost
+                  </th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">
+                    Total
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {inventory.map((item) => (
+                  <tr key={item.item_id} className={`hover:bg-gray-50 ${hasAdjustment(item) ? 'bg-blue-50' : ''}`}>
+                    <td className="px-2 py-1.5">
+                      <div className="font-medium text-gray-900 truncate max-w-[200px]" title={item.base_name || item.product_name}>
+                        {item.base_name || item.product_name}
+                      </div>
+                    </td>
+                    <td className="px-2 py-1.5 text-gray-900">
+                      {item.size || '-'}{item.inseam && `/${item.inseam}`}
+                    </td>
+                    <td className="px-2 py-1.5 text-gray-700 truncate max-w-[100px]" title={item.color}>
+                      {item.color || '-'}
+                    </td>
+                    <td className="px-2 py-1.5 text-center text-gray-500">
+                      {item.original_quantity}
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      {editingItemId === item.item_id ? (
+                        <input
+                          type="number"
+                          min="0"
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          onBlur={() => handleEditSave(item)}
+                          onKeyDown={(e) => handleKeyDown(e, item)}
+                          className="w-14 px-1 py-0.5 text-center border border-blue-500 rounded text-sm"
+                          autoFocus
+                          disabled={saving}
+                        />
+                      ) : (
+                        <button
+                          onClick={() => handleEditClick(item)}
+                          className={`px-2 py-0.5 rounded font-medium ${
+                            hasAdjustment(item)
+                              ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          {getEffectiveQuantity(item)}
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-right text-gray-900">
+                      {formatPrice(item.unit_cost)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-medium text-gray-900">
+                      {formatPrice(parseFloat(item.unit_cost || 0) * getEffectiveQuantity(item))}
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {inventory.map((item) => (
-                    <tr key={item.item_id} className={`hover:bg-gray-50 ${hasAdjustment(item) ? 'bg-blue-50' : ''}`}>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-gray-900">{item.base_name || item.product_name}</div>
-                        {item.base_name && item.product_name !== item.base_name && (
-                          <div className="text-xs text-gray-500">{item.product_name}</div>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">{item.sku || '-'}</div>
-                        <div className="text-xs text-gray-500">{item.upc || '-'}</div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {item.size || '-'}
-                        {item.inseam && <span className="text-gray-500"> / {item.inseam}</span>}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {item.color || '-'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-center">
-                        <span className="text-sm text-gray-500">{item.original_quantity}</span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-center">
-                        {editingItemId === item.item_id ? (
-                          <input
-                            type="number"
-                            min="0"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => handleEditSave(item)}
-                            onKeyDown={(e) => handleKeyDown(e, item)}
-                            className="w-20 px-2 py-1 text-center border border-blue-500 rounded focus:ring-2 focus:ring-blue-500"
-                            autoFocus
-                            disabled={saving}
-                          />
-                        ) : (
-                          <button
-                            onClick={() => handleEditClick(item)}
-                            className={`px-3 py-1 rounded text-sm font-medium ${
-                              hasAdjustment(item)
-                                ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                            }`}
-                          >
-                            {getEffectiveQuantity(item)}
-                          </button>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900">
-                        {formatPrice(item.unit_cost)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium text-gray-900">
-                        {formatPrice(parseFloat(item.unit_cost || 0) * getEffectiveQuantity(item))}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">{item.order_number}</div>
-                        <div className="text-xs text-gray-500">{item.order_status}</div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
