@@ -144,6 +144,109 @@ router.get('/product-breakdown', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/orders/inventory - Get inventory view for order adjustment
+router.get('/inventory', authenticateToken, async (req, res) => {
+  try {
+    const { seasonId, brandId, locationId } = req.query;
+
+    if (!seasonId) {
+      return res.status(400).json({ error: 'seasonId is required' });
+    }
+
+    // Build WHERE clause
+    let whereClause = "o.season_id = $1 AND o.status != 'cancelled'";
+    const params = [seasonId];
+    let paramIndex = 2;
+
+    if (brandId) {
+      whereClause += ` AND o.brand_id = $${paramIndex}`;
+      params.push(brandId);
+      paramIndex++;
+    }
+
+    if (locationId) {
+      whereClause += ` AND o.location_id = $${paramIndex}`;
+      params.push(locationId);
+      paramIndex++;
+    }
+
+    // Get order items with product details
+    const inventoryResult = await pool.query(`
+      SELECT
+        oi.id as item_id,
+        oi.order_id,
+        oi.product_id,
+        oi.quantity as original_quantity,
+        oi.adjusted_quantity,
+        oi.unit_cost,
+        oi.line_total,
+        o.order_number,
+        o.status as order_status,
+        p.name as product_name,
+        p.base_name,
+        p.sku,
+        p.upc,
+        p.size,
+        p.color,
+        p.inseam,
+        p.wholesale_cost,
+        p.msrp,
+        p.category,
+        p.gender,
+        b.name as brand_name,
+        b.id as brand_id,
+        l.name as location_name,
+        l.id as location_id
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      JOIN brands b ON p.brand_id = b.id
+      LEFT JOIN locations l ON o.location_id = l.id
+      WHERE ${whereClause}
+      ORDER BY p.base_name, p.color,
+        CASE
+          WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
+          ELSE 0
+        END ASC,
+        CASE p.size
+          WHEN 'XXS' THEN 1 WHEN '2XS' THEN 1
+          WHEN 'XS' THEN 2
+          WHEN 'S' THEN 3
+          WHEN 'M' THEN 4
+          WHEN 'L' THEN 5
+          WHEN 'XL' THEN 6
+          WHEN 'XXL' THEN 7 WHEN '2XL' THEN 7
+          WHEN 'XXXL' THEN 8 WHEN '3XL' THEN 8
+          ELSE 50
+        END,
+        p.size ASC
+    `, params);
+
+    // Calculate summary
+    const items = inventoryResult.rows;
+    const summary = {
+      totalItems: items.length,
+      totalOriginalUnits: items.reduce((sum, item) => sum + parseInt(item.original_quantity || 0), 0),
+      totalAdjustedUnits: items.reduce((sum, item) => {
+        const qty = item.adjusted_quantity !== null ? item.adjusted_quantity : item.original_quantity;
+        return sum + parseInt(qty || 0);
+      }, 0),
+      totalWholesale: items.reduce((sum, item) => {
+        const qty = item.adjusted_quantity !== null ? item.adjusted_quantity : item.original_quantity;
+        return sum + (parseFloat(item.unit_cost || 0) * parseInt(qty || 0));
+      }, 0)
+    };
+
+    res.json({
+      inventory: items,
+      summary
+    });
+  } catch (error) {
+    console.error('Get inventory error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/orders - List orders with filtering
 router.get('/', authenticateToken, async (req, res) => {
   try {
@@ -1054,6 +1157,45 @@ router.delete('/:orderId/items/:itemId', authenticateToken, authorizeRoles('admi
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
+  }
+});
+
+// PATCH /api/orders/:orderId/items/:itemId/adjust - Adjust item quantity (preserves original)
+router.patch('/:orderId/items/:itemId/adjust', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  try {
+    const { orderId, itemId } = req.params;
+    const { adjusted_quantity } = req.body;
+
+    if (adjusted_quantity === undefined) {
+      return res.status(400).json({ error: 'adjusted_quantity is required' });
+    }
+
+    // Verify item exists and belongs to this order
+    const itemResult = await pool.query(
+      'SELECT * FROM order_items WHERE id = $1 AND order_id = $2',
+      [itemId, orderId]
+    );
+
+    if (itemResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order item not found' });
+    }
+
+    // Update adjusted_quantity (null to clear adjustment)
+    const updateResult = await pool.query(
+      `UPDATE order_items
+       SET adjusted_quantity = $1
+       WHERE id = $2
+       RETURNING *`,
+      [adjusted_quantity, itemId]
+    );
+
+    res.json({
+      message: 'Item adjusted successfully',
+      item: updateResult.rows[0]
+    });
+  } catch (error) {
+    console.error('Adjust order item error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

@@ -56,6 +56,15 @@ const Layout = ({ children }) => {
                     <Link to="/order-suggestions" className={navLinkClass('/order-suggestions')}>
                       Suggestions
                     </Link>
+                    <Link to="/sales-sync" className={navLinkClass('/sales-sync')}>
+                      Sales Sync
+                    </Link>
+                    <Link to="/budget" className={navLinkClass('/budget')}>
+                      Budget
+                    </Link>
+                    <Link to="/order-adjustment" className={navLinkClass('/order-adjustment')}>
+                      Adjust Orders
+                    </Link>
                   </>
                 )}
                 {isAdmin() && (

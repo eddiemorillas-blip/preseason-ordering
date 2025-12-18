@@ -807,6 +807,65 @@ router.get('/uploads', authenticateToken, async (req, res) => {
   }
 });
 
+// Delete a catalog upload record
+router.delete('/uploads/:id', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const { id } = req.params;
+  const { deactivateProducts } = req.query;
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Get the upload record first
+    const uploadResult = await client.query(
+      'SELECT * FROM catalog_uploads WHERE id = $1',
+      [id]
+    );
+
+    if (uploadResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Upload not found' });
+    }
+
+    const upload = uploadResult.rows[0];
+
+    // Optionally deactivate products from this brand that were part of this upload
+    let productsDeactivated = 0;
+    if (deactivateProducts === 'true' && upload.brand_id) {
+      // Deactivate products for this brand that were created/updated around the upload time
+      // This is approximate since we don't track exactly which products came from which upload
+      const deactivateResult = await client.query(`
+        UPDATE products
+        SET active = false
+        WHERE brand_id = $1
+          AND updated_at >= $2
+          AND updated_at <= $2 + INTERVAL '1 hour'
+        RETURNING id
+      `, [upload.brand_id, upload.created_at]);
+      productsDeactivated = deactivateResult.rowCount;
+    }
+
+    // Delete the upload record
+    await client.query('DELETE FROM catalog_uploads WHERE id = $1', [id]);
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      message: 'Upload record deleted',
+      productsDeactivated
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Delete upload error:', error);
+    res.status(500).json({ error: 'Failed to delete upload record' });
+  } finally {
+    client.release();
+  }
+});
+
 // Preview file (get first N rows)
 // Supports headerRow parameter to specify which row contains column headers
 // Supports sheetName parameter to specify which Excel sheet to use

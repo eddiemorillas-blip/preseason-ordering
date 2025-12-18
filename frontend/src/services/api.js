@@ -81,6 +81,8 @@ export const catalogAPI = {
     timeout: 600000 // 10 minutes for large file uploads
   }),
   getUploads: () => api.get('/catalogs/uploads'),
+  deleteUpload: (id, deactivateProducts = false) =>
+    api.delete(`/catalogs/uploads/${id}`, { params: { deactivateProducts } }),
 };
 
 // Migration API calls
@@ -100,6 +102,9 @@ export const orderAPI = {
   deleteItem: (orderId, itemId) => api.delete(`/orders/${orderId}/items/${itemId}`),
   copy: (orderId, copyData) => api.post(`/orders/${orderId}/copy`, copyData),
   getFamilyGroups: (orderId) => api.get(`/orders/${orderId}/family-groups`),
+  getInventory: (params) => api.get('/orders/inventory', { params }),
+  adjustItem: (orderId, itemId, adjustedQuantity) =>
+    api.patch(`/orders/${orderId}/items/${itemId}/adjust`, { adjusted_quantity: adjustedQuantity }),
 };
 
 // Price API calls (seasonal pricing)
@@ -116,6 +121,29 @@ export const priceAPI = {
     params: brandId ? { brandId } : {}
   }),
   update: (priceData) => api.post('/prices', priceData),
+};
+
+// Sales API calls (BigQuery sync)
+export const salesAPI = {
+  testConnection: () => api.get('/sales/test-connection'),
+  sync: (months = 12) => api.post('/sales/sync', { months }),
+  getSyncStatus: (id) => api.get(`/sales/sync-status/${id}`),
+  getByUpc: (upc) => api.get(`/sales/by-upc/${upc}`),
+  getByBrand: (periodMonths = 12) => api.get('/sales/by-brand', { params: { period_months: periodMonths } }),
+  getTrends: (vendorName) => api.get(`/sales/trends/${encodeURIComponent(vendorName)}`),
+  getBrandMapping: () => api.get('/sales/brand-mapping'),
+  updateBrandMapping: (id, data) => api.put(`/sales/brand-mapping/${id}`, data),
+  getSummary: () => api.get('/sales/summary'),
+};
+
+// Budget API calls
+export const budgetAPI = {
+  getSeasonBudget: (seasonId) => api.get(`/budgets/season/${seasonId}`),
+  setSeasonBudget: (seasonId, data) => api.post(`/budgets/season/${seasonId}`, data),
+  setAllocations: (seasonId, allocations) => api.post(`/budgets/season/${seasonId}/allocations`, { allocations }),
+  getSuggestions: (seasonId, totalBudget) => api.get(`/budgets/suggest/${seasonId}`, { params: { total_budget: totalBudget } }),
+  getStatus: () => api.get('/budgets/status'),
+  deleteBudget: (seasonId) => api.delete(`/budgets/season/${seasonId}`),
 };
 
 // Brand Template API calls

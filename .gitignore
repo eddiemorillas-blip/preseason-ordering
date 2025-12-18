@@ -40,3 +40,8 @@ build/
 # Temporary files
 tmp/
 temp/
+
+# Credentials (sensitive)
+credentials/
+*.json.key
+*-credentials.json

@@ -26,6 +26,7 @@ const CatalogUpload = () => {
   const [uploadResult, setUploadResult] = useState(null);
   const [uploadHistory, setUploadHistory] = useState([]);
   const [error, setError] = useState('');
+  const [deletingUpload, setDeletingUpload] = useState(null);
 
   // Available database fields for mapping with common variations
   const dbFields = [
@@ -127,6 +128,23 @@ const CatalogUpload = () => {
       setUploadHistory(response.data.uploads || []);
     } catch (err) {
       console.error('Error fetching upload history:', err);
+    }
+  };
+
+  const handleDeleteUpload = async (uploadId, brandName) => {
+    if (!window.confirm(`Delete this upload record for ${brandName}?\n\nThis only removes the upload history entry, not the products.`)) {
+      return;
+    }
+
+    try {
+      setDeletingUpload(uploadId);
+      await catalogAPI.deleteUpload(uploadId);
+      fetchUploadHistory();
+    } catch (err) {
+      console.error('Error deleting upload:', err);
+      setError('Failed to delete upload record');
+    } finally {
+      setDeletingUpload(null);
     }
   };
 
@@ -1105,12 +1123,15 @@ const CatalogUpload = () => {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     Status
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {uploadHistory.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-4 text-center text-sm text-gray-500">
+                    <td colSpan={7} className="px-6 py-4 text-center text-sm text-gray-500">
                       No upload history yet
                     </td>
                   </tr>
@@ -1144,6 +1165,15 @@ const CatalogUpload = () => {
                         >
                           {upload.upload_status ? upload.upload_status.replace(/_/g, ' ') : 'unknown'}
                         </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <button
+                          onClick={() => handleDeleteUpload(upload.id, upload.brand_name)}
+                          disabled={deletingUpload === upload.id}
+                          className="text-red-600 hover:text-red-900 disabled:opacity-50"
+                        >
+                          {deletingUpload === upload.id ? 'Deleting...' : 'Delete'}
+                        </button>
                       </td>
                     </tr>
                   ))

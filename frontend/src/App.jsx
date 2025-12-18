@@ -15,6 +15,9 @@ import SalesDataUpload from './pages/SalesDataUpload';
 import OrderSuggestions from './pages/OrderSuggestions';
 import SeasonPriceComparison from './pages/SeasonPriceComparison';
 import PriceHistory from './pages/PriceHistory';
+import SalesSync from './pages/SalesSync';
+import BudgetManagement from './pages/BudgetManagement';
+import OrderAdjustment from './pages/OrderAdjustment';
 import Help from './pages/Help';
 
 function App() {
@@ -123,6 +126,30 @@ function App() {
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <PriceHistory />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/sales-sync"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <SalesSync />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/budget"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <BudgetManagement />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/order-adjustment"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <OrderAdjustment />
               </ProtectedRoute>
             }
           />
