@@ -103,6 +103,7 @@ export const orderAPI = {
   copy: (orderId, copyData) => api.post(`/orders/${orderId}/copy`, copyData),
   getFamilyGroups: (orderId) => api.get(`/orders/${orderId}/family-groups`),
   getInventory: (params) => api.get('/orders/inventory', { params }),
+  getShipDates: (params) => api.get('/orders/ship-dates', { params }),
   adjustItem: (orderId, itemId, adjustedQuantity) =>
     api.patch(`/orders/${orderId}/items/${itemId}/adjust`, { adjusted_quantity: adjustedQuantity }),
 };

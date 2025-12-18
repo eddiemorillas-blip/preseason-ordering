@@ -144,10 +144,49 @@ router.get('/product-breakdown', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/orders/ship-dates - Get available ship dates for a season
+router.get('/ship-dates', authenticateToken, async (req, res) => {
+  try {
+    const { seasonId, brandId, locationId } = req.query;
+
+    if (!seasonId) {
+      return res.status(400).json({ error: 'seasonId is required' });
+    }
+
+    let whereClause = "season_id = $1 AND status != 'cancelled' AND ship_date IS NOT NULL";
+    const params = [seasonId];
+    let paramIndex = 2;
+
+    if (brandId) {
+      whereClause += ` AND brand_id = $${paramIndex}`;
+      params.push(brandId);
+      paramIndex++;
+    }
+
+    if (locationId) {
+      whereClause += ` AND location_id = $${paramIndex}`;
+      params.push(locationId);
+      paramIndex++;
+    }
+
+    const result = await pool.query(`
+      SELECT DISTINCT ship_date
+      FROM orders
+      WHERE ${whereClause}
+      ORDER BY ship_date
+    `, params);
+
+    res.json({ shipDates: result.rows.map(r => r.ship_date) });
+  } catch (error) {
+    console.error('Get ship dates error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/orders/inventory - Get inventory view for order adjustment
 router.get('/inventory', authenticateToken, async (req, res) => {
   try {
-    const { seasonId, brandId, locationId } = req.query;
+    const { seasonId, brandId, locationId, shipDate } = req.query;
 
     if (!seasonId) {
       return res.status(400).json({ error: 'seasonId is required' });
@@ -167,6 +206,12 @@ router.get('/inventory', authenticateToken, async (req, res) => {
     if (locationId) {
       whereClause += ` AND o.location_id = $${paramIndex}`;
       params.push(locationId);
+      paramIndex++;
+    }
+
+    if (shipDate) {
+      whereClause += ` AND o.ship_date = $${paramIndex}`;
+      params.push(shipDate);
       paramIndex++;
     }
 

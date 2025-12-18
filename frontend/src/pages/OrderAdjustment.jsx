@@ -10,11 +10,13 @@ const OrderAdjustment = () => {
   const [seasons, setSeasons] = useState([]);
   const [brands, setBrands] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [shipDates, setShipDates] = useState([]);
 
   // Selected filters from URL
   const selectedSeasonId = searchParams.get('season') || '';
   const selectedBrandId = searchParams.get('brand') || '';
   const selectedLocationId = searchParams.get('location') || '';
+  const selectedShipDate = searchParams.get('shipDate') || '';
 
   // Data state
   const [inventory, setInventory] = useState([]);
@@ -52,6 +54,28 @@ const OrderAdjustment = () => {
     fetchFilters();
   }, []);
 
+  // Fetch ship dates when season/brand/location change
+  useEffect(() => {
+    if (selectedSeasonId) {
+      fetchShipDates();
+    } else {
+      setShipDates([]);
+    }
+  }, [selectedSeasonId, selectedBrandId, selectedLocationId]);
+
+  const fetchShipDates = async () => {
+    try {
+      const params = { seasonId: selectedSeasonId };
+      if (selectedBrandId) params.brandId = selectedBrandId;
+      if (selectedLocationId) params.locationId = selectedLocationId;
+
+      const response = await orderAPI.getShipDates(params);
+      setShipDates(response.data.shipDates || []);
+    } catch (err) {
+      console.error('Error fetching ship dates:', err);
+    }
+  };
+
   // Fetch inventory when filters change
   useEffect(() => {
     if (selectedSeasonId && selectedLocationId) {
@@ -60,7 +84,7 @@ const OrderAdjustment = () => {
       setInventory([]);
       setSummary(null);
     }
-  }, [selectedSeasonId, selectedBrandId, selectedLocationId]);
+  }, [selectedSeasonId, selectedBrandId, selectedLocationId, selectedShipDate]);
 
   const fetchInventory = async () => {
     setLoading(true);
@@ -69,6 +93,7 @@ const OrderAdjustment = () => {
       const params = { seasonId: selectedSeasonId };
       if (selectedBrandId) params.brandId = selectedBrandId;
       if (selectedLocationId) params.locationId = selectedLocationId;
+      if (selectedShipDate) params.shipDate = selectedShipDate;
 
       const response = await orderAPI.getInventory(params);
       setInventory(response.data.inventory || []);
@@ -184,7 +209,7 @@ const OrderAdjustment = () => {
 
         {/* Filters */}
         <div className="bg-white p-6 rounded-lg shadow">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             {/* Season Filter */}
             <div>
               <label htmlFor="season" className="block text-sm font-medium text-gray-700 mb-2">
@@ -240,6 +265,26 @@ const OrderAdjustment = () => {
                 {locations.map((location) => (
                   <option key={location.id} value={location.id}>
                     {location.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Ship Date Filter */}
+            <div>
+              <label htmlFor="shipDate" className="block text-sm font-medium text-gray-700 mb-2">
+                Ship Date
+              </label>
+              <select
+                id="shipDate"
+                value={selectedShipDate}
+                onChange={(e) => updateFilter('shipDate', e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">All Dates</option>
+                {shipDates.map((date) => (
+                  <option key={date} value={date}>
+                    {new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })}
                   </option>
                 ))}
               </select>
