@@ -397,6 +397,12 @@ const OrderAdjustment = () => {
       }, 0);
 
       const maxReductionValue = currentTotal * (stockRules.maxOrderReduction / 100);
+      console.log('Stock Rules Debug:', {
+        currentTotal,
+        maxOrderReduction: stockRules.maxOrderReduction,
+        maxReductionValue,
+        highMonths: stockRules.highMonths
+      });
 
       // Categorize items
       const overstocked = [];
@@ -427,12 +433,17 @@ const OrderAdjustment = () => {
       overstocked.sort((a, b) => b.monthsOfCoverage - a.monthsOfCoverage);
 
       let totalReduction = 0;
-      for (const { item, currentQty } of overstocked) {
+      console.log(`Found ${overstocked.length} overstocked items, ${understocked.length} understocked items`);
+
+      for (const { item, currentQty, monthsOfCoverage } of overstocked) {
         const itemCost = parseFloat(item.unit_cost || 0);
         if (itemCost <= 0) continue;
 
         const remainingBudget = maxReductionValue - totalReduction;
-        if (remainingBudget <= 0) break;
+        if (remainingBudget <= 0) {
+          console.log(`Budget exhausted at $${totalReduction.toFixed(2)}, stopping reductions`);
+          break;
+        }
 
         // Calculate max units we can reduce within remaining budget
         const maxUnitsToReduce = Math.floor(remainingBudget / itemCost);
@@ -441,7 +452,11 @@ const OrderAdjustment = () => {
         const newQty = currentQty - unitsToReduce;
         newSuggestions[item.item_id] = newQty;
         totalReduction += unitsToReduce * itemCost;
+
+        console.log(`Item ${item.product_name}: ${currentQty} -> ${newQty} (${monthsOfCoverage.toFixed(1)} mo coverage, reduced $${(unitsToReduce * itemCost).toFixed(2)})`);
       }
+
+      console.log(`Total reduction: $${totalReduction.toFixed(2)} of max $${maxReductionValue.toFixed(2)} (${(totalReduction/currentTotal*100).toFixed(1)}% of order)`)
 
       // UNDERSTOCKED: Increase up to 100% of what's needed to reach target coverage
       for (const { item, avgMonthlySales, currentQty } of understocked) {
