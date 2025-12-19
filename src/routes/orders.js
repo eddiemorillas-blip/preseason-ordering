@@ -1511,4 +1511,149 @@ router.delete('/:id', authenticateToken, authorizeRoles('admin'), async (req, re
   }
 });
 
+// POST /api/orders/batch-adjust - Batch update multiple order items
+router.post('/batch-adjust', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { adjustments } = req.body;
+
+    if (!adjustments || !Array.isArray(adjustments) || adjustments.length === 0) {
+      return res.status(400).json({ error: 'adjustments array is required' });
+    }
+
+    await client.query('BEGIN');
+
+    let updated = 0;
+    const failed = [];
+
+    for (const adj of adjustments) {
+      const { orderId, itemId, adjusted_quantity } = adj;
+
+      if (!orderId || !itemId || adjusted_quantity === undefined) {
+        failed.push({ itemId, error: 'Missing required fields' });
+        continue;
+      }
+
+      try {
+        // Verify item exists and belongs to this order
+        const itemResult = await client.query(
+          'SELECT id FROM order_items WHERE id = $1 AND order_id = $2',
+          [itemId, orderId]
+        );
+
+        if (itemResult.rows.length === 0) {
+          failed.push({ itemId, error: 'Item not found' });
+          continue;
+        }
+
+        // Update adjusted_quantity
+        await client.query(
+          'UPDATE order_items SET adjusted_quantity = $1 WHERE id = $2',
+          [adjusted_quantity, itemId]
+        );
+
+        updated++;
+      } catch (err) {
+        failed.push({ itemId, error: err.message });
+      }
+    }
+
+    await client.query('COMMIT');
+
+    res.json({ updated, failed });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Batch adjust error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/orders/inventory/velocity - Get sales velocity data from BigQuery
+router.get('/inventory/velocity', authenticateToken, async (req, res) => {
+  try {
+    const { seasonId, brandId, locationId, months = 12 } = req.query;
+
+    if (!seasonId || !brandId) {
+      return res.status(400).json({ error: 'seasonId and brandId are required' });
+    }
+
+    // Get UPCs for products in orders matching the filter
+    let upcQuery = `
+      SELECT DISTINCT p.upc
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE o.season_id = $1 AND o.brand_id = $2
+        AND p.upc IS NOT NULL
+    `;
+    const params = [seasonId, brandId];
+
+    if (locationId) {
+      upcQuery += ' AND o.location_id = $3';
+      params.push(locationId);
+    }
+
+    const upcResult = await pool.query(upcQuery, params);
+    const upcs = upcResult.rows.map(r => r.upc);
+
+    if (upcs.length === 0) {
+      return res.json({ velocity: {} });
+    }
+
+    // Get facility ID for location
+    const { LOCATION_TO_FACILITY } = require('../services/bigquery');
+    const facilityId = locationId ? LOCATION_TO_FACILITY[locationId] : null;
+
+    // Query BigQuery for sales velocity
+    const { bigquery } = require('../services/bigquery');
+    const upcList = upcs.map(u => `'${u}'`).join(',');
+
+    let velocityQuery = `
+      SELECT
+        p.BARCODE as upc,
+        SUM(ii.QUANTITY) as total_qty_sold,
+        COUNT(DISTINCT FORMAT_TIMESTAMP('%Y-%m', i.POSTDATE)) as months_of_data,
+        MAX(i.POSTDATE) as last_sale
+      FROM rgp_cleaned_zone.invoice_items_all ii
+      JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
+      JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
+      WHERE i.POSTDATE >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${parseInt(months)} MONTH)
+        AND p.BARCODE IN (${upcList})
+        AND ii.QUANTITY > 0
+    `;
+
+    if (facilityId) {
+      velocityQuery += ` AND p.facility_id_true = '${facilityId}'`;
+    }
+
+    velocityQuery += `
+      GROUP BY p.BARCODE
+    `;
+
+    const [rows] = await bigquery.query({ query: velocityQuery });
+
+    // Calculate velocity per UPC
+    const velocity = {};
+    rows.forEach(row => {
+      const monthsOfData = Math.max(1, parseInt(row.months_of_data) || 1);
+      const totalSold = parseInt(row.total_qty_sold) || 0;
+
+      velocity[row.upc] = {
+        avg_monthly_sales: Math.round((totalSold / monthsOfData) * 10) / 10,
+        total_sold: totalSold,
+        months_of_data: monthsOfData,
+        last_sale: row.last_sale
+      };
+    });
+
+    res.json({ velocity });
+  } catch (error) {
+    console.error('Get velocity error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

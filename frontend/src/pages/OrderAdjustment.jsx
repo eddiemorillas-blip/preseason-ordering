@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import api, { orderAPI, brandAPI } from '../services/api';
+import api, { orderAPI, budgetAPI } from '../services/api';
 import Layout from '../components/Layout';
 
 const OrderAdjustment = () => {
@@ -28,6 +28,29 @@ const OrderAdjustment = () => {
   const [editingItemId, setEditingItemId] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Suggestion state
+  const [suggestions, setSuggestions] = useState({}); // { itemId: suggestedQty }
+  const [selectedItems, setSelectedItems] = useState(new Set());
+  const [activePanel, setActivePanel] = useState(null); // 'stock'|'velocity'|'budget'|'batch'|'minmax'
+
+  // Toolbar settings
+  const [stockRules, setStockRules] = useState({
+    highThreshold: 20, highReduction: 25,
+    lowThreshold: 5, lowIncrease: 25
+  });
+  const [velocitySettings, setVelocitySettings] = useState({
+    coverageMonths: 6, velocityData: null, loading: false
+  });
+  const [budgetSettings, setBudgetSettings] = useState({
+    brandAllocation: null, targetBudget: '', loading: false
+  });
+  const [batchOperation, setBatchOperation] = useState({
+    type: 'increase_pct', value: 10
+  });
+  const [minMaxRules, setMinMaxRules] = useState({
+    min: 0, max: ''
+  });
 
   // Fetch filter options on mount
   useEffect(() => {
@@ -63,6 +86,32 @@ const OrderAdjustment = () => {
     }
   }, [selectedSeasonId, selectedBrandId, selectedLocationId]);
 
+  // Fetch brand allocation when season/brand change
+  useEffect(() => {
+    if (selectedSeasonId && selectedBrandId) {
+      fetchBrandAllocation();
+    } else {
+      setBudgetSettings(prev => ({ ...prev, brandAllocation: null, targetBudget: '' }));
+    }
+  }, [selectedSeasonId, selectedBrandId]);
+
+  const fetchBrandAllocation = async () => {
+    try {
+      const response = await budgetAPI.getSeasonBudget(selectedSeasonId);
+      const allocations = response.data.allocations || [];
+      const brandAlloc = allocations.find(a => a.brand_id === parseInt(selectedBrandId));
+      if (brandAlloc) {
+        setBudgetSettings(prev => ({
+          ...prev,
+          brandAllocation: brandAlloc.allocated_amount,
+          targetBudget: brandAlloc.allocated_amount?.toString() || ''
+        }));
+      }
+    } catch (err) {
+      console.error('Error fetching brand allocation:', err);
+    }
+  };
+
   const fetchShipDates = async () => {
     try {
       const params = { seasonId: selectedSeasonId };
@@ -84,6 +133,9 @@ const OrderAdjustment = () => {
       setInventory([]);
       setSummary(null);
     }
+    // Clear suggestions when filters change
+    setSuggestions({});
+    setSelectedItems(new Set());
   }, [selectedSeasonId, selectedBrandId, selectedLocationId, selectedShipDate]);
 
   const fetchInventory = async () => {
@@ -130,41 +182,12 @@ const OrderAdjustment = () => {
 
   const handleEditSave = async (item) => {
     const newValue = editValue.trim() === '' ? null : parseInt(editValue, 10);
-
-    // If clearing to original, set to null
     const adjustedQty = newValue === item.original_quantity ? null : newValue;
 
     setSaving(true);
     try {
       await orderAPI.adjustItem(item.order_id, item.item_id, adjustedQty);
-
-      // Update local state
-      setInventory(prev => prev.map(i =>
-        i.item_id === item.item_id
-          ? { ...i, adjusted_quantity: adjustedQty }
-          : i
-      ));
-
-      // Recalculate summary
-      const updatedInventory = inventory.map(i =>
-        i.item_id === item.item_id
-          ? { ...i, adjusted_quantity: adjustedQty }
-          : i
-      );
-      const newSummary = {
-        totalItems: updatedInventory.length,
-        totalOriginalUnits: updatedInventory.reduce((sum, i) => sum + parseInt(i.original_quantity || 0), 0),
-        totalAdjustedUnits: updatedInventory.reduce((sum, i) => {
-          const qty = i.adjusted_quantity !== null ? i.adjusted_quantity : i.original_quantity;
-          return sum + parseInt(qty || 0);
-        }, 0),
-        totalWholesale: updatedInventory.reduce((sum, i) => {
-          const qty = i.adjusted_quantity !== null ? i.adjusted_quantity : i.original_quantity;
-          return sum + (parseFloat(i.unit_cost || 0) * parseInt(qty || 0));
-        }, 0)
-      };
-      setSummary(newSummary);
-
+      updateLocalInventory(item.item_id, adjustedQty);
       setEditingItemId(null);
       setEditValue('');
     } catch (err) {
@@ -173,6 +196,32 @@ const OrderAdjustment = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  const updateLocalInventory = (itemId, adjustedQty) => {
+    setInventory(prev => prev.map(i =>
+      i.item_id === itemId ? { ...i, adjusted_quantity: adjustedQty } : i
+    ));
+    recalculateSummary();
+  };
+
+  const recalculateSummary = () => {
+    setInventory(currentInventory => {
+      const newSummary = {
+        totalItems: currentInventory.length,
+        totalOriginalUnits: currentInventory.reduce((sum, i) => sum + parseInt(i.original_quantity || 0), 0),
+        totalAdjustedUnits: currentInventory.reduce((sum, i) => {
+          const qty = i.adjusted_quantity !== null ? i.adjusted_quantity : i.original_quantity;
+          return sum + parseInt(qty || 0);
+        }, 0),
+        totalWholesale: currentInventory.reduce((sum, i) => {
+          const qty = i.adjusted_quantity !== null ? i.adjusted_quantity : i.original_quantity;
+          return sum + (parseFloat(i.unit_cost || 0) * parseInt(qty || 0));
+        }, 0)
+      };
+      setSummary(newSummary);
+      return currentInventory;
+    });
   };
 
   const handleKeyDown = (e, item) => {
@@ -196,90 +245,311 @@ const OrderAdjustment = () => {
     return item.adjusted_quantity !== null && item.adjusted_quantity !== item.original_quantity;
   };
 
+  const hasSuggestion = (item) => {
+    return suggestions[item.item_id] !== undefined && suggestions[item.item_id] !== getEffectiveQuantity(item);
+  };
+
+  // Selection handlers
+  const toggleSelectAll = () => {
+    if (selectedItems.size === inventory.length) {
+      setSelectedItems(new Set());
+    } else {
+      setSelectedItems(new Set(inventory.map(i => i.item_id)));
+    }
+  };
+
+  const toggleSelectItem = (itemId) => {
+    const newSelected = new Set(selectedItems);
+    if (newSelected.has(itemId)) {
+      newSelected.delete(itemId);
+    } else {
+      newSelected.add(itemId);
+    }
+    setSelectedItems(newSelected);
+  };
+
+  // Accept a suggestion for a single item
+  const acceptSuggestion = async (item) => {
+    const suggestedQty = suggestions[item.item_id];
+    if (suggestedQty === undefined) return;
+
+    const adjustedQty = suggestedQty === item.original_quantity ? null : suggestedQty;
+
+    setSaving(true);
+    try {
+      await orderAPI.adjustItem(item.order_id, item.item_id, adjustedQty);
+      updateLocalInventory(item.item_id, adjustedQty);
+      // Remove from suggestions after accepting
+      setSuggestions(prev => {
+        const newSuggestions = { ...prev };
+        delete newSuggestions[item.item_id];
+        return newSuggestions;
+      });
+    } catch (err) {
+      console.error('Error accepting suggestion:', err);
+      setError('Failed to save adjustment');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Save all suggestions
+  const saveAllSuggestions = async () => {
+    const itemsToSave = Object.entries(suggestions).filter(([itemId, qty]) => {
+      const item = inventory.find(i => i.item_id === parseInt(itemId));
+      return item && qty !== getEffectiveQuantity(item);
+    });
+
+    if (itemsToSave.length === 0) return;
+
+    setSaving(true);
+    try {
+      const adjustments = itemsToSave.map(([itemId, qty]) => {
+        const item = inventory.find(i => i.item_id === parseInt(itemId));
+        return {
+          orderId: item.order_id,
+          itemId: parseInt(itemId),
+          adjusted_quantity: qty === item.original_quantity ? null : qty
+        };
+      });
+
+      // Use batch API if available, otherwise sequential
+      if (orderAPI.batchAdjust) {
+        await orderAPI.batchAdjust(adjustments);
+      } else {
+        for (const adj of adjustments) {
+          await orderAPI.adjustItem(adj.orderId, adj.itemId, adj.adjusted_quantity);
+        }
+      }
+
+      // Update local state
+      setInventory(prev => prev.map(item => {
+        const suggestion = suggestions[item.item_id];
+        if (suggestion !== undefined) {
+          return { ...item, adjusted_quantity: suggestion === item.original_quantity ? null : suggestion };
+        }
+        return item;
+      }));
+
+      setSuggestions({});
+      recalculateSummary();
+    } catch (err) {
+      console.error('Error saving suggestions:', err);
+      setError('Failed to save some adjustments');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Reset suggestions
+  const resetSuggestions = () => {
+    setSuggestions({});
+  };
+
+  // Stock-based suggestions
+  const applyStockRules = () => {
+    const newSuggestions = { ...suggestions };
+    inventory.forEach(item => {
+      const stock = item.stock_on_hand;
+      if (stock === null || stock === undefined) return;
+
+      const baseQty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+
+      if (stock >= stockRules.highThreshold) {
+        newSuggestions[item.item_id] = Math.round(baseQty * (1 - stockRules.highReduction / 100));
+      } else if (stock <= stockRules.lowThreshold) {
+        newSuggestions[item.item_id] = Math.round(baseQty * (1 + stockRules.lowIncrease / 100));
+      }
+    });
+    setSuggestions(newSuggestions);
+  };
+
+  // Budget scaling
+  const applyBudgetScaling = () => {
+    const target = parseFloat(budgetSettings.targetBudget);
+    if (!target || target <= 0) return;
+
+    const currentTotal = inventory.reduce((sum, item) => {
+      const qty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+      return sum + (parseFloat(item.unit_cost || 0) * qty);
+    }, 0);
+
+    if (currentTotal === 0) return;
+
+    const scaleFactor = target / currentTotal;
+    const newSuggestions = { ...suggestions };
+
+    inventory.forEach(item => {
+      const baseQty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+      newSuggestions[item.item_id] = Math.max(0, Math.round(baseQty * scaleFactor));
+    });
+
+    setSuggestions(newSuggestions);
+  };
+
+  // Batch operations
+  const applyBatchOperation = () => {
+    if (selectedItems.size === 0) return;
+
+    const newSuggestions = { ...suggestions };
+    const value = parseFloat(batchOperation.value) || 0;
+
+    selectedItems.forEach(itemId => {
+      const item = inventory.find(i => i.item_id === itemId);
+      if (!item) return;
+
+      const baseQty = suggestions[itemId] ?? getEffectiveQuantity(item);
+
+      switch (batchOperation.type) {
+        case 'increase_pct':
+          newSuggestions[itemId] = Math.round(baseQty * (1 + value / 100));
+          break;
+        case 'decrease_pct':
+          newSuggestions[itemId] = Math.max(0, Math.round(baseQty * (1 - value / 100)));
+          break;
+        case 'set_value':
+          newSuggestions[itemId] = Math.max(0, Math.round(value));
+          break;
+      }
+    });
+
+    setSuggestions(newSuggestions);
+  };
+
+  // Sales velocity calculation
+  const calculateVelocitySuggestions = async () => {
+    if (!selectedBrandId || !selectedSeasonId) return;
+
+    setVelocitySettings(prev => ({ ...prev, loading: true }));
+    try {
+      const response = await orderAPI.getVelocity({
+        seasonId: selectedSeasonId,
+        brandId: selectedBrandId,
+        locationId: selectedLocationId || undefined,
+        months: 12 // Always use 12 months of data for calculation
+      });
+
+      const velocityData = response.data.velocity || {};
+      setVelocitySettings(prev => ({ ...prev, velocityData }));
+
+      // Calculate suggestions based on velocity
+      const newSuggestions = { ...suggestions };
+      inventory.forEach(item => {
+        if (!item.upc) return;
+
+        const velocity = velocityData[item.upc];
+        if (!velocity) return;
+
+        const avgMonthlySales = velocity.avg_monthly_sales || 0;
+        const stockOnHand = item.stock_on_hand || 0;
+        const coverageNeeded = avgMonthlySales * velocitySettings.coverageMonths;
+
+        // Suggest enough to cover the coverage period minus what's already in stock
+        const suggested = Math.max(0, Math.round(coverageNeeded - stockOnHand));
+        newSuggestions[item.item_id] = suggested;
+      });
+
+      setSuggestions(newSuggestions);
+    } catch (err) {
+      console.error('Error fetching velocity:', err);
+      setError('Failed to calculate velocity suggestions');
+    } finally {
+      setVelocitySettings(prev => ({ ...prev, loading: false }));
+    }
+  };
+
+  // Min/Max rules
+  const applyMinMaxRules = () => {
+    const minVal = parseInt(minMaxRules.min) || 0;
+    const maxVal = minMaxRules.max ? parseInt(minMaxRules.max) : Infinity;
+
+    const newSuggestions = { ...suggestions };
+
+    inventory.forEach(item => {
+      const baseQty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+      const clipped = Math.max(minVal, Math.min(maxVal, baseQty));
+      if (clipped !== baseQty) {
+        newSuggestions[item.item_id] = clipped;
+      }
+    });
+
+    setSuggestions(newSuggestions);
+  };
+
+  // Calculate suggested totals for display
+  const suggestedTotal = inventory.reduce((sum, item) => {
+    const qty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+    return sum + (parseFloat(item.unit_cost || 0) * qty);
+  }, 0);
+
+  const suggestionsCount = Object.keys(suggestions).filter(itemId => {
+    const item = inventory.find(i => i.item_id === parseInt(itemId));
+    return item && suggestions[itemId] !== getEffectiveQuantity(item);
+  }).length;
+
   return (
     <Layout>
-      <div className="space-y-6">
+      <div className="space-y-4">
         {/* Header */}
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Order Adjustment</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            View and adjust order quantities by location. Select a season and location to get started.
+          <p className="mt-1 text-sm text-gray-600">
+            View and adjust order quantities by location.
           </p>
         </div>
 
         {/* Filters */}
-        <div className="bg-white p-6 rounded-lg shadow">
+        <div className="bg-white p-4 rounded-lg shadow">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            {/* Season Filter */}
             <div>
-              <label htmlFor="season" className="block text-sm font-medium text-gray-700 mb-2">
-                Season
-              </label>
+              <label htmlFor="season" className="block text-sm font-medium text-gray-700 mb-1">Season</label>
               <select
                 id="season"
                 value={selectedSeasonId}
                 onChange={(e) => updateFilter('season', e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">Select Season</option>
                 {seasons.map((season) => (
-                  <option key={season.id} value={season.id}>
-                    {season.name}
-                  </option>
+                  <option key={season.id} value={season.id}>{season.name}</option>
                 ))}
               </select>
             </div>
-
-            {/* Brand Filter */}
             <div>
-              <label htmlFor="brand" className="block text-sm font-medium text-gray-700 mb-2">
-                Brand (Optional)
-              </label>
+              <label htmlFor="brand" className="block text-sm font-medium text-gray-700 mb-1">Brand</label>
               <select
                 id="brand"
                 value={selectedBrandId}
                 onChange={(e) => updateFilter('brand', e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">All Brands</option>
                 {brands.map((brand) => (
-                  <option key={brand.id} value={brand.id}>
-                    {brand.name}
-                  </option>
+                  <option key={brand.id} value={brand.id}>{brand.name}</option>
                 ))}
               </select>
             </div>
-
-            {/* Location Filter */}
             <div>
-              <label htmlFor="location" className="block text-sm font-medium text-gray-700 mb-2">
-                Location
-              </label>
+              <label htmlFor="location" className="block text-sm font-medium text-gray-700 mb-1">Location</label>
               <select
                 id="location"
                 value={selectedLocationId}
                 onChange={(e) => updateFilter('location', e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">Select Location</option>
                 {locations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.name}
-                  </option>
+                  <option key={location.id} value={location.id}>{location.name}</option>
                 ))}
               </select>
             </div>
-
-            {/* Ship Date Filter */}
             <div>
-              <label htmlFor="shipDate" className="block text-sm font-medium text-gray-700 mb-2">
-                Ship Date
-              </label>
+              <label htmlFor="shipDate" className="block text-sm font-medium text-gray-700 mb-1">Ship Date</label>
               <select
                 id="shipDate"
                 value={selectedShipDate}
                 onChange={(e) => updateFilter('shipDate', e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">All Dates</option>
                 {shipDates.map((date) => (
@@ -294,31 +564,264 @@ const OrderAdjustment = () => {
 
         {/* Summary Stats */}
         {summary && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-white p-4 rounded-lg shadow">
-              <div className="text-sm text-gray-500">Total Items</div>
-              <div className="text-2xl font-bold text-gray-900">{summary.totalItems}</div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="bg-white p-3 rounded-lg shadow">
+              <div className="text-xs text-gray-500">Items</div>
+              <div className="text-xl font-bold text-gray-900">{summary.totalItems}</div>
             </div>
-            <div className="bg-white p-4 rounded-lg shadow">
-              <div className="text-sm text-gray-500">Original Units</div>
-              <div className="text-2xl font-bold text-gray-900">{summary.totalOriginalUnits}</div>
+            <div className="bg-white p-3 rounded-lg shadow">
+              <div className="text-xs text-gray-500">Original</div>
+              <div className="text-xl font-bold text-gray-900">{summary.totalOriginalUnits}</div>
             </div>
-            <div className="bg-white p-4 rounded-lg shadow">
-              <div className="text-sm text-gray-500">Adjusted Units</div>
-              <div className={`text-2xl font-bold ${summary.totalAdjustedUnits !== summary.totalOriginalUnits ? 'text-blue-600' : 'text-gray-900'}`}>
+            <div className="bg-white p-3 rounded-lg shadow">
+              <div className="text-xs text-gray-500">Adjusted</div>
+              <div className={`text-xl font-bold ${summary.totalAdjustedUnits !== summary.totalOriginalUnits ? 'text-blue-600' : 'text-gray-900'}`}>
                 {summary.totalAdjustedUnits}
-                {summary.totalAdjustedUnits !== summary.totalOriginalUnits && (
-                  <span className="text-sm ml-2">
-                    ({summary.totalAdjustedUnits > summary.totalOriginalUnits ? '+' : ''}
-                    {summary.totalAdjustedUnits - summary.totalOriginalUnits})
-                  </span>
-                )}
               </div>
             </div>
-            <div className="bg-white p-4 rounded-lg shadow">
-              <div className="text-sm text-gray-500">Total Wholesale</div>
-              <div className="text-2xl font-bold text-gray-900">{formatPrice(summary.totalWholesale)}</div>
+            <div className="bg-white p-3 rounded-lg shadow">
+              <div className="text-xs text-gray-500">Current $</div>
+              <div className="text-xl font-bold text-gray-900">{formatPrice(summary.totalWholesale)}</div>
             </div>
+            {suggestionsCount > 0 && (
+              <div className="bg-yellow-50 p-3 rounded-lg shadow border border-yellow-200">
+                <div className="text-xs text-yellow-700">Suggested $</div>
+                <div className="text-xl font-bold text-yellow-700">{formatPrice(suggestedTotal)}</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Adjustment Toolbar */}
+        {inventory.length > 0 && (
+          <div className="bg-white rounded-lg shadow">
+            {/* Toolbar Tabs */}
+            <div className="flex border-b overflow-x-auto">
+              {[
+                { id: 'stock', label: 'Stock Rules' },
+                { id: 'velocity', label: 'Sales Velocity' },
+                { id: 'budget', label: 'Budget' },
+                { id: 'batch', label: 'Batch' },
+                { id: 'minmax', label: 'Min/Max' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActivePanel(activePanel === tab.id ? null : tab.id)}
+                  className={`px-4 py-2 text-sm font-medium whitespace-nowrap ${
+                    activePanel === tab.id
+                      ? 'border-b-2 border-blue-500 text-blue-600'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+              <div className="flex-1" />
+              {suggestionsCount > 0 && (
+                <>
+                  <button
+                    onClick={resetSuggestions}
+                    className="px-3 py-2 text-sm text-gray-500 hover:text-gray-700"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    onClick={saveAllSuggestions}
+                    disabled={saving}
+                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    Save All ({suggestionsCount})
+                  </button>
+                </>
+              )}
+            </div>
+
+            {/* Panel Content */}
+            {activePanel === 'stock' && (
+              <div className="p-4 bg-gray-50 border-b">
+                <div className="flex flex-wrap items-end gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">High Stock ≥</label>
+                    <input
+                      type="number"
+                      value={stockRules.highThreshold}
+                      onChange={(e) => setStockRules({ ...stockRules, highThreshold: parseInt(e.target.value) || 0 })}
+                      className="w-20 px-2 py-1 border rounded text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Reduce by %</label>
+                    <input
+                      type="number"
+                      value={stockRules.highReduction}
+                      onChange={(e) => setStockRules({ ...stockRules, highReduction: parseInt(e.target.value) || 0 })}
+                      className="w-20 px-2 py-1 border rounded text-sm"
+                    />
+                  </div>
+                  <div className="text-gray-400">|</div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Low Stock ≤</label>
+                    <input
+                      type="number"
+                      value={stockRules.lowThreshold}
+                      onChange={(e) => setStockRules({ ...stockRules, lowThreshold: parseInt(e.target.value) || 0 })}
+                      className="w-20 px-2 py-1 border rounded text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Increase by %</label>
+                    <input
+                      type="number"
+                      value={stockRules.lowIncrease}
+                      onChange={(e) => setStockRules({ ...stockRules, lowIncrease: parseInt(e.target.value) || 0 })}
+                      className="w-20 px-2 py-1 border rounded text-sm"
+                    />
+                  </div>
+                  <button
+                    onClick={applyStockRules}
+                    className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {activePanel === 'velocity' && (
+              <div className="p-4 bg-gray-50 border-b">
+                <div className="flex items-end gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Coverage Months</label>
+                    <select
+                      value={velocitySettings.coverageMonths}
+                      onChange={(e) => setVelocitySettings({ ...velocitySettings, coverageMonths: parseInt(e.target.value) })}
+                      className="px-2 py-1 border rounded text-sm"
+                    >
+                      <option value={3}>3 months</option>
+                      <option value={6}>6 months</option>
+                      <option value={9}>9 months</option>
+                      <option value={12}>12 months</option>
+                    </select>
+                  </div>
+                  <button
+                    onClick={calculateVelocitySuggestions}
+                    disabled={velocitySettings.loading || !selectedBrandId}
+                    className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {velocitySettings.loading ? 'Loading...' : 'Calculate'}
+                  </button>
+                  <span className="text-xs text-gray-500">
+                    Suggests: (avg monthly sales × months) - stock on hand
+                  </span>
+                  {!selectedBrandId && (
+                    <span className="text-xs text-orange-600">Select a brand first</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {activePanel === 'budget' && (
+              <div className="p-4 bg-gray-50 border-b">
+                <div className="flex flex-wrap items-end gap-4">
+                  {budgetSettings.brandAllocation && (
+                    <div className="text-sm text-gray-600">
+                      Brand Allocation: <span className="font-medium">{formatPrice(budgetSettings.brandAllocation)}</span>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Target Budget $</label>
+                    <input
+                      type="number"
+                      value={budgetSettings.targetBudget}
+                      onChange={(e) => setBudgetSettings({ ...budgetSettings, targetBudget: e.target.value })}
+                      placeholder={budgetSettings.brandAllocation?.toString() || 'Enter amount'}
+                      className="w-32 px-2 py-1 border rounded text-sm"
+                    />
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    Current: <span className="font-medium">{formatPrice(suggestedTotal || summary?.totalWholesale)}</span>
+                  </div>
+                  <button
+                    onClick={applyBudgetScaling}
+                    className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                  >
+                    Scale to Budget
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {activePanel === 'batch' && (
+              <div className="p-4 bg-gray-50 border-b">
+                <div className="flex flex-wrap items-end gap-4">
+                  <div className="text-sm text-gray-600">
+                    {selectedItems.size} items selected
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Operation</label>
+                    <select
+                      value={batchOperation.type}
+                      onChange={(e) => setBatchOperation({ ...batchOperation, type: e.target.value })}
+                      className="px-2 py-1 border rounded text-sm"
+                    >
+                      <option value="increase_pct">Increase %</option>
+                      <option value="decrease_pct">Decrease %</option>
+                      <option value="set_value">Set to value</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">
+                      {batchOperation.type === 'set_value' ? 'Quantity' : 'Percent'}
+                    </label>
+                    <input
+                      type="number"
+                      value={batchOperation.value}
+                      onChange={(e) => setBatchOperation({ ...batchOperation, value: e.target.value })}
+                      className="w-20 px-2 py-1 border rounded text-sm"
+                    />
+                  </div>
+                  <button
+                    onClick={applyBatchOperation}
+                    disabled={selectedItems.size === 0}
+                    className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    Apply to Selected
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {activePanel === 'minmax' && (
+              <div className="p-4 bg-gray-50 border-b">
+                <div className="flex items-end gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Minimum Qty</label>
+                    <input
+                      type="number"
+                      value={minMaxRules.min}
+                      onChange={(e) => setMinMaxRules({ ...minMaxRules, min: e.target.value })}
+                      className="w-20 px-2 py-1 border rounded text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Maximum Qty</label>
+                    <input
+                      type="number"
+                      value={minMaxRules.max}
+                      onChange={(e) => setMinMaxRules({ ...minMaxRules, max: e.target.value })}
+                      placeholder="No limit"
+                      className="w-20 px-2 py-1 border rounded text-sm"
+                    />
+                  </div>
+                  <button
+                    onClick={applyMinMaxRules}
+                    className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                  >
+                    Apply Min/Max
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -339,27 +842,16 @@ const OrderAdjustment = () => {
         {/* No Location Selected */}
         {!loading && !selectedLocationId && selectedSeasonId && (
           <div className="bg-yellow-50 rounded-lg p-8 text-center">
-            <svg className="mx-auto h-12 w-12 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            <h3 className="mt-2 text-sm font-medium text-gray-900">Select a Location</h3>
-            <p className="mt-1 text-sm text-gray-500">
-              Choose a location to view and adjust order quantities.
-            </p>
+            <h3 className="text-sm font-medium text-gray-900">Select a Location</h3>
+            <p className="mt-1 text-sm text-gray-500">Choose a location to view and adjust order quantities.</p>
           </div>
         )}
 
         {/* No Results */}
         {!loading && selectedLocationId && inventory.length === 0 && (
           <div className="bg-gray-50 rounded-lg p-12 text-center">
-            <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-            </svg>
-            <h3 className="mt-2 text-sm font-medium text-gray-900">No order items found</h3>
-            <p className="mt-1 text-sm text-gray-500">
-              No orders exist for this season, brand, and location combination.
-            </p>
+            <h3 className="text-sm font-medium text-gray-900">No order items found</h3>
+            <p className="mt-1 text-sm text-gray-500">No orders exist for this selection.</p>
           </div>
         )}
 
@@ -369,44 +861,45 @@ const OrderAdjustment = () => {
             <table className="w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                    Product
+                  <th className="px-2 py-2 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedItems.size === inventory.length && inventory.length > 0}
+                      onChange={toggleSelectAll}
+                      className="rounded border-gray-300"
+                    />
                   </th>
-                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                    Size
-                  </th>
-                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                    Color
-                  </th>
-                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">
-                    Orig
-                  </th>
-                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">
-                    Stock
-                  </th>
-                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">
-                    Adj
-                  </th>
-                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">
-                    Cost
-                  </th>
-                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">
-                    Total
-                  </th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">Product</th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">Size</th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">Color</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Orig</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Stock</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Sugg</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Adj</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">Cost</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {inventory.map((item) => (
-                  <tr key={item.item_id} className={`hover:bg-gray-50 ${hasAdjustment(item) ? 'bg-blue-50' : ''}`}>
+                  <tr key={item.item_id} className={`hover:bg-gray-50 ${hasAdjustment(item) ? 'bg-blue-50' : ''} ${selectedItems.has(item.item_id) ? 'bg-yellow-50' : ''}`}>
+                    <td className="px-2 py-1.5 text-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedItems.has(item.item_id)}
+                        onChange={() => toggleSelectItem(item.item_id)}
+                        className="rounded border-gray-300"
+                      />
+                    </td>
                     <td className="px-2 py-1.5">
-                      <div className="font-medium text-gray-900 truncate max-w-[200px]" title={item.product_name}>
+                      <div className="font-medium text-gray-900 truncate max-w-[180px]" title={item.product_name}>
                         {item.product_name}
                       </div>
                     </td>
                     <td className="px-2 py-1.5 text-gray-900">
                       {item.size || '-'}{item.inseam && `/${item.inseam}`}
                     </td>
-                    <td className="px-2 py-1.5 text-gray-700 truncate max-w-[100px]" title={item.color}>
+                    <td className="px-2 py-1.5 text-gray-700 truncate max-w-[80px]" title={item.color}>
                       {item.color || '-'}
                     </td>
                     <td className="px-2 py-1.5 text-center text-gray-500">
@@ -414,6 +907,23 @@ const OrderAdjustment = () => {
                     </td>
                     <td className="px-2 py-1.5 text-center text-gray-500">
                       {item.stock_on_hand !== null ? item.stock_on_hand : '-'}
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      {hasSuggestion(item) ? (
+                        <button
+                          onClick={() => acceptSuggestion(item)}
+                          className={`px-2 py-0.5 rounded text-xs font-medium ${
+                            suggestions[item.item_id] > getEffectiveQuantity(item)
+                              ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                              : 'bg-red-100 text-red-700 hover:bg-red-200'
+                          }`}
+                          title="Click to accept"
+                        >
+                          {suggestions[item.item_id]}
+                        </button>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 text-center">
                       {editingItemId === item.item_id ? (

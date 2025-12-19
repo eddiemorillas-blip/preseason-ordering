@@ -251,5 +251,7 @@ module.exports = {
   getFacilities,
   testConnection,
   getStockOnHand,
-  getStockByUPCs
+  getStockByUPCs,
+  FACILITY_TO_LOCATION,
+  LOCATION_TO_FACILITY
 };

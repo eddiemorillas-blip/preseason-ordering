@@ -106,6 +106,8 @@ export const orderAPI = {
   getShipDates: (params) => api.get('/orders/ship-dates', { params }),
   adjustItem: (orderId, itemId, adjustedQuantity) =>
     api.patch(`/orders/${orderId}/items/${itemId}/adjust`, { adjusted_quantity: adjustedQuantity }),
+  batchAdjust: (adjustments) => api.post('/orders/batch-adjust', { adjustments }),
+  getVelocity: (params) => api.get('/orders/inventory/velocity', { params }),
 };
 
 // Price API calls (seasonal pricing)
