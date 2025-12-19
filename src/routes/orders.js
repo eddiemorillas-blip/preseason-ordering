@@ -231,12 +231,12 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
       SELECT
         p.BARCODE as upc,
         SUM(ii.QUANTITY) as total_qty_sold,
-        COUNT(DISTINCT FORMAT_TIMESTAMP('%Y-%m', i.POSTDATE)) as months_of_data,
+        COUNT(DISTINCT FORMAT_DATE('%Y-%m', DATE(i.POSTDATE))) as months_of_data,
         MAX(i.POSTDATE) as last_sale
       FROM rgp_cleaned_zone.invoice_items_all ii
       JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
       JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
-      WHERE i.POSTDATE >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${parseInt(months)} MONTH)
+      WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${parseInt(months)} MONTH)
         AND p.BARCODE IN (${upcList})
         AND ii.QUANTITY > 0
     `;
