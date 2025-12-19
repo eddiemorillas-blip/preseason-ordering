@@ -2,36 +2,39 @@ const { BigQuery } = require('@google-cloud/bigquery');
 const path = require('path');
 
 // Initialize BigQuery client
-// Support credentials as JSON string (for Railway/production) or file path (for local dev)
+// Support credentials as base64, JSON string, or file path
 let bigqueryConfig = {
   projectId: 'front-data-production'
 };
 
-if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-  // Production: credentials passed as JSON string environment variable
+if (process.env.GOOGLE_CREDENTIALS_BASE64) {
+  // Production: credentials passed as base64-encoded JSON
+  try {
+    const decoded = Buffer.from(process.env.GOOGLE_CREDENTIALS_BASE64, 'base64').toString('utf8');
+    bigqueryConfig.credentials = JSON.parse(decoded);
+    console.log('BigQuery: Using credentials from GOOGLE_CREDENTIALS_BASE64 env var');
+  } catch (e) {
+    console.error('Failed to parse GOOGLE_CREDENTIALS_BASE64:', e.message);
+  }
+} else if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  // Alternative: credentials passed as JSON string
   try {
     bigqueryConfig.credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+    console.log('BigQuery: Using credentials from GOOGLE_APPLICATION_CREDENTIALS_JSON env var');
   } catch (e) {
     console.error('Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON:', e.message);
   }
 } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
   // Alternative: path to credentials file
   bigqueryConfig.keyFilename = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  console.log('BigQuery: Using credentials from file path:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
 } else {
   // Local development: use local credentials file
   bigqueryConfig.keyFilename = path.join(__dirname, '../../credentials/bigquery-credentials.json');
+  console.log('BigQuery: Using local credentials file');
 }
 
 const bigquery = new BigQuery(bigqueryConfig);
-
-// Log which credential method is being used
-if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-  console.log('BigQuery: Using credentials from GOOGLE_APPLICATION_CREDENTIALS_JSON env var');
-} else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-  console.log('BigQuery: Using credentials from file path:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
-} else {
-  console.log('BigQuery: Using local credentials file')
-}
 
 /**
  * Get sales summary by UPC for the last N months
