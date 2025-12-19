@@ -309,8 +309,19 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
 
       if (namesToSearch.length > 0) {
         // Create name patterns for BigQuery LIKE matching
+        // Include both original and space-stripped versions (e.g., "GRIGRI +" and "GRIGRI+")
         const uniqueNames = [...new Set(namesToSearch)];
-        const namePatterns = uniqueNames.map(n => `UPPER(p.DESCRIPTION) LIKE '%${n.replace(/'/g, "''")}%'`).join(' OR ');
+        const allPatterns = [];
+        uniqueNames.forEach(n => {
+          const escaped = n.replace(/'/g, "''");
+          allPatterns.push(`UPPER(p.DESCRIPTION) LIKE '%${escaped}%'`);
+          // Also add version without spaces around + and other symbols
+          const noSpaces = n.replace(/\s+/g, '');
+          if (noSpaces !== n) {
+            allPatterns.push(`UPPER(p.DESCRIPTION) LIKE '%${noSpaces}%'`);
+          }
+        });
+        const namePatterns = allPatterns.join(' OR ');
 
         let fallbackQuery = `
           SELECT
