@@ -2,11 +2,27 @@ const { BigQuery } = require('@google-cloud/bigquery');
 const path = require('path');
 
 // Initialize BigQuery client
-const bigquery = new BigQuery({
-  projectId: 'front-data-production',
-  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS ||
-    path.join(__dirname, '../../credentials/bigquery-credentials.json')
-});
+// Support credentials as JSON string (for Railway/production) or file path (for local dev)
+let bigqueryConfig = {
+  projectId: 'front-data-production'
+};
+
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  // Production: credentials passed as JSON string environment variable
+  try {
+    bigqueryConfig.credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+  } catch (e) {
+    console.error('Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON:', e.message);
+  }
+} else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  // Alternative: path to credentials file
+  bigqueryConfig.keyFilename = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+} else {
+  // Local development: use local credentials file
+  bigqueryConfig.keyFilename = path.join(__dirname, '../../credentials/bigquery-credentials.json');
+}
+
+const bigquery = new BigQuery(bigqueryConfig);
 
 /**
  * Get sales summary by UPC for the last N months
