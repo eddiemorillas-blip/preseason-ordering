@@ -151,6 +151,69 @@ async function testConnection() {
   }
 }
 
+/**
+ * Facility ID to location mapping
+ * BigQuery facility_id -> Database location_id
+ */
+const FACILITY_TO_LOCATION = {
+  '41185': 1,  // SLC
+  '1003': 2,   // South Main
+  '1000': 3,   // Ogden
+};
+
+const LOCATION_TO_FACILITY = {
+  1: '41185',  // SLC
+  2: '1003',   // South Main
+  3: '1000',   // Ogden
+};
+
+/**
+ * Get current stock on hand from INVENTORY_on_hand_report table
+ */
+async function getStockOnHand(upcs = []) {
+  if (!upcs || upcs.length === 0) return [];
+
+  // Convert UPCs to quoted strings for SQL
+  const upcList = upcs.map(u => `'${u}'`).join(',');
+
+  const query = `
+    SELECT
+      barcode as upc,
+      CAST(facility_id AS STRING) as facility_id,
+      facility_name,
+      reported_qty as stock_on_hand
+    FROM \`front-data-production.dataform.INVENTORY_on_hand_report\`
+    WHERE barcode IN (${upcList})
+      AND reported_qty IS NOT NULL
+  `;
+
+  const [rows] = await bigquery.query({ query });
+  return rows;
+}
+
+/**
+ * Get stock on hand for multiple UPCs, grouped by UPC and location_id
+ */
+async function getStockByUPCs(upcs) {
+  if (!upcs || upcs.length === 0) return {};
+
+  const stockData = await getStockOnHand(upcs);
+
+  // Group by UPC -> location_id -> stock
+  const result = {};
+  stockData.forEach(row => {
+    const locationId = FACILITY_TO_LOCATION[row.facility_id];
+    if (!locationId) return; // Skip unknown facilities
+
+    if (!result[row.upc]) {
+      result[row.upc] = {};
+    }
+    result[row.upc][locationId] = parseInt(row.stock_on_hand) || 0;
+  });
+
+  return result;
+}
+
 module.exports = {
   bigquery,
   getSalesByUPC,
@@ -158,5 +221,7 @@ module.exports = {
   getMonthlySalesByBrand,
   getVendors,
   getFacilities,
-  testConnection
+  testConnection,
+  getStockOnHand,
+  getStockByUPCs
 };

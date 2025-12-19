@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
+const { getStockByUPCs } = require('../services/bigquery');
 
 // Month abbreviations for order numbers
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -227,6 +228,7 @@ router.get('/inventory', authenticateToken, async (req, res) => {
         oi.line_total,
         o.order_number,
         o.status as order_status,
+        o.location_id,
         p.name as product_name,
         p.base_name,
         p.sku,
@@ -240,8 +242,7 @@ router.get('/inventory', authenticateToken, async (req, res) => {
         p.gender,
         b.name as brand_name,
         b.id as brand_id,
-        l.name as location_name,
-        l.id as location_id
+        l.name as location_name
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.id
       JOIN products p ON oi.product_id = p.id
@@ -267,8 +268,29 @@ router.get('/inventory', authenticateToken, async (req, res) => {
         p.size ASC
     `, params);
 
-    // Calculate summary
+    // Get stock on hand from BigQuery for all UPCs
     const items = inventoryResult.rows;
+    const upcs = [...new Set(items.map(item => item.upc).filter(Boolean))];
+
+    let stockData = {};
+    if (upcs.length > 0) {
+      try {
+        stockData = await getStockByUPCs(upcs);
+      } catch (bqError) {
+        console.error('BigQuery stock fetch error:', bqError.message);
+        // Continue without stock data if BigQuery fails
+      }
+    }
+
+    // Add stock_on_hand to each item based on its location
+    items.forEach(item => {
+      const upcStock = stockData[item.upc];
+      if (upcStock && item.location_id) {
+        item.stock_on_hand = upcStock[item.location_id] || 0;
+      } else {
+        item.stock_on_hand = null;
+      }
+    });
     const summary = {
       totalItems: items.length,
       totalOriginalUnits: items.reduce((sum, item) => sum + parseInt(item.original_quantity || 0), 0),

@@ -382,6 +382,9 @@ const OrderAdjustment = () => {
                     Orig
                   </th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">
+                    Stock
+                  </th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">
                     Adj
                   </th>
                   <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">
@@ -408,6 +411,9 @@ const OrderAdjustment = () => {
                     </td>
                     <td className="px-2 py-1.5 text-center text-gray-500">
                       {item.original_quantity}
+                    </td>
+                    <td className="px-2 py-1.5 text-center text-gray-500">
+                      {item.stock_on_hand !== null ? item.stock_on_hand : '-'}
                     </td>
                     <td className="px-2 py-1.5 text-center">
                       {editingItemId === item.item_id ? (
