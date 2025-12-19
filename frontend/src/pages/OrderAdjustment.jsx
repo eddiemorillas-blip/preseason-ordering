@@ -390,18 +390,19 @@ const OrderAdjustment = () => {
         setVelocitySettings(prev => ({ ...prev, velocityData }));
       }
 
-      // Calculate current order total
-      const currentTotal = inventory.reduce((sum, item) => {
-        const qty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+      // Calculate ORIGINAL order total (not suggestions) for consistent budget calculation
+      const originalTotal = inventory.reduce((sum, item) => {
+        const qty = item.original_quantity || 0;
         return sum + (parseFloat(item.unit_cost || 0) * qty);
       }, 0);
 
-      const maxReductionValue = currentTotal * (stockRules.maxOrderReduction / 100);
-      console.log('Stock Rules Debug:', {
-        currentTotal,
+      const maxReductionValue = originalTotal * (stockRules.maxOrderReduction / 100);
+      console.log('Stock Rules - Using ORIGINAL order total:', {
+        originalTotal,
         maxOrderReduction: stockRules.maxOrderReduction,
         maxReductionValue,
-        highMonths: stockRules.highMonths
+        highMonths: stockRules.highMonths,
+        lowMonths: stockRules.lowMonths
       });
 
       // Categorize items
@@ -417,12 +418,11 @@ const OrderAdjustment = () => {
         if (avgMonthlySales <= 0) return;
 
         const monthsOfCoverage = stock / avgMonthlySales;
-        const currentQty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
 
         if (monthsOfCoverage >= stockRules.highMonths) {
-          overstocked.push({ item, monthsOfCoverage, avgMonthlySales, currentQty });
+          overstocked.push({ item, monthsOfCoverage, avgMonthlySales });
         } else if (monthsOfCoverage <= stockRules.lowMonths) {
-          understocked.push({ item, monthsOfCoverage, avgMonthlySales, currentQty });
+          understocked.push({ item, monthsOfCoverage, avgMonthlySales });
         }
       });
 
