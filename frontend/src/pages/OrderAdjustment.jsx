@@ -399,8 +399,8 @@ const OrderAdjustment = () => {
                 {inventory.map((item) => (
                   <tr key={item.item_id} className={`hover:bg-gray-50 ${hasAdjustment(item) ? 'bg-blue-50' : ''}`}>
                     <td className="px-2 py-1.5">
-                      <div className="font-medium text-gray-900 truncate max-w-[200px]" title={item.base_name || item.product_name}>
-                        {item.base_name || item.product_name}
+                      <div className="font-medium text-gray-900 truncate max-w-[200px]" title={item.product_name}>
+                        {item.product_name}
                       </div>
                     </td>
                     <td className="px-2 py-1.5 text-gray-900">
