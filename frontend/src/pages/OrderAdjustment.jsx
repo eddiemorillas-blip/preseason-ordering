@@ -250,7 +250,24 @@ const OrderAdjustment = () => {
   };
 
   const hasSuggestion = (item) => {
-    return suggestions[item.item_id] !== undefined && suggestions[item.item_id] !== getEffectiveQuantity(item);
+    return suggestions[item.item_id] !== undefined;
+  };
+
+  // Get suggestion display info comparing to ORIGINAL quantity
+  const getSuggestionDisplay = (item) => {
+    const suggested = suggestions[item.item_id];
+    if (suggested === undefined) return null;
+
+    const original = item.original_quantity;
+    const diff = suggested - original;
+
+    if (diff > 0) {
+      return { value: suggested, diff: `+${diff}`, type: 'increase' };
+    } else if (diff < 0) {
+      return { value: suggested, diff: `${diff}`, type: 'decrease' };
+    } else {
+      return { value: suggested, diff: '=', type: 'same' };
+    }
   };
 
   // Selection handlers
@@ -566,9 +583,10 @@ const OrderAdjustment = () => {
     return sum + (parseFloat(item.unit_cost || 0) * qty);
   }, 0);
 
+  // Count suggestions that are different from original (actionable changes)
   const suggestionsCount = Object.keys(suggestions).filter(itemId => {
     const item = inventory.find(i => i.item_id === parseInt(itemId));
-    return item && suggestions[itemId] !== getEffectiveQuantity(item);
+    return item && suggestions[itemId] !== item.original_quantity;
   }).length;
 
   return (
@@ -1021,21 +1039,28 @@ const OrderAdjustment = () => {
                       {item.stock_on_hand !== null ? item.stock_on_hand : '-'}
                     </td>
                     <td className="px-2 py-1.5 text-center">
-                      {hasSuggestion(item) ? (
-                        <button
-                          onClick={() => acceptSuggestion(item)}
-                          className={`px-2 py-0.5 rounded text-xs font-medium ${
-                            suggestions[item.item_id] > getEffectiveQuantity(item)
-                              ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                              : 'bg-red-100 text-red-700 hover:bg-red-200'
-                          }`}
-                          title="Click to accept"
-                        >
-                          {suggestions[item.item_id]}
-                        </button>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
+                      {(() => {
+                        const display = getSuggestionDisplay(item);
+                        if (!display) {
+                          return <span className="text-gray-300">-</span>;
+                        }
+                        if (display.type === 'same') {
+                          return <span className="text-gray-400" title="No change from original">=</span>;
+                        }
+                        return (
+                          <button
+                            onClick={() => acceptSuggestion(item)}
+                            className={`px-2 py-0.5 rounded text-xs font-bold ${
+                              display.type === 'increase'
+                                ? 'bg-green-500 text-white hover:bg-green-600'
+                                : 'bg-red-500 text-white hover:bg-red-600'
+                            }`}
+                            title={`${display.diff} from original (${item.original_quantity}). Click to accept.`}
+                          >
+                            {display.value}
+                          </button>
+                        );
+                      })()}
                     </td>
                     <td className="px-2 py-1.5 text-center">
                       {editingItemId === item.item_id ? (
