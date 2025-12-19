@@ -24,6 +24,15 @@ if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
 
 const bigquery = new BigQuery(bigqueryConfig);
 
+// Log which credential method is being used
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  console.log('BigQuery: Using credentials from GOOGLE_APPLICATION_CREDENTIALS_JSON env var');
+} else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  console.log('BigQuery: Using credentials from file path:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
+} else {
+  console.log('BigQuery: Using local credentials file')
+}
+
 /**
  * Get sales summary by UPC for the last N months
  */

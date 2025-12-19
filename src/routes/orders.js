@@ -273,11 +273,13 @@ router.get('/inventory', authenticateToken, async (req, res) => {
     const upcs = [...new Set(items.map(item => item.upc).filter(Boolean))];
 
     let stockData = {};
+    console.log(`Fetching stock for ${upcs.length} unique UPCs`);
     if (upcs.length > 0) {
       try {
         stockData = await getStockByUPCs(upcs);
+        console.log(`Got stock data for ${Object.keys(stockData).length} UPCs`);
       } catch (bqError) {
-        console.error('BigQuery stock fetch error:', bqError.message);
+        console.error('BigQuery stock fetch error:', bqError.message, bqError.stack);
         // Continue without stock data if BigQuery fails
       }
     }
