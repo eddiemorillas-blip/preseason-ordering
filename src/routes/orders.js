@@ -292,8 +292,9 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
     let missingUPCs = upcs.filter(upc => !velocity[upc]);
     console.log(`Matched ${Object.keys(velocity).length}/${upcs.length} UPCs with sales data`);
 
-    // Fallback: Try to match missing products by name (for UPC changes like new catalog SKUs)
-    if (missingUPCs.length > 0 && missingUPCs.length <= 50) {
+    // Name-based fallback disabled - was causing incorrect color matching
+    // Products with UPCs not in BigQuery will show no velocity data
+    if (false && missingUPCs.length > 0 && missingUPCs.length <= 50) {
       console.log(`Trying name-based fallback for ${missingUPCs.length} missing UPCs...`);
 
       // Get product names for missing UPCs and search BigQuery by name
