@@ -212,8 +212,9 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
     }
 
     const upcResult = await pool.query(upcQuery, params);
-    const upcs = upcResult.rows.map(r => r.upc);
+    const upcs = upcResult.rows.map(r => r.upc).filter(u => u && u.trim());
     console.log(`Found ${upcs.length} UPCs for velocity lookup`);
+    console.log('Sample UPCs from PostgreSQL:', upcs.slice(0, 5));
 
     if (upcs.length === 0) {
       return res.json({ velocity: {} });
@@ -225,7 +226,9 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
     console.log(`Location ${locationId} -> facility ${facilityId}`);
 
     // Query BigQuery for sales velocity
+    // Create both original UPCs and versions with leading zeros stripped for matching
     const upcList = upcs.map(u => `'${u}'`).join(',');
+    const upcListNoLeadingZeros = upcs.map(u => `'${u.replace(/^0+/, '')}'`).join(',');
 
     let velocityQuery = `
       SELECT
@@ -237,7 +240,7 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
       JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
       JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
       WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${parseInt(months)} MONTH)
-        AND p.BARCODE IN (${upcList})
+        AND (p.BARCODE IN (${upcList}) OR LTRIM(p.BARCODE, '0') IN (${upcListNoLeadingZeros}))
         AND ii.QUANTITY > 0
     `;
 
@@ -249,21 +252,46 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
 
     console.log('Running BigQuery velocity query...');
     const [rows] = await bigquery.query({ query: velocityQuery });
-    console.log(`BigQuery returned ${rows.length} rows`);
+    console.log(`BigQuery returned ${rows.length} rows for ${upcs.length} UPCs`);
 
-    // Calculate velocity per UPC
-    const velocity = {};
+    // Log sample of what BigQuery returned
+    if (rows.length > 0) {
+      console.log('Sample BigQuery UPCs:', rows.slice(0, 5).map(r => r.upc));
+    }
+
+    // Build a map of BigQuery UPCs (both original and normalized)
+    const bqUpcMap = {};
     rows.forEach(row => {
       const monthsOfData = Math.max(1, parseInt(row.months_of_data) || 1);
       const totalSold = parseInt(row.total_qty_sold) || 0;
-
-      velocity[row.upc] = {
+      const velocityData = {
         avg_monthly_sales: Math.round((totalSold / monthsOfData) * 10) / 10,
         total_sold: totalSold,
         months_of_data: monthsOfData,
         last_sale: row.last_sale
       };
+      // Store both the original and stripped version for lookup
+      bqUpcMap[row.upc] = velocityData;
+      bqUpcMap[row.upc.replace(/^0+/, '')] = velocityData;
     });
+
+    // Match PostgreSQL UPCs to BigQuery results
+    const velocity = {};
+    upcs.forEach(upc => {
+      // Try exact match first, then stripped match
+      const match = bqUpcMap[upc] || bqUpcMap[upc.replace(/^0+/, '')];
+      if (match) {
+        velocity[upc] = match;
+      }
+    });
+
+    // Log UPCs that had no sales data
+    const missingUPCs = upcs.filter(upc => !velocity[upc]);
+    console.log(`Matched ${Object.keys(velocity).length}/${upcs.length} UPCs with sales data`);
+    if (missingUPCs.length > 0) {
+      console.log(`${missingUPCs.length} UPCs had no BigQuery sales data`);
+      console.log('Sample missing UPCs:', missingUPCs.slice(0, 10));
+    }
 
     res.json({ velocity });
   } catch (error) {
