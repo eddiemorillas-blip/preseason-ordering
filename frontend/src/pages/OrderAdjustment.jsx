@@ -36,8 +36,9 @@ const OrderAdjustment = () => {
 
   // Toolbar settings
   const [stockRules, setStockRules] = useState({
-    highThreshold: 20, highReduction: 25,
-    lowThreshold: 5, lowIncrease: 25
+    highMonths: 6, highReduction: 25,  // If stock covers >= X months of sales, reduce by Y%
+    lowMonths: 2, lowIncrease: 25,     // If stock covers <= X months of sales, increase by Y%
+    loading: false
   });
   const [velocitySettings, setVelocitySettings] = useState({
     coverageMonths: 6, velocityData: null, loading: false
@@ -346,22 +347,60 @@ const OrderAdjustment = () => {
     setSuggestions({});
   };
 
-  // Stock-based suggestions
-  const applyStockRules = () => {
-    const newSuggestions = { ...suggestions };
-    inventory.forEach(item => {
-      const stock = item.stock_on_hand;
-      if (stock === null || stock === undefined) return;
+  // Stock-based suggestions (using sales velocity)
+  const applyStockRules = async () => {
+    if (!selectedBrandId || !selectedSeasonId) {
+      setError('Select a brand to apply stock rules');
+      return;
+    }
 
-      const baseQty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+    setStockRules(prev => ({ ...prev, loading: true }));
 
-      if (stock >= stockRules.highThreshold) {
-        newSuggestions[item.item_id] = Math.round(baseQty * (1 - stockRules.highReduction / 100));
-      } else if (stock <= stockRules.lowThreshold) {
-        newSuggestions[item.item_id] = Math.round(baseQty * (1 + stockRules.lowIncrease / 100));
+    try {
+      // Fetch velocity if not already loaded, or reuse existing
+      let velocityData = velocitySettings.velocityData;
+      if (!velocityData) {
+        const response = await orderAPI.getVelocity({
+          seasonId: selectedSeasonId,
+          brandId: selectedBrandId,
+          locationId: selectedLocationId || undefined,
+          months: 12
+        });
+        velocityData = response.data.velocity || {};
+        setVelocitySettings(prev => ({ ...prev, velocityData }));
       }
-    });
-    setSuggestions(newSuggestions);
+
+      const newSuggestions = { ...suggestions };
+      inventory.forEach(item => {
+        const stock = item.stock_on_hand;
+        if (stock === null || stock === undefined || !item.upc) return;
+
+        const velocity = velocityData[item.upc];
+        const avgMonthlySales = velocity?.avg_monthly_sales || 0;
+
+        // Skip items with no sales history
+        if (avgMonthlySales <= 0) return;
+
+        // Calculate how many months of sales the current stock covers
+        const monthsOfCoverage = stock / avgMonthlySales;
+        const baseQty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+
+        if (monthsOfCoverage >= stockRules.highMonths) {
+          // Too much stock - reduce order
+          newSuggestions[item.item_id] = Math.round(baseQty * (1 - stockRules.highReduction / 100));
+        } else if (monthsOfCoverage <= stockRules.lowMonths) {
+          // Low stock - increase order
+          newSuggestions[item.item_id] = Math.round(baseQty * (1 + stockRules.lowIncrease / 100));
+        }
+      });
+
+      setSuggestions(newSuggestions);
+    } catch (err) {
+      console.error('Error applying stock rules:', err);
+      setError('Failed to fetch sales velocity for stock rules');
+    } finally {
+      setStockRules(prev => ({ ...prev, loading: false }));
+    }
   };
 
   // Budget scaling
@@ -641,48 +680,67 @@ const OrderAdjustment = () => {
               <div className="p-4 bg-gray-50 border-b">
                 <div className="flex flex-wrap items-end gap-4">
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">High Stock ≥</label>
-                    <input
-                      type="number"
-                      value={stockRules.highThreshold}
-                      onChange={(e) => setStockRules({ ...stockRules, highThreshold: parseInt(e.target.value) || 0 })}
-                      className="w-20 px-2 py-1 border rounded text-sm"
-                    />
+                    <label className="block text-xs text-gray-500 mb-1">If stock covers ≥</label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        value={stockRules.highMonths}
+                        onChange={(e) => setStockRules({ ...stockRules, highMonths: parseInt(e.target.value) || 0 })}
+                        className="w-16 px-2 py-1 border rounded text-sm"
+                      />
+                      <span className="text-xs text-gray-500">months</span>
+                    </div>
                   </div>
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">Reduce by %</label>
-                    <input
-                      type="number"
-                      value={stockRules.highReduction}
-                      onChange={(e) => setStockRules({ ...stockRules, highReduction: parseInt(e.target.value) || 0 })}
-                      className="w-20 px-2 py-1 border rounded text-sm"
-                    />
+                    <label className="block text-xs text-gray-500 mb-1">Reduce by</label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        value={stockRules.highReduction}
+                        onChange={(e) => setStockRules({ ...stockRules, highReduction: parseInt(e.target.value) || 0 })}
+                        className="w-16 px-2 py-1 border rounded text-sm"
+                      />
+                      <span className="text-xs text-gray-500">%</span>
+                    </div>
                   </div>
                   <div className="text-gray-400">|</div>
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">Low Stock ≤</label>
-                    <input
-                      type="number"
-                      value={stockRules.lowThreshold}
-                      onChange={(e) => setStockRules({ ...stockRules, lowThreshold: parseInt(e.target.value) || 0 })}
-                      className="w-20 px-2 py-1 border rounded text-sm"
-                    />
+                    <label className="block text-xs text-gray-500 mb-1">If stock covers ≤</label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        value={stockRules.lowMonths}
+                        onChange={(e) => setStockRules({ ...stockRules, lowMonths: parseInt(e.target.value) || 0 })}
+                        className="w-16 px-2 py-1 border rounded text-sm"
+                      />
+                      <span className="text-xs text-gray-500">months</span>
+                    </div>
                   </div>
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">Increase by %</label>
-                    <input
-                      type="number"
-                      value={stockRules.lowIncrease}
-                      onChange={(e) => setStockRules({ ...stockRules, lowIncrease: parseInt(e.target.value) || 0 })}
-                      className="w-20 px-2 py-1 border rounded text-sm"
-                    />
+                    <label className="block text-xs text-gray-500 mb-1">Increase by</label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        value={stockRules.lowIncrease}
+                        onChange={(e) => setStockRules({ ...stockRules, lowIncrease: parseInt(e.target.value) || 0 })}
+                        className="w-16 px-2 py-1 border rounded text-sm"
+                      />
+                      <span className="text-xs text-gray-500">%</span>
+                    </div>
                   </div>
                   <button
                     onClick={applyStockRules}
-                    className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                    disabled={stockRules.loading || !selectedBrandId}
+                    className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
                   >
-                    Apply
+                    {stockRules.loading ? 'Loading...' : 'Apply'}
                   </button>
+                  {!selectedBrandId && (
+                    <span className="text-xs text-orange-600">Select a brand first</span>
+                  )}
+                </div>
+                <div className="mt-2 text-xs text-gray-500">
+                  Uses sales velocity to calculate months of coverage per product
                 </div>
               </div>
             )}
