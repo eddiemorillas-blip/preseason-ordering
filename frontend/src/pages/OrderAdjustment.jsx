@@ -1132,6 +1132,7 @@ const OrderAdjustment = () => {
                           onChange={(e) => setEditValue(e.target.value)}
                           onBlur={() => handleEditSave(item)}
                           onKeyDown={(e) => handleKeyDown(e, item)}
+                          onFocus={(e) => e.target.select()}
                           className="w-14 px-1 py-0.5 text-center border border-blue-500 rounded text-sm"
                           autoFocus
                           disabled={saving}
