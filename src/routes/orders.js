@@ -351,16 +351,24 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
           // Try to match missing UPCs by name
           let nameMatched = 0;
           missingUPCs.forEach(upc => {
-            const productName = (upcToName[upc] || '').toUpperCase()
+            const rawName = (upcToName[upc] || '').toUpperCase()
               .replace(/[®™]/g, '')
               .replace(/\s+(XS|S|M|L|XL|XXL|XXXL)$/i, '')
               .trim();
+            // Also create a normalized version without spaces for matching things like "GRIGRI +" to "GRIGRI+"
+            const normalizedName = rawName.replace(/\s+/g, '');
 
             // Find best match in BigQuery results
             for (const [bqName, data] of Object.entries(nameMap)) {
-              if (bqName.includes(productName) || productName.includes(bqName.split(' ').slice(0, 2).join(' '))) {
+              const normalizedBqName = bqName.replace(/\s+/g, '');
+              // Match if either contains the other (with or without spaces)
+              if (normalizedBqName.includes(normalizedName) ||
+                  normalizedName.includes(normalizedBqName) ||
+                  bqName.includes(rawName) ||
+                  rawName.includes(bqName.split(' ').slice(0, 2).join(' '))) {
                 velocity[upc] = { ...data, matched_by: 'name' };
                 nameMatched++;
+                console.log(`  Name matched: ${upcToName[upc]} -> ${bqName}`);
                 break;
               }
             }
