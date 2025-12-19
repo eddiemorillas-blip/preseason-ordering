@@ -1055,6 +1055,7 @@ const OrderAdjustment = () => {
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Stock</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Sugg</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Adj</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Δ</th>
                   <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">Cost</th>
                   <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
                 </tr>
@@ -1136,6 +1137,19 @@ const OrderAdjustment = () => {
                           {getEffectiveQuantity(item)}
                         </button>
                       )}
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      {(() => {
+                        const effective = getEffectiveQuantity(item);
+                        const original = item.original_quantity;
+                        const delta = effective - original;
+                        if (delta === 0) return <span className="text-gray-300">-</span>;
+                        return (
+                          <span className={`font-medium ${delta > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {delta > 0 ? '+' : ''}{delta}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="px-2 py-1.5 text-right text-gray-900">
                       {formatPrice(item.unit_cost)}
