@@ -195,9 +195,9 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'seasonId and brandId are required' });
     }
 
-    // Get UPCs for products in orders matching the filter
+    // Get UPCs and product names for products in orders matching the filter
     let upcQuery = `
-      SELECT DISTINCT p.upc
+      SELECT DISTINCT p.upc, p.name as product_name
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.id
       JOIN products p ON oi.product_id = p.id
@@ -212,7 +212,10 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
     }
 
     const upcResult = await pool.query(upcQuery, params);
-    const upcs = upcResult.rows.map(r => r.upc).filter(u => u && u.trim());
+    const products = upcResult.rows.filter(r => r.upc && r.upc.trim());
+    const upcs = products.map(r => r.upc);
+    const upcToName = {};
+    products.forEach(r => { upcToName[r.upc] = r.product_name; });
     console.log(`Found ${upcs.length} UPCs for velocity lookup`);
     console.log('Sample UPCs from PostgreSQL:', upcs.slice(0, 5));
 
@@ -286,11 +289,95 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
     });
 
     // Log UPCs that had no sales data
-    const missingUPCs = upcs.filter(upc => !velocity[upc]);
+    let missingUPCs = upcs.filter(upc => !velocity[upc]);
     console.log(`Matched ${Object.keys(velocity).length}/${upcs.length} UPCs with sales data`);
+
+    // Fallback: Try to match missing products by name (for UPC changes like new catalog SKUs)
+    if (missingUPCs.length > 0 && missingUPCs.length <= 50) {
+      console.log(`Trying name-based fallback for ${missingUPCs.length} missing UPCs...`);
+
+      // Get product names for missing UPCs and search BigQuery by name
+      const namesToSearch = missingUPCs.map(upc => {
+        const name = upcToName[upc] || '';
+        // Extract core product name (remove size/color suffixes, clean up)
+        return name.toUpperCase()
+          .replace(/\s+(XS|S|M|L|XL|XXL|XXXL|\d+M|\d+CM)$/i, '')
+          .replace(/\s+(GRAY|GREY|BLACK|WHITE|BLUE|RED|ORANGE|GREEN|YELLOW|PURPLE|PINK|VIOLET)$/i, '')
+          .replace(/[®™]/g, '')
+          .trim();
+      }).filter(n => n.length > 3);
+
+      if (namesToSearch.length > 0) {
+        // Create name patterns for BigQuery LIKE matching
+        const uniqueNames = [...new Set(namesToSearch)];
+        const namePatterns = uniqueNames.map(n => `UPPER(p.DESCRIPTION) LIKE '%${n.replace(/'/g, "''")}%'`).join(' OR ');
+
+        let fallbackQuery = `
+          SELECT
+            p.DESCRIPTION as product_name,
+            SUM(ii.QUANTITY) as total_qty_sold,
+            COUNT(DISTINCT FORMAT_DATE('%Y-%m', DATE(i.POSTDATE))) as months_of_data,
+            MAX(i.POSTDATE) as last_sale
+          FROM rgp_cleaned_zone.invoice_items_all ii
+          JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
+          JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
+          WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${parseInt(months)} MONTH)
+            AND (${namePatterns})
+            AND ii.QUANTITY > 0
+        `;
+
+        if (facilityId) {
+          fallbackQuery += ` AND p.facility_id_true = '${facilityId}'`;
+        }
+        fallbackQuery += ` GROUP BY p.DESCRIPTION`;
+
+        try {
+          const [nameRows] = await bigquery.query({ query: fallbackQuery });
+          console.log(`Name fallback returned ${nameRows.length} results`);
+
+          // Match by name similarity
+          const nameMap = {};
+          nameRows.forEach(row => {
+            const monthsOfData = Math.max(1, parseInt(row.months_of_data) || 1);
+            const totalSold = parseInt(row.total_qty_sold) || 0;
+            nameMap[row.product_name.toUpperCase()] = {
+              avg_monthly_sales: Math.round((totalSold / monthsOfData) * 10) / 10,
+              total_sold: totalSold,
+              months_of_data: monthsOfData,
+              last_sale: row.last_sale
+            };
+          });
+
+          // Try to match missing UPCs by name
+          let nameMatched = 0;
+          missingUPCs.forEach(upc => {
+            const productName = (upcToName[upc] || '').toUpperCase()
+              .replace(/[®™]/g, '')
+              .replace(/\s+(XS|S|M|L|XL|XXL|XXXL)$/i, '')
+              .trim();
+
+            // Find best match in BigQuery results
+            for (const [bqName, data] of Object.entries(nameMap)) {
+              if (bqName.includes(productName) || productName.includes(bqName.split(' ').slice(0, 2).join(' '))) {
+                velocity[upc] = { ...data, matched_by: 'name' };
+                nameMatched++;
+                break;
+              }
+            }
+          });
+
+          console.log(`Name fallback matched ${nameMatched} additional products`);
+        } catch (fallbackErr) {
+          console.error('Name fallback query failed:', fallbackErr.message);
+        }
+      }
+    }
+
+    // Final count of missing UPCs
+    missingUPCs = upcs.filter(upc => !velocity[upc]);
     if (missingUPCs.length > 0) {
-      console.log(`${missingUPCs.length} UPCs had no BigQuery sales data`);
-      console.log('Sample missing UPCs:', missingUPCs.slice(0, 10));
+      console.log(`${missingUPCs.length} UPCs still have no sales data (likely new products)`);
+      console.log('Sample missing:', missingUPCs.slice(0, 5).map(u => `${u}: ${upcToName[u]}`));
     }
 
     res.json({ velocity });
