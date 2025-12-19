@@ -228,9 +228,20 @@ const OrderAdjustment = () => {
     });
   };
 
-  const handleKeyDown = (e, item) => {
+  const handleKeyDown = async (e, item) => {
     if (e.key === 'Enter') {
-      handleEditSave(item);
+      e.preventDefault();
+      await handleEditSave(item);
+      // Move to next item in the list
+      const currentIndex = inventory.findIndex(i => i.item_id === item.item_id);
+      if (currentIndex >= 0 && currentIndex < inventory.length - 1) {
+        const nextItem = inventory[currentIndex + 1];
+        setEditingItemId(nextItem.item_id);
+        setEditValue(nextItem.adjusted_quantity !== null ? nextItem.adjusted_quantity.toString() : nextItem.original_quantity.toString());
+      } else {
+        // Last item, just close editing
+        setEditingItemId(null);
+      }
     } else if (e.key === 'Escape') {
       handleEditCancel();
     }
