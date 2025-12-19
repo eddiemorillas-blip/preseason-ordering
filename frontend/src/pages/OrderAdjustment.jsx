@@ -468,7 +468,7 @@ const OrderAdjustment = () => {
       if (skippedZeroQty > 0) {
         console.log(`Skipped ${skippedZeroQty} overstocked items with 0 order quantity`);
       }
-      console.log(`Total reduction: $${totalReduction.toFixed(2)} of max $${maxReductionValue.toFixed(2)} (${(totalReduction/currentTotal*100).toFixed(1)}% of order)`)
+      console.log(`Total reduction: $${totalReduction.toFixed(2)} of max $${maxReductionValue.toFixed(2)} (${(totalReduction/originalTotal*100).toFixed(1)}% of order)`)
 
       // UNDERSTOCKED: Increase to reach target coverage (based on original qty)
       for (const { item, avgMonthlySales } of understocked) {
