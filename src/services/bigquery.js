@@ -209,10 +209,10 @@ async function getStockOnHand(upcs = []) {
       barcode as upc,
       CAST(facility_id AS STRING) as facility_id,
       facility_name,
-      reported_qty as stock_on_hand
+      on_hand_qty as stock_on_hand
     FROM \`front-data-production.dataform.INVENTORY_on_hand_report\`
     WHERE barcode IN (${upcList})
-      AND reported_qty IS NOT NULL
+      AND on_hand_qty IS NOT NULL
   `;
 
   const [rows] = await bigquery.query({ query });
