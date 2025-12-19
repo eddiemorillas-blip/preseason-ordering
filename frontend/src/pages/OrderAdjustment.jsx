@@ -988,6 +988,26 @@ const OrderAdjustment = () => {
         {/* Inventory Table */}
         {!loading && inventory.length > 0 && (
           <div className="bg-white shadow rounded-lg overflow-hidden">
+            {/* Legend */}
+            <div className="px-4 py-2 bg-gray-50 border-b flex items-center gap-6 text-xs">
+              <span className="text-gray-500 font-medium">Suggestion Legend:</span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-6 text-center bg-green-500 text-white rounded px-1 font-bold">5</span>
+                <span className="text-gray-600">= Order more than original</span>
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-6 text-center bg-red-500 text-white rounded px-1 font-bold">2</span>
+                <span className="text-gray-600">= Order less than original</span>
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-4 text-center text-gray-400">=</span>
+                <span className="text-gray-600">= No change needed</span>
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-4 text-center text-gray-300">-</span>
+                <span className="text-gray-600">= No sales data</span>
+              </span>
+            </div>
             <table className="w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
