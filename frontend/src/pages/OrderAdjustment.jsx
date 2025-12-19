@@ -218,6 +218,9 @@ const OrderAdjustment = () => {
           const qty = i.adjusted_quantity !== null ? i.adjusted_quantity : i.original_quantity;
           return sum + parseInt(qty || 0);
         }, 0),
+        totalOriginalWholesale: currentInventory.reduce((sum, i) => {
+          return sum + (parseFloat(i.unit_cost || 0) * parseInt(i.original_quantity || 0));
+        }, 0),
         totalWholesale: currentInventory.reduce((sum, i) => {
           const qty = i.adjusted_quantity !== null ? i.adjusted_quantity : i.original_quantity;
           return sum + (parseFloat(i.unit_cost || 0) * parseInt(qty || 0));
@@ -706,24 +709,30 @@ const OrderAdjustment = () => {
 
         {/* Summary Stats */}
         {summary && (
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
             <div className="bg-white p-3 rounded-lg shadow">
               <div className="text-xs text-gray-500">Items</div>
               <div className="text-xl font-bold text-gray-900">{summary.totalItems}</div>
             </div>
             <div className="bg-white p-3 rounded-lg shadow">
-              <div className="text-xs text-gray-500">Original</div>
+              <div className="text-xs text-gray-500">Orig Units</div>
               <div className="text-xl font-bold text-gray-900">{summary.totalOriginalUnits}</div>
             </div>
             <div className="bg-white p-3 rounded-lg shadow">
-              <div className="text-xs text-gray-500">Adjusted</div>
+              <div className="text-xs text-gray-500">Adj Units</div>
               <div className={`text-xl font-bold ${summary.totalAdjustedUnits !== summary.totalOriginalUnits ? 'text-blue-600' : 'text-gray-900'}`}>
                 {summary.totalAdjustedUnits}
               </div>
             </div>
             <div className="bg-white p-3 rounded-lg shadow">
+              <div className="text-xs text-gray-500">Original $</div>
+              <div className="text-xl font-bold text-gray-900">{formatPrice(summary.totalOriginalWholesale)}</div>
+            </div>
+            <div className="bg-white p-3 rounded-lg shadow">
               <div className="text-xs text-gray-500">Current $</div>
-              <div className="text-xl font-bold text-gray-900">{formatPrice(summary.totalWholesale)}</div>
+              <div className={`text-xl font-bold ${summary.totalWholesale !== summary.totalOriginalWholesale ? 'text-blue-600' : 'text-gray-900'}`}>
+                {formatPrice(summary.totalWholesale)}
+              </div>
             </div>
             {suggestionsCount > 0 && (
               <div className="bg-yellow-50 p-3 rounded-lg shadow border border-yellow-200">
