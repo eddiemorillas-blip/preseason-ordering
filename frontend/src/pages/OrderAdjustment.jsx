@@ -36,8 +36,10 @@ const OrderAdjustment = () => {
 
   // Toolbar settings
   const [stockRules, setStockRules] = useState({
-    highMonths: 6, highReduction: 25,  // If stock covers >= X months of sales, reduce by Y%
-    lowMonths: 2, lowIncrease: 25,     // If stock covers <= X months of sales, increase by Y%
+    highMonths: 6,           // If stock covers >= X months, consider overstocked
+    maxOrderReduction: 20,   // Max total order reduction % allowed
+    lowMonths: 2,            // If stock covers <= X months, consider understocked
+    targetCoverage: 3,       // Target months of coverage for understocked
     loading: false
   });
   const [velocitySettings, setVelocitySettings] = useState({
@@ -371,29 +373,71 @@ const OrderAdjustment = () => {
         setVelocitySettings(prev => ({ ...prev, velocityData }));
       }
 
-      const newSuggestions = { ...suggestions };
+      // Calculate current order total
+      const currentTotal = inventory.reduce((sum, item) => {
+        const qty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+        return sum + (parseFloat(item.unit_cost || 0) * qty);
+      }, 0);
+
+      const maxReductionValue = currentTotal * (stockRules.maxOrderReduction / 100);
+
+      // Categorize items
+      const overstocked = [];
+      const understocked = [];
+
       inventory.forEach(item => {
         const stock = item.stock_on_hand;
         if (stock === null || stock === undefined || !item.upc) return;
 
         const velocity = velocityData[item.upc];
         const avgMonthlySales = velocity?.avg_monthly_sales || 0;
-
-        // Skip items with no sales history
         if (avgMonthlySales <= 0) return;
 
-        // Calculate how many months of sales the current stock covers
         const monthsOfCoverage = stock / avgMonthlySales;
-        const baseQty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
+        const currentQty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
 
         if (monthsOfCoverage >= stockRules.highMonths) {
-          // Too much stock - reduce order
-          newSuggestions[item.item_id] = Math.round(baseQty * (1 - stockRules.highReduction / 100));
+          overstocked.push({ item, monthsOfCoverage, avgMonthlySales, currentQty });
         } else if (monthsOfCoverage <= stockRules.lowMonths) {
-          // Low stock - increase order
-          newSuggestions[item.item_id] = Math.round(baseQty * (1 + stockRules.lowIncrease / 100));
+          understocked.push({ item, monthsOfCoverage, avgMonthlySales, currentQty });
         }
       });
+
+      const newSuggestions = { ...suggestions };
+
+      // OVERSTOCKED: Reduce as close to 0 as possible, but cap total reduction at maxOrderReduction%
+      // Sort by most overstocked first (highest months of coverage)
+      overstocked.sort((a, b) => b.monthsOfCoverage - a.monthsOfCoverage);
+
+      let totalReduction = 0;
+      for (const { item, currentQty } of overstocked) {
+        const itemCost = parseFloat(item.unit_cost || 0);
+        if (itemCost <= 0) continue;
+
+        const remainingBudget = maxReductionValue - totalReduction;
+        if (remainingBudget <= 0) break;
+
+        // Calculate max units we can reduce within remaining budget
+        const maxUnitsToReduce = Math.floor(remainingBudget / itemCost);
+        const unitsToReduce = Math.min(currentQty, maxUnitsToReduce);
+
+        const newQty = currentQty - unitsToReduce;
+        newSuggestions[item.item_id] = newQty;
+        totalReduction += unitsToReduce * itemCost;
+      }
+
+      // UNDERSTOCKED: Increase up to 100% of what's needed to reach target coverage
+      for (const { item, avgMonthlySales, currentQty } of understocked) {
+        const stock = item.stock_on_hand || 0;
+
+        // Units needed to reach target months of coverage
+        const targetStock = avgMonthlySales * stockRules.targetCoverage;
+        const unitsNeeded = Math.max(0, Math.round(targetStock - stock));
+
+        // Increase order by up to 100% of what's needed
+        const newQty = currentQty + unitsNeeded;
+        newSuggestions[item.item_id] = newQty;
+      }
 
       setSuggestions(newSuggestions);
     } catch (err) {
@@ -680,53 +724,62 @@ const OrderAdjustment = () => {
             {activePanel === 'stock' && (
               <div className="p-4 bg-gray-50 border-b">
                 <div className="flex flex-wrap items-end gap-4">
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">If stock covers ≥</label>
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        value={stockRules.highMonths}
-                        onChange={(e) => setStockRules({ ...stockRules, highMonths: parseInt(e.target.value) || 0 })}
-                        className="w-16 px-2 py-1 border rounded text-sm"
-                      />
-                      <span className="text-xs text-gray-500">months</span>
+                  <div className="border-r pr-4">
+                    <div className="text-xs font-medium text-red-600 mb-2">Overstocked (reduce)</div>
+                    <div className="flex items-end gap-2">
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">If coverage ≥</label>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            value={stockRules.highMonths}
+                            onChange={(e) => setStockRules({ ...stockRules, highMonths: parseInt(e.target.value) || 0 })}
+                            className="w-14 px-2 py-1 border rounded text-sm"
+                          />
+                          <span className="text-xs text-gray-500">mo</span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Max order cut</label>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            value={stockRules.maxOrderReduction}
+                            onChange={(e) => setStockRules({ ...stockRules, maxOrderReduction: parseInt(e.target.value) || 0 })}
+                            className="w-14 px-2 py-1 border rounded text-sm"
+                          />
+                          <span className="text-xs text-gray-500">%</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Reduce by</label>
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        value={stockRules.highReduction}
-                        onChange={(e) => setStockRules({ ...stockRules, highReduction: parseInt(e.target.value) || 0 })}
-                        className="w-16 px-2 py-1 border rounded text-sm"
-                      />
-                      <span className="text-xs text-gray-500">%</span>
-                    </div>
-                  </div>
-                  <div className="text-gray-400">|</div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">If stock covers ≤</label>
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        value={stockRules.lowMonths}
-                        onChange={(e) => setStockRules({ ...stockRules, lowMonths: parseInt(e.target.value) || 0 })}
-                        className="w-16 px-2 py-1 border rounded text-sm"
-                      />
-                      <span className="text-xs text-gray-500">months</span>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Increase by</label>
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        value={stockRules.lowIncrease}
-                        onChange={(e) => setStockRules({ ...stockRules, lowIncrease: parseInt(e.target.value) || 0 })}
-                        className="w-16 px-2 py-1 border rounded text-sm"
-                      />
-                      <span className="text-xs text-gray-500">%</span>
+                  <div className="pl-2">
+                    <div className="text-xs font-medium text-green-600 mb-2">Understocked (increase)</div>
+                    <div className="flex items-end gap-2">
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">If coverage ≤</label>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            value={stockRules.lowMonths}
+                            onChange={(e) => setStockRules({ ...stockRules, lowMonths: parseInt(e.target.value) || 0 })}
+                            className="w-14 px-2 py-1 border rounded text-sm"
+                          />
+                          <span className="text-xs text-gray-500">mo</span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Target coverage</label>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            value={stockRules.targetCoverage}
+                            onChange={(e) => setStockRules({ ...stockRules, targetCoverage: parseInt(e.target.value) || 0 })}
+                            className="w-14 px-2 py-1 border rounded text-sm"
+                          />
+                          <span className="text-xs text-gray-500">mo</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                   <button
@@ -741,7 +794,7 @@ const OrderAdjustment = () => {
                   )}
                 </div>
                 <div className="mt-2 text-xs text-gray-500">
-                  Uses sales velocity to calculate months of coverage per product
+                  Overstocked items reduced to 0 (most overstocked first) until max order cut reached. Understocked items increased to reach target coverage.
                 </div>
               </div>
             )}
