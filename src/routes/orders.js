@@ -355,22 +355,45 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
               .replace(/[®™]/g, '')
               .replace(/\s+(XS|S|M|L|XL|XXL|XXXL)$/i, '')
               .trim();
-            // Also create a normalized version without spaces for matching things like "GRIGRI +" to "GRIGRI+"
+            // Normalized version without spaces
             const normalizedName = rawName.replace(/\s+/g, '');
+            // Check if product name has a "+" suffix (like GRIGRI+)
+            const hasPlus = rawName.includes('+');
 
-            // Find best match in BigQuery results
+            // Find best match in BigQuery results - prefer exact matches
+            let bestMatch = null;
+            let bestScore = 0;
+
             for (const [bqName, data] of Object.entries(nameMap)) {
               const normalizedBqName = bqName.replace(/\s+/g, '');
-              // Match if either contains the other (with or without spaces)
-              if (normalizedBqName.includes(normalizedName) ||
-                  normalizedName.includes(normalizedBqName) ||
-                  bqName.includes(rawName) ||
-                  rawName.includes(bqName.split(' ').slice(0, 2).join(' '))) {
-                velocity[upc] = { ...data, matched_by: 'name' };
-                nameMatched++;
-                console.log(`  Name matched: ${upcToName[upc]} -> ${bqName}`);
-                break;
+              const bqHasPlus = bqName.includes('+');
+
+              // Skip if plus mismatch (GRIGRI+ should not match GRIGRI)
+              if (hasPlus !== bqHasPlus) continue;
+
+              let score = 0;
+              // Exact normalized match
+              if (normalizedBqName === normalizedName) {
+                score = 100;
               }
+              // One contains the other
+              else if (normalizedBqName.includes(normalizedName)) {
+                score = 80;
+              }
+              else if (normalizedName.includes(normalizedBqName)) {
+                score = 70;
+              }
+
+              if (score > bestScore) {
+                bestScore = score;
+                bestMatch = { bqName, data };
+              }
+            }
+
+            if (bestMatch) {
+              velocity[upc] = { ...bestMatch.data, matched_by: 'name' };
+              nameMatched++;
+              console.log(`  Name matched: ${upcToName[upc]} -> ${bestMatch.bqName}`);
             }
           });
 
