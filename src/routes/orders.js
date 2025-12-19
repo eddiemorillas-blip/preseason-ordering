@@ -184,6 +184,94 @@ router.get('/ship-dates', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/orders/inventory/velocity - Get sales velocity data from BigQuery
+// NOTE: This route must be before /inventory to match correctly
+router.get('/inventory/velocity', authenticateToken, async (req, res) => {
+  console.log('Velocity endpoint called with:', req.query);
+  try {
+    const { seasonId, brandId, locationId, months = 12 } = req.query;
+
+    if (!seasonId || !brandId) {
+      return res.status(400).json({ error: 'seasonId and brandId are required' });
+    }
+
+    // Get UPCs for products in orders matching the filter
+    let upcQuery = `
+      SELECT DISTINCT p.upc
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE o.season_id = $1 AND o.brand_id = $2
+        AND p.upc IS NOT NULL
+    `;
+    const params = [seasonId, brandId];
+
+    if (locationId) {
+      upcQuery += ' AND o.location_id = $3';
+      params.push(locationId);
+    }
+
+    const upcResult = await pool.query(upcQuery, params);
+    const upcs = upcResult.rows.map(r => r.upc);
+    console.log(`Found ${upcs.length} UPCs for velocity lookup`);
+
+    if (upcs.length === 0) {
+      return res.json({ velocity: {} });
+    }
+
+    // Get facility ID for location
+    const { LOCATION_TO_FACILITY, bigquery } = require('../services/bigquery');
+    const facilityId = locationId ? LOCATION_TO_FACILITY[locationId] : null;
+    console.log(`Location ${locationId} -> facility ${facilityId}`);
+
+    // Query BigQuery for sales velocity
+    const upcList = upcs.map(u => `'${u}'`).join(',');
+
+    let velocityQuery = `
+      SELECT
+        p.BARCODE as upc,
+        SUM(ii.QUANTITY) as total_qty_sold,
+        COUNT(DISTINCT FORMAT_TIMESTAMP('%Y-%m', i.POSTDATE)) as months_of_data,
+        MAX(i.POSTDATE) as last_sale
+      FROM rgp_cleaned_zone.invoice_items_all ii
+      JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
+      JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
+      WHERE i.POSTDATE >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${parseInt(months)} MONTH)
+        AND p.BARCODE IN (${upcList})
+        AND ii.QUANTITY > 0
+    `;
+
+    if (facilityId) {
+      velocityQuery += ` AND p.facility_id_true = '${facilityId}'`;
+    }
+
+    velocityQuery += ` GROUP BY p.BARCODE`;
+
+    console.log('Running BigQuery velocity query...');
+    const [rows] = await bigquery.query({ query: velocityQuery });
+    console.log(`BigQuery returned ${rows.length} rows`);
+
+    // Calculate velocity per UPC
+    const velocity = {};
+    rows.forEach(row => {
+      const monthsOfData = Math.max(1, parseInt(row.months_of_data) || 1);
+      const totalSold = parseInt(row.total_qty_sold) || 0;
+
+      velocity[row.upc] = {
+        avg_monthly_sales: Math.round((totalSold / monthsOfData) * 10) / 10,
+        total_sold: totalSold,
+        months_of_data: monthsOfData,
+        last_sale: row.last_sale
+      };
+    });
+
+    res.json({ velocity });
+  } catch (error) {
+    console.error('Get velocity error:', error.message, error.stack);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/orders/inventory - Get inventory view for order adjustment
 router.get('/inventory', authenticateToken, async (req, res) => {
   try {
@@ -1568,91 +1656,6 @@ router.post('/batch-adjust', authenticateToken, authorizeRoles('admin', 'buyer')
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
-  }
-});
-
-// GET /api/orders/inventory/velocity - Get sales velocity data from BigQuery
-router.get('/inventory/velocity', authenticateToken, async (req, res) => {
-  try {
-    const { seasonId, brandId, locationId, months = 12 } = req.query;
-
-    if (!seasonId || !brandId) {
-      return res.status(400).json({ error: 'seasonId and brandId are required' });
-    }
-
-    // Get UPCs for products in orders matching the filter
-    let upcQuery = `
-      SELECT DISTINCT p.upc
-      FROM order_items oi
-      JOIN orders o ON oi.order_id = o.id
-      JOIN products p ON oi.product_id = p.id
-      WHERE o.season_id = $1 AND o.brand_id = $2
-        AND p.upc IS NOT NULL
-    `;
-    const params = [seasonId, brandId];
-
-    if (locationId) {
-      upcQuery += ' AND o.location_id = $3';
-      params.push(locationId);
-    }
-
-    const upcResult = await pool.query(upcQuery, params);
-    const upcs = upcResult.rows.map(r => r.upc);
-
-    if (upcs.length === 0) {
-      return res.json({ velocity: {} });
-    }
-
-    // Get facility ID for location
-    const { LOCATION_TO_FACILITY } = require('../services/bigquery');
-    const facilityId = locationId ? LOCATION_TO_FACILITY[locationId] : null;
-
-    // Query BigQuery for sales velocity
-    const { bigquery } = require('../services/bigquery');
-    const upcList = upcs.map(u => `'${u}'`).join(',');
-
-    let velocityQuery = `
-      SELECT
-        p.BARCODE as upc,
-        SUM(ii.QUANTITY) as total_qty_sold,
-        COUNT(DISTINCT FORMAT_TIMESTAMP('%Y-%m', i.POSTDATE)) as months_of_data,
-        MAX(i.POSTDATE) as last_sale
-      FROM rgp_cleaned_zone.invoice_items_all ii
-      JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
-      JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
-      WHERE i.POSTDATE >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${parseInt(months)} MONTH)
-        AND p.BARCODE IN (${upcList})
-        AND ii.QUANTITY > 0
-    `;
-
-    if (facilityId) {
-      velocityQuery += ` AND p.facility_id_true = '${facilityId}'`;
-    }
-
-    velocityQuery += `
-      GROUP BY p.BARCODE
-    `;
-
-    const [rows] = await bigquery.query({ query: velocityQuery });
-
-    // Calculate velocity per UPC
-    const velocity = {};
-    rows.forEach(row => {
-      const monthsOfData = Math.max(1, parseInt(row.months_of_data) || 1);
-      const totalSold = parseInt(row.total_qty_sold) || 0;
-
-      velocity[row.upc] = {
-        avg_monthly_sales: Math.round((totalSold / monthsOfData) * 10) / 10,
-        total_sold: totalSold,
-        months_of_data: monthsOfData,
-        last_sale: row.last_sale
-      };
-    });
-
-    res.json({ velocity });
-  } catch (error) {
-    console.error('Get velocity error:', error);
-    res.status(500).json({ error: error.message });
   }
 });
 

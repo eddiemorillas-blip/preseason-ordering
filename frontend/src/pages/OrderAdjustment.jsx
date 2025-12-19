@@ -134,9 +134,10 @@ const OrderAdjustment = () => {
       setInventory([]);
       setSummary(null);
     }
-    // Clear suggestions when filters change
+    // Clear suggestions and cached velocity data when filters change
     setSuggestions({});
     setSelectedItems(new Set());
+    setVelocitySettings(prev => ({ ...prev, velocityData: null }));
   }, [selectedSeasonId, selectedBrandId, selectedLocationId, selectedShipDate]);
 
   const fetchInventory = async () => {
