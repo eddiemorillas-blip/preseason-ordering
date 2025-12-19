@@ -426,17 +426,26 @@ const OrderAdjustment = () => {
         }
       });
 
-      const newSuggestions = { ...suggestions };
+      // Start fresh - don't stack on previous suggestions
+      const newSuggestions = {};
 
       // OVERSTOCKED: Reduce as close to 0 as possible, but cap total reduction at maxOrderReduction%
       // Sort by most overstocked first (highest months of coverage)
       overstocked.sort((a, b) => b.monthsOfCoverage - a.monthsOfCoverage);
 
       let totalReduction = 0;
+      let skippedZeroQty = 0;
       console.log(`Found ${overstocked.length} overstocked items, ${understocked.length} understocked items`);
 
-      for (const { item, currentQty, monthsOfCoverage } of overstocked) {
+      for (const { item, monthsOfCoverage } of overstocked) {
+        // Use ORIGINAL quantity, not suggestion - we want to reduce from original order
+        const originalQty = item.original_quantity || 0;
         const itemCost = parseFloat(item.unit_cost || 0);
+
+        if (originalQty <= 0) {
+          skippedZeroQty++;
+          continue; // Can't reduce items that weren't ordered
+        }
         if (itemCost <= 0) continue;
 
         const remainingBudget = maxReductionValue - totalReduction;
@@ -447,28 +456,33 @@ const OrderAdjustment = () => {
 
         // Calculate max units we can reduce within remaining budget
         const maxUnitsToReduce = Math.floor(remainingBudget / itemCost);
-        const unitsToReduce = Math.min(currentQty, maxUnitsToReduce);
+        const unitsToReduce = Math.min(originalQty, maxUnitsToReduce);
 
-        const newQty = currentQty - unitsToReduce;
+        const newQty = originalQty - unitsToReduce;
         newSuggestions[item.item_id] = newQty;
         totalReduction += unitsToReduce * itemCost;
 
-        console.log(`Item ${item.product_name}: ${currentQty} -> ${newQty} (${monthsOfCoverage.toFixed(1)} mo coverage, reduced $${(unitsToReduce * itemCost).toFixed(2)})`);
+        console.log(`Item ${item.product_name}: ${originalQty} -> ${newQty} (${monthsOfCoverage.toFixed(1)} mo coverage, reduced $${(unitsToReduce * itemCost).toFixed(2)})`);
       }
 
+      if (skippedZeroQty > 0) {
+        console.log(`Skipped ${skippedZeroQty} overstocked items with 0 order quantity`);
+      }
       console.log(`Total reduction: $${totalReduction.toFixed(2)} of max $${maxReductionValue.toFixed(2)} (${(totalReduction/currentTotal*100).toFixed(1)}% of order)`)
 
-      // UNDERSTOCKED: Increase up to 100% of what's needed to reach target coverage
-      for (const { item, avgMonthlySales, currentQty } of understocked) {
+      // UNDERSTOCKED: Increase to reach target coverage (based on original qty)
+      for (const { item, avgMonthlySales } of understocked) {
+        const originalQty = item.original_quantity || 0;
         const stock = item.stock_on_hand || 0;
 
         // Units needed to reach target months of coverage
         const targetStock = avgMonthlySales * stockRules.targetCoverage;
         const unitsNeeded = Math.max(0, Math.round(targetStock - stock));
 
-        // Increase order by up to 100% of what's needed
-        const newQty = currentQty + unitsNeeded;
+        // New qty is original + what's needed (not stacking)
+        const newQty = originalQty + unitsNeeded;
         newSuggestions[item.item_id] = newQty;
+        console.log(`Item ${item.product_name}: ${originalQty} -> ${newQty} (need ${unitsNeeded} to reach ${stockRules.targetCoverage} mo coverage)`);
       }
 
       setSuggestions(newSuggestions);
