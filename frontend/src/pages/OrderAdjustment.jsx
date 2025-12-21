@@ -671,7 +671,7 @@ const OrderAdjustment = () => {
 
     setSaving(true);
     try {
-      await orderAPI.addItem(orderId, {
+      const response = await orderAPI.addItem(orderId, {
         product_id: product.id,
         quantity: qty,
         unit_price: product.wholesale_cost
@@ -684,9 +684,35 @@ const OrderAdjustment = () => {
         return newQtys;
       });
 
-      // Refresh inventory and available products
-      await fetchInventory();
-      await fetchAvailableProducts();
+      // Remove product from available list locally (no refetch needed)
+      setAvailableProducts(prev => {
+        return prev.map(family => ({
+          ...family,
+          products: family.products.filter(p => p.id !== product.id)
+        })).filter(family => family.products.length > 0);
+      });
+
+      // Add new item to inventory locally
+      const newItem = response.data.item;
+      if (newItem) {
+        setInventory(prev => [...prev, {
+          item_id: newItem.id,
+          order_id: newItem.order_id,
+          product_id: newItem.product_id,
+          original_quantity: newItem.quantity,
+          adjusted_quantity: null,
+          unit_cost: newItem.unit_cost,
+          line_total: newItem.line_total,
+          product_name: product.name,
+          base_name: product.base_name,
+          upc: product.upc,
+          size: product.size,
+          color: product.color,
+          inseam: product.inseam,
+          stock_on_hand: 0
+        }]);
+        recalculateSummary();
+      }
     } catch (err) {
       console.error('Error adding item:', err);
       setError('Failed to add item to order');

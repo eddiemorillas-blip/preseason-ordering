@@ -388,18 +388,39 @@ router.get('/available-products', authenticateToken, async (req, res) => {
 
     console.log(`Filtered to ${zeroStockProducts.length} zero-stock products`);
 
-    // Group by base_name
+    // Helper to extract family name from product name/base_name
+    // Removes size patterns from the end (e.g., "Adjama Blue M" -> "Adjama Blue")
+    const extractFamilyName = (product) => {
+      // Prefer base_name if it looks like a proper family name (doesn't end with a size)
+      let name = product.base_name || product.name || '';
+
+      // Common size patterns to remove from the end
+      const sizePatterns = [
+        /\s+(XXS|XS|S|M|L|XL|XXL|2XL|3XL|XXXL)$/i,
+        /\s+\d+(\.\d+)?$/,  // Numeric sizes like "32" or "10.5"
+        /\s+\d+\/\d+$/,     // Fraction sizes like "1/2"
+        /\s+(One Size|OS|OSFA)$/i
+      ];
+
+      for (const pattern of sizePatterns) {
+        name = name.replace(pattern, '');
+      }
+
+      return name.trim();
+    };
+
+    // Group by extracted family name
     const familyMap = {};
     zeroStockProducts.forEach(product => {
-      const baseName = product.base_name || product.name;
-      if (!familyMap[baseName]) {
-        familyMap[baseName] = {
-          base_name: baseName,
+      const familyName = extractFamilyName(product);
+      if (!familyMap[familyName]) {
+        familyMap[familyName] = {
+          base_name: familyName,
           category: product.category,
           products: []
         };
       }
-      familyMap[baseName].products.push(product);
+      familyMap[familyName].products.push(product);
     });
 
     const families = Object.values(familyMap).sort((a, b) =>
