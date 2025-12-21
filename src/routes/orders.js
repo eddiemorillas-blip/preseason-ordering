@@ -418,6 +418,9 @@ router.get('/inventory', authenticateToken, async (req, res) => {
         const qty = item.adjusted_quantity !== null ? item.adjusted_quantity : item.original_quantity;
         return sum + parseInt(qty || 0);
       }, 0),
+      totalOriginalWholesale: items.reduce((sum, item) => {
+        return sum + (parseFloat(item.unit_cost || 0) * parseInt(item.original_quantity || 0));
+      }, 0),
       totalWholesale: items.reduce((sum, item) => {
         const qty = item.adjusted_quantity !== null ? item.adjusted_quantity : item.original_quantity;
         return sum + (parseFloat(item.unit_cost || 0) * parseInt(qty || 0));
