@@ -674,7 +674,8 @@ const OrderAdjustment = () => {
       const response = await orderAPI.addItem(orderId, {
         product_id: product.id,
         quantity: qty,
-        unit_price: product.wholesale_cost
+        unit_price: product.wholesale_cost,
+        is_addition: true  // Mark as addition so it doesn't count toward Original $
       });
 
       // Clear the quantity input for this product
@@ -693,14 +694,15 @@ const OrderAdjustment = () => {
       });
 
       // Add new item to inventory locally
+      // Added items have original_quantity=0 and adjusted_quantity=qty
       const newItem = response.data.item;
       if (newItem) {
         setInventory(prev => [...prev, {
           item_id: newItem.id,
           order_id: newItem.order_id,
           product_id: newItem.product_id,
-          original_quantity: newItem.quantity,
-          adjusted_quantity: null,
+          original_quantity: 0,  // Addition - doesn't count toward Original $
+          adjusted_quantity: qty,  // The quantity user entered
           unit_cost: newItem.unit_cost,
           line_total: newItem.line_total,
           product_name: product.name,
@@ -829,6 +831,21 @@ const OrderAdjustment = () => {
               <div className="text-xs text-gray-500">Original $</div>
               <div className="text-xl font-bold text-gray-900">{formatPrice(summary.totalOriginalWholesale)}</div>
             </div>
+            {(() => {
+              // Calculate added items total (items with original_quantity = 0)
+              const addedTotal = inventory
+                .filter(i => i.original_quantity === 0 && i.adjusted_quantity > 0)
+                .reduce((sum, i) => sum + (parseFloat(i.unit_cost || 0) * i.adjusted_quantity), 0);
+              if (addedTotal > 0) {
+                return (
+                  <div className="bg-green-50 p-3 rounded-lg shadow border border-green-200">
+                    <div className="text-xs text-green-700">Added $</div>
+                    <div className="text-xl font-bold text-green-700">{formatPrice(addedTotal)}</div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
             <div className="bg-white p-3 rounded-lg shadow">
               <div className="text-xs text-gray-500">Current $</div>
               <div className={`text-xl font-bold ${summary.totalWholesale !== summary.totalOriginalWholesale ? 'text-blue-600' : 'text-gray-900'}`}>

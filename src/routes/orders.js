@@ -868,7 +868,7 @@ router.get('/:id/family-groups', authenticateToken, async (req, res) => {
 router.post('/:id/items', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { product_id, quantity, unit_price, notes } = req.body;
+    const { product_id, quantity, unit_price, notes, is_addition } = req.body;
 
     if (!product_id || !quantity) {
       return res.status(400).json({ error: 'Product ID and quantity are required' });
@@ -893,12 +893,18 @@ router.post('/:id/items', authenticateToken, authorizeRoles('admin', 'buyer'), a
       const price = unit_price || product.wholesale_cost || 0;
       const lineTotal = parseFloat(price) * parseInt(quantity);
 
+      // For items added via "Add Items" (is_addition=true):
+      // - original quantity = 0 (doesn't count toward Original $)
+      // - adjusted_quantity = qty (counts toward Current $)
+      const originalQty = is_addition ? 0 : quantity;
+      const adjustedQty = is_addition ? quantity : null;
+
       // Insert order item
       const itemResult = await client.query(
-        `INSERT INTO order_items (order_id, product_id, quantity, unit_cost, line_total, notes)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO order_items (order_id, product_id, quantity, adjusted_quantity, unit_cost, line_total, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
-        [id, product_id, quantity, price, lineTotal, notes || null]
+        [id, product_id, originalQty, adjustedQty, price, lineTotal, notes || null]
       );
 
       // Update order total
