@@ -442,6 +442,8 @@ router.get('/inventory', authenticateToken, async (req, res) => {
   try {
     const { seasonId, brandId, locationId, shipDate } = req.query;
 
+    console.log('Inventory request params:', { seasonId, brandId, locationId, shipDate });
+
     if (!seasonId) {
       return res.status(400).json({ error: 'seasonId is required' });
     }
@@ -523,6 +525,8 @@ router.get('/inventory', authenticateToken, async (req, res) => {
 
     // Get stock on hand from BigQuery for all UPCs
     const items = inventoryResult.rows;
+    const orderNumbers = [...new Set(items.map(item => item.order_number))];
+    console.log(`Inventory query returned ${items.length} items from orders: ${orderNumbers.join(', ')}`);
     const upcs = [...new Set(items.map(item => item.upc).filter(Boolean))];
 
     let stockData = {};
