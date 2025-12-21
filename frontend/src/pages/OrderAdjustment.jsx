@@ -800,11 +800,17 @@ const OrderAdjustment = () => {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">All Dates</option>
-                {shipDates.map((date) => (
-                  <option key={date} value={date}>
-                    {new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })}
-                  </option>
-                ))}
+                {shipDates.map((date) => {
+                  // Parse date string and display in UTC to avoid timezone issues
+                  const d = new Date(date);
+                  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                  const label = `${monthNames[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+                  return (
+                    <option key={date} value={date}>
+                      {label}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           </div>
