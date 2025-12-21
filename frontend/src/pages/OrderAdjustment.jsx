@@ -734,6 +734,20 @@ const OrderAdjustment = () => {
                 {formatPrice(summary.totalWholesale)}
               </div>
             </div>
+            {summary.totalOriginalWholesale > 0 && summary.totalWholesale !== summary.totalOriginalWholesale && (
+              <div className="bg-white p-3 rounded-lg shadow">
+                <div className="text-xs text-gray-500">Change</div>
+                {(() => {
+                  const pctChange = ((summary.totalWholesale - summary.totalOriginalWholesale) / summary.totalOriginalWholesale) * 100;
+                  const isPositive = pctChange > 0;
+                  return (
+                    <div className={`text-xl font-bold ${isPositive ? 'text-green-600' : 'text-red-600'}`}>
+                      {isPositive ? '+' : ''}{pctChange.toFixed(1)}%
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
             {suggestionsCount > 0 && (
               <div className="bg-yellow-50 p-3 rounded-lg shadow border border-yellow-200">
                 <div className="text-xs text-yellow-700">Suggested $</div>
