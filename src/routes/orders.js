@@ -305,7 +305,7 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
 // GET /api/orders/available-products - Get products not in order with zero stock
 router.get('/available-products', authenticateToken, async (req, res) => {
   try {
-    const { seasonId, brandId, locationId } = req.query;
+    const { seasonId, brandId, locationId, shipDate } = req.query;
 
     if (!seasonId || !brandId || !locationId) {
       return res.status(400).json({ error: 'seasonId, brandId, and locationId are required' });
@@ -387,6 +387,45 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     });
 
     console.log(`Filtered to ${zeroStockProducts.length} zero-stock products`);
+
+    // Check if any of these products exist in future orders for this location
+    let futureOrdersMap = {};
+    if (shipDate && zeroStockProducts.length > 0) {
+      const productIds = zeroStockProducts.map(p => p.id);
+      const futureOrdersResult = await pool.query(`
+        SELECT
+          oi.product_id,
+          o.order_number,
+          o.ship_date,
+          oi.quantity,
+          oi.adjusted_quantity
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.id
+        WHERE o.location_id = $1
+          AND o.status != 'cancelled'
+          AND DATE(o.ship_date) > DATE($2::timestamp)
+          AND oi.product_id = ANY($3)
+        ORDER BY o.ship_date
+      `, [locationId, shipDate, productIds]);
+
+      // Group by product_id
+      futureOrdersResult.rows.forEach(row => {
+        if (!futureOrdersMap[row.product_id]) {
+          futureOrdersMap[row.product_id] = [];
+        }
+        futureOrdersMap[row.product_id].push({
+          order_number: row.order_number,
+          ship_date: row.ship_date,
+          quantity: row.adjusted_quantity !== null ? row.adjusted_quantity : row.quantity
+        });
+      });
+      console.log(`Found ${Object.keys(futureOrdersMap).length} products with future orders`);
+    }
+
+    // Add future orders info to each product
+    zeroStockProducts.forEach(product => {
+      product.future_orders = futureOrdersMap[product.id] || [];
+    });
 
     // Helper to extract family name from product name/base_name
     // Removes size patterns from the end (e.g., "Adjama Blue M" -> "Adjama Blue")

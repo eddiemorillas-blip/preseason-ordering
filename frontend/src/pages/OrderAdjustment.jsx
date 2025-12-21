@@ -635,7 +635,8 @@ const OrderAdjustment = () => {
       const response = await orderAPI.getAvailableProducts({
         seasonId: selectedSeasonId,
         brandId: selectedBrandId,
-        locationId: selectedLocationId
+        locationId: selectedLocationId,
+        shipDate: selectedShipDate || undefined
       });
       setAvailableProducts(response.data.families || []);
     } catch (err) {
@@ -1188,17 +1189,31 @@ const OrderAdjustment = () => {
                                   <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Color</th>
                                   <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Size</th>
                                   <th className="px-2 py-1 text-right text-xs font-medium text-gray-500">Cost</th>
+                                  <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Future Orders</th>
                                   <th className="px-2 py-1 text-center text-xs font-medium text-gray-500">Qty</th>
                                   <th className="px-2 py-1"></th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {family.products.map(product => (
-                                  <tr key={product.id} className="border-t hover:bg-gray-50">
+                                  <tr key={product.id} className={`border-t hover:bg-gray-50 ${product.future_orders?.length > 0 ? 'bg-yellow-50' : ''}`}>
                                     <td className="px-2 py-1.5">{product.color || '-'}</td>
                                     <td className="px-2 py-1.5">{product.size || '-'}{product.inseam && `/${product.inseam}`}</td>
                                     <td className="px-2 py-1.5 text-right">
                                       ${parseFloat(product.wholesale_cost || 0).toFixed(2)}
+                                    </td>
+                                    <td className="px-2 py-1.5 text-xs">
+                                      {product.future_orders?.length > 0 ? (
+                                        <span className="text-orange-600" title={product.future_orders.map(fo => `${fo.order_number}: ${fo.quantity} units`).join('\n')}>
+                                          ⚠️ {product.future_orders.map(fo => {
+                                            const d = new Date(fo.ship_date);
+                                            const month = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+                                            return `${month}: ${fo.quantity}`;
+                                          }).join(', ')}
+                                        </span>
+                                      ) : (
+                                        <span className="text-gray-400">-</span>
+                                      )}
                                     </td>
                                     <td className="px-2 py-1.5 text-center">
                                       <input
