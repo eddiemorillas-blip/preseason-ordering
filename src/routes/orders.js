@@ -466,7 +466,8 @@ router.get('/inventory', authenticateToken, async (req, res) => {
     }
 
     if (shipDate) {
-      whereClause += ` AND o.ship_date = $${paramIndex}`;
+      // Compare just the date portion to avoid timezone mismatch issues
+      whereClause += ` AND DATE(o.ship_date) = DATE($${paramIndex}::timestamp)`;
       params.push(shipDate);
       paramIndex++;
     }
