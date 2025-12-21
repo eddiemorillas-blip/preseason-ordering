@@ -55,6 +55,12 @@ const OrderAdjustment = () => {
     min: 0, max: ''
   });
 
+  // Add Items panel state
+  const [availableProducts, setAvailableProducts] = useState([]);
+  const [availableLoading, setAvailableLoading] = useState(false);
+  const [expandedFamilies, setExpandedFamilies] = useState(new Set());
+  const [addQuantities, setAddQuantities] = useState({});
+
   // Fetch filter options on mount
   useEffect(() => {
     const fetchFilters = async () => {
@@ -620,6 +626,75 @@ const OrderAdjustment = () => {
     setSuggestions(newSuggestions);
   };
 
+  // Fetch available zero-stock products
+  const fetchAvailableProducts = async () => {
+    if (!selectedSeasonId || !selectedBrandId || !selectedLocationId) return;
+
+    setAvailableLoading(true);
+    try {
+      const response = await orderAPI.getAvailableProducts({
+        seasonId: selectedSeasonId,
+        brandId: selectedBrandId,
+        locationId: selectedLocationId
+      });
+      setAvailableProducts(response.data.families || []);
+    } catch (err) {
+      console.error('Error fetching available products:', err);
+      setError('Failed to load available products');
+    } finally {
+      setAvailableLoading(false);
+    }
+  };
+
+  // Toggle family expansion
+  const toggleFamily = (baseName) => {
+    setExpandedFamilies(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(baseName)) {
+        newSet.delete(baseName);
+      } else {
+        newSet.add(baseName);
+      }
+      return newSet;
+    });
+  };
+
+  // Add single item to order
+  const addItemToOrder = async (product) => {
+    const qty = addQuantities[product.id] || 1;
+    const orderId = inventory[0]?.order_id;
+
+    if (!orderId) {
+      setError('No order found for this location');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await orderAPI.addItem(orderId, {
+        product_id: product.id,
+        quantity: qty,
+        unit_price: product.wholesale_cost
+      });
+
+      // Clear the quantity input for this product
+      setAddQuantities(prev => {
+        const newQtys = { ...prev };
+        delete newQtys[product.id];
+        return newQtys;
+      });
+
+      // Refresh inventory and available products
+      await fetchInventory();
+      await fetchAvailableProducts();
+    } catch (err) {
+      console.error('Error adding item:', err);
+      setError('Failed to add item to order');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // Calculate suggested totals for display
   const suggestedTotal = inventory.reduce((sum, item) => {
     const qty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
@@ -767,11 +842,19 @@ const OrderAdjustment = () => {
                 { id: 'velocity', label: 'Sales Velocity' },
                 { id: 'budget', label: 'Budget' },
                 { id: 'batch', label: 'Batch' },
-                { id: 'minmax', label: 'Min/Max' }
+                { id: 'minmax', label: 'Min/Max' },
+                { id: 'add', label: '+ Add Items' }
               ].map(tab => (
                 <button
                   key={tab.id}
-                  onClick={() => setActivePanel(activePanel === tab.id ? null : tab.id)}
+                  onClick={() => {
+                    const newPanel = activePanel === tab.id ? null : tab.id;
+                    setActivePanel(newPanel);
+                    // Fetch available products when opening Add Items panel
+                    if (newPanel === 'add' && selectedBrandId) {
+                      fetchAvailableProducts();
+                    }
+                  }}
                   className={`px-4 py-2 text-sm font-medium whitespace-nowrap ${
                     activePanel === tab.id
                       ? 'border-b-2 border-blue-500 text-blue-600'
@@ -1013,6 +1096,93 @@ const OrderAdjustment = () => {
                     Apply Min/Max
                   </button>
                 </div>
+              </div>
+            )}
+
+            {activePanel === 'add' && (
+              <div className="p-4 bg-gray-50 border-b max-h-96 overflow-y-auto">
+                {!selectedBrandId ? (
+                  <div className="text-center py-4 text-orange-600">
+                    Select a brand to view available items
+                  </div>
+                ) : availableLoading ? (
+                  <div className="text-center py-4">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto"></div>
+                    <p className="mt-2 text-sm text-gray-500">Loading available products...</p>
+                  </div>
+                ) : availableProducts.length === 0 ? (
+                  <div className="text-center py-4 text-gray-500">
+                    No zero-stock items available to add
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="text-sm text-gray-600 mb-3">
+                      {availableProducts.reduce((sum, f) => sum + f.products.length, 0)} items with zero stock available to add
+                    </div>
+                    {availableProducts.map(family => (
+                      <div key={family.base_name} className="border rounded bg-white">
+                        <button
+                          onClick={() => toggleFamily(family.base_name)}
+                          className="w-full px-3 py-2 flex justify-between items-center hover:bg-gray-50 text-left"
+                        >
+                          <span className="font-medium">{family.base_name}</span>
+                          <span className="text-sm text-gray-500">
+                            {expandedFamilies.has(family.base_name) ? '▼' : '▶'} {family.products.length} variant(s)
+                          </span>
+                        </button>
+
+                        {expandedFamilies.has(family.base_name) && (
+                          <div className="border-t">
+                            <table className="w-full text-sm">
+                              <thead className="bg-gray-50">
+                                <tr>
+                                  <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Color</th>
+                                  <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Size</th>
+                                  <th className="px-2 py-1 text-right text-xs font-medium text-gray-500">Cost</th>
+                                  <th className="px-2 py-1 text-center text-xs font-medium text-gray-500">Qty</th>
+                                  <th className="px-2 py-1"></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {family.products.map(product => (
+                                  <tr key={product.id} className="border-t hover:bg-gray-50">
+                                    <td className="px-2 py-1.5">{product.color || '-'}</td>
+                                    <td className="px-2 py-1.5">{product.size || '-'}{product.inseam && `/${product.inseam}`}</td>
+                                    <td className="px-2 py-1.5 text-right">
+                                      ${parseFloat(product.wholesale_cost || 0).toFixed(2)}
+                                    </td>
+                                    <td className="px-2 py-1.5 text-center">
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        value={addQuantities[product.id] || ''}
+                                        onChange={(e) => setAddQuantities({
+                                          ...addQuantities,
+                                          [product.id]: parseInt(e.target.value) || 1
+                                        })}
+                                        placeholder="1"
+                                        className="w-14 px-1 py-0.5 border rounded text-center text-sm"
+                                      />
+                                    </td>
+                                    <td className="px-2 py-1.5 text-center">
+                                      <button
+                                        onClick={() => addItemToOrder(product)}
+                                        disabled={saving}
+                                        className="px-2 py-0.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50"
+                                      >
+                                        Add
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -302,6 +302,120 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/orders/available-products - Get products not in order with zero stock
+router.get('/available-products', authenticateToken, async (req, res) => {
+  try {
+    const { seasonId, brandId, locationId } = req.query;
+
+    if (!seasonId || !brandId || !locationId) {
+      return res.status(400).json({ error: 'seasonId, brandId, and locationId are required' });
+    }
+
+    // Get products in catalog for brand/season that are NOT in any order for this location
+    const productsResult = await pool.query(`
+      SELECT
+        p.id,
+        p.name,
+        p.base_name,
+        p.sku,
+        p.upc,
+        p.size,
+        p.color,
+        p.inseam,
+        p.wholesale_cost,
+        p.msrp,
+        p.category,
+        p.gender
+      FROM products p
+      WHERE p.brand_id = $1
+        AND (p.season_id = $2 OR p.season_id IS NULL)
+        AND p.active = true
+        AND p.id NOT IN (
+          SELECT DISTINCT oi.product_id
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          WHERE o.season_id = $2
+            AND o.location_id = $3
+            AND o.status != 'cancelled'
+        )
+      ORDER BY p.base_name, p.color,
+        CASE
+          WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
+          ELSE 0
+        END ASC,
+        CASE p.size
+          WHEN 'XXS' THEN 1 WHEN '2XS' THEN 1
+          WHEN 'XS' THEN 2
+          WHEN 'S' THEN 3
+          WHEN 'M' THEN 4
+          WHEN 'L' THEN 5
+          WHEN 'XL' THEN 6
+          WHEN 'XXL' THEN 7 WHEN '2XL' THEN 7
+          WHEN 'XXXL' THEN 8 WHEN '3XL' THEN 8
+          ELSE 50
+        END,
+        p.size ASC
+    `, [brandId, seasonId, locationId]);
+
+    const products = productsResult.rows;
+    console.log(`Found ${products.length} products not in order for brand ${brandId}, season ${seasonId}, location ${locationId}`);
+
+    if (products.length === 0) {
+      return res.json({ families: [], totalProducts: 0 });
+    }
+
+    // Get stock on hand from BigQuery for all UPCs
+    const upcs = [...new Set(products.map(p => p.upc).filter(Boolean))];
+    let stockData = {};
+
+    if (upcs.length > 0) {
+      try {
+        stockData = await getStockByUPCs(upcs);
+        console.log(`Got stock data for ${Object.keys(stockData).length}/${upcs.length} UPCs`);
+      } catch (bqError) {
+        console.error('BigQuery stock fetch error:', bqError.message);
+        // Continue without stock data
+      }
+    }
+
+    // Filter to zero-stock items only and add stock_on_hand to each product
+    const zeroStockProducts = products.filter(product => {
+      const upcStock = stockData[product.upc];
+      const stockOnHand = upcStock ? (upcStock[parseInt(locationId)] || 0) : 0;
+      product.stock_on_hand = stockOnHand;
+      return stockOnHand === 0;
+    });
+
+    console.log(`Filtered to ${zeroStockProducts.length} zero-stock products`);
+
+    // Group by base_name
+    const familyMap = {};
+    zeroStockProducts.forEach(product => {
+      const baseName = product.base_name || product.name;
+      if (!familyMap[baseName]) {
+        familyMap[baseName] = {
+          base_name: baseName,
+          category: product.category,
+          products: []
+        };
+      }
+      familyMap[baseName].products.push(product);
+    });
+
+    const families = Object.values(familyMap).sort((a, b) =>
+      a.base_name.localeCompare(b.base_name)
+    );
+
+    res.json({
+      families,
+      totalProducts: zeroStockProducts.length
+    });
+  } catch (error) {
+    console.error('Get available products error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/orders/inventory - Get inventory view for order adjustment
 router.get('/inventory', authenticateToken, async (req, res) => {
   try {
