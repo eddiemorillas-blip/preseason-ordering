@@ -51,7 +51,8 @@ app.use((req, res, next) => {
 app.get('/api/health', (req, res) => {
   res.json({
     message: 'Preseason Ordering System API',
-    version: '1.0.0',
+    version: '1.0.1',  // Updated: DATE() fix for ship date comparison
+    deployedAt: '2025-12-21T20:15:00Z',
     status: 'running'
   });
 });
