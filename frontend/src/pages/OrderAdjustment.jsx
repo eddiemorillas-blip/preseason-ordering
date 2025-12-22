@@ -795,6 +795,10 @@ const OrderAdjustment = () => {
     return item && suggestions[itemId] !== item.original_quantity;
   }).length;
 
+  // Split inventory into original items and added items
+  const originalItems = inventory.filter(item => item.original_quantity > 0);
+  const addedItems = inventory.filter(item => item.original_quantity === 0);
+
   return (
     <Layout>
       <div className="space-y-4">
@@ -1351,8 +1355,8 @@ const OrderAdjustment = () => {
           </div>
         )}
 
-        {/* Inventory Table */}
-        {!loading && inventory.length > 0 && (
+        {/* Original Order Table */}
+        {!loading && originalItems.length > 0 && (
           <div className="bg-white shadow rounded-lg overflow-hidden">
             {/* Legend */}
             <div className="px-4 py-2 bg-gray-50 border-b flex items-center gap-6 text-xs">
@@ -1380,7 +1384,7 @@ const OrderAdjustment = () => {
                   <th className="px-2 py-2 text-center">
                     <input
                       type="checkbox"
-                      checked={selectedItems.size === inventory.length && inventory.length > 0}
+                      checked={selectedItems.size === originalItems.length && originalItems.length > 0}
                       onChange={toggleSelectAll}
                       className="rounded border-gray-300"
                     />
@@ -1398,7 +1402,7 @@ const OrderAdjustment = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {inventory.map((item) => (
+                {originalItems.map((item) => (
                   <tr key={item.item_id} className={`hover:bg-gray-50 ${hasAdjustment(item) ? 'bg-blue-50' : ''} ${selectedItems.has(item.item_id) ? 'bg-yellow-50' : ''}`}>
                     <td className="px-2 py-1.5 text-center">
                       <input
@@ -1494,6 +1498,100 @@ const OrderAdjustment = () => {
                     </td>
                     <td className="px-2 py-1.5 text-right font-medium text-gray-900">
                       {formatPrice(parseFloat(item.unit_cost || 0) * getEffectiveQuantity(item))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Added Items Table */}
+        {!loading && addedItems.length > 0 && (
+          <div className="bg-white shadow rounded-lg overflow-hidden border-2 border-green-200">
+            <div className="px-4 py-2 bg-green-50 border-b flex items-center justify-between">
+              <span className="text-green-800 font-medium">
+                Added Items ({addedItems.length} items, {addedItems.reduce((sum, item) => sum + getEffectiveQuantity(item), 0)} units, {formatPrice(addedItems.reduce((sum, item) => sum + (parseFloat(item.unit_cost || 0) * getEffectiveQuantity(item)), 0))})
+              </span>
+              <span className="text-xs text-green-600">Items added to order (not in original)</span>
+            </div>
+            <table className="w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-green-50">
+                <tr>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Product</th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Size</th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Color</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase">Stock</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase">Qty</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-green-700 uppercase">Cost</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-green-700 uppercase">Total</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase"></th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {addedItems.map((item) => (
+                  <tr key={item.item_id} className="hover:bg-green-50">
+                    <td className="px-2 py-1.5">
+                      <div className="font-medium text-gray-900 truncate max-w-[180px]" title={item.product_name}>
+                        {item.product_name}
+                      </div>
+                    </td>
+                    <td className="px-2 py-1.5 text-gray-900">
+                      {item.size || '-'}{item.inseam && `/${item.inseam}`}
+                    </td>
+                    <td className="px-2 py-1.5 text-gray-700 truncate max-w-[80px]" title={item.color}>
+                      {item.color || '-'}
+                    </td>
+                    <td className="px-2 py-1.5 text-center text-gray-500">
+                      {item.stock_on_hand !== null ? item.stock_on_hand : '-'}
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      {editingItemId === item.item_id ? (
+                        <input
+                          type="number"
+                          min="0"
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          onBlur={() => handleEditSave(item)}
+                          onKeyDown={(e) => handleKeyDown(e, item)}
+                          onFocus={(e) => e.target.select()}
+                          className="w-14 px-1 py-0.5 text-center border border-green-500 rounded text-sm"
+                          autoFocus
+                          disabled={saving}
+                        />
+                      ) : (
+                        <button
+                          onClick={() => handleEditClick(item)}
+                          className="px-2 py-0.5 rounded font-medium bg-green-100 text-green-700 hover:bg-green-200"
+                        >
+                          {getEffectiveQuantity(item)}
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-right text-gray-900">
+                      {formatPrice(item.unit_cost)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-medium text-gray-900">
+                      {formatPrice(parseFloat(item.unit_cost || 0) * getEffectiveQuantity(item))}
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      <button
+                        onClick={async () => {
+                          if (confirm('Remove this item from the order?')) {
+                            try {
+                              await orderAPI.deleteItem(item.order_id, item.item_id);
+                              setInventory(prev => prev.filter(i => i.item_id !== item.item_id));
+                              recalculateSummary();
+                            } catch (err) {
+                              setError('Failed to remove item');
+                            }
+                          }
+                        }}
+                        className="text-red-500 hover:text-red-700 text-xs"
+                        title="Remove from order"
+                      >
+                        ✕
+                      </button>
                     </td>
                   </tr>
                 ))}
