@@ -4,6 +4,20 @@ const pool = require('../config/database');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 const { getStockByUPCs } = require('../services/bigquery');
 
+// Create ignored_products table if it doesn't exist
+pool.query(`
+  CREATE TABLE IF NOT EXISTS ignored_products (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    brand_id INTEGER NOT NULL REFERENCES brands(id),
+    location_id INTEGER REFERENCES locations(id),
+    ignored_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(product_id, brand_id, location_id)
+  )
+`).then(() => console.log('ignored_products table verified/created'))
+  .catch(err => console.error('Error creating ignored_products table:', err.message));
+
 // Month abbreviations for order numbers
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
@@ -312,6 +326,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     }
 
     // Get products in catalog for brand/season that are NOT in any order for this location
+    // Also exclude products that have been ignored
     const productsResult = await pool.query(`
       SELECT
         p.id,
@@ -337,6 +352,11 @@ router.get('/available-products', authenticateToken, async (req, res) => {
           WHERE o.season_id = $2
             AND o.location_id = $3
             AND o.status != 'cancelled'
+        )
+        AND p.id NOT IN (
+          SELECT product_id FROM ignored_products
+          WHERE brand_id = $1
+            AND (location_id = $3 OR location_id IS NULL)
         )
       ORDER BY p.base_name, p.color,
         CASE
@@ -472,6 +492,85 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get available products error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/orders/ignore-product - Ignore a product from available products list
+router.post('/ignore-product', authenticateToken, async (req, res) => {
+  try {
+    const { productId, brandId, locationId } = req.body;
+
+    if (!productId || !brandId) {
+      return res.status(400).json({ error: 'productId and brandId are required' });
+    }
+
+    await pool.query(`
+      INSERT INTO ignored_products (product_id, brand_id, location_id, ignored_by)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (product_id, brand_id, location_id) DO NOTHING
+    `, [productId, brandId, locationId || null, req.user.id]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Ignore product error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/orders/ignored-products - Get list of ignored products
+router.get('/ignored-products', authenticateToken, async (req, res) => {
+  try {
+    const { brandId, locationId } = req.query;
+
+    let query = `
+      SELECT ip.*, p.name as product_name, p.sku, p.upc, p.color, p.size
+      FROM ignored_products ip
+      JOIN products p ON ip.product_id = p.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramIndex = 1;
+
+    if (brandId) {
+      query += ` AND ip.brand_id = $${paramIndex}`;
+      params.push(brandId);
+      paramIndex++;
+    }
+
+    if (locationId) {
+      query += ` AND (ip.location_id = $${paramIndex} OR ip.location_id IS NULL)`;
+      params.push(locationId);
+      paramIndex++;
+    }
+
+    query += ' ORDER BY p.name';
+
+    const result = await pool.query(query, params);
+    res.json({ ignoredProducts: result.rows });
+  } catch (error) {
+    console.error('Get ignored products error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/orders/unignore-product - Remove a product from ignore list
+router.post('/unignore-product', authenticateToken, async (req, res) => {
+  try {
+    const { productId, brandId, locationId } = req.body;
+
+    if (!productId || !brandId) {
+      return res.status(400).json({ error: 'productId and brandId are required' });
+    }
+
+    await pool.query(`
+      DELETE FROM ignored_products
+      WHERE product_id = $1 AND brand_id = $2 AND (location_id = $3 OR ($3 IS NULL AND location_id IS NULL))
+    `, [productId, brandId, locationId || null]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Unignore product error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

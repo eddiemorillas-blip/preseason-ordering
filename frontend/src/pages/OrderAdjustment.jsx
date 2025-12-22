@@ -60,6 +60,7 @@ const OrderAdjustment = () => {
   const [availableLoading, setAvailableLoading] = useState(false);
   const [expandedFamilies, setExpandedFamilies] = useState(new Set());
   const [addQuantities, setAddQuantities] = useState({});
+  const [activeAddProductId, setActiveAddProductId] = useState(null);
 
   // Fetch filter options on mount
   useEffect(() => {
@@ -724,6 +725,64 @@ const OrderAdjustment = () => {
     }
   };
 
+  // Get flat list of all products for navigation
+  const getAllAddProducts = () => {
+    return availableProducts.flatMap(family =>
+      expandedFamilies.has(family.base_name) ? family.products : []
+    );
+  };
+
+  // Handle Enter key in Add Items quantity input
+  const handleAddItemKeyDown = async (e, product) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const allProducts = getAllAddProducts();
+      const currentIndex = allProducts.findIndex(p => p.id === product.id);
+
+      // Add the current item
+      await addItemToOrder(product);
+
+      // After adding, find next product (list will have shifted)
+      const updatedProducts = getAllAddProducts();
+      if (updatedProducts.length > 0) {
+        // Try to focus same index or last available
+        const nextProduct = updatedProducts[Math.min(currentIndex, updatedProducts.length - 1)];
+        if (nextProduct) {
+          setActiveAddProductId(nextProduct.id);
+          // Focus the input after state update
+          setTimeout(() => {
+            const input = document.getElementById(`add-qty-${nextProduct.id}`);
+            if (input) input.focus();
+          }, 50);
+        }
+      }
+    } else if (e.key === 'Escape') {
+      e.target.blur();
+    }
+  };
+
+  // Ignore a product from future add suggestions
+  const ignoreProduct = async (product) => {
+    try {
+      await orderAPI.ignoreProduct({
+        productId: product.id,
+        brandId: selectedBrandId,
+        locationId: selectedLocationId
+      });
+
+      // Remove from available list locally
+      setAvailableProducts(prev => {
+        return prev.map(family => ({
+          ...family,
+          products: family.products.filter(p => p.id !== product.id)
+        })).filter(family => family.products.length > 0);
+      });
+    } catch (err) {
+      console.error('Error ignoring product:', err);
+      setError('Failed to ignore product');
+    }
+  };
+
   // Calculate suggested totals for display
   const suggestedTotal = inventory.reduce((sum, item) => {
     const qty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
@@ -1217,6 +1276,7 @@ const OrderAdjustment = () => {
                                     </td>
                                     <td className="px-2 py-1.5 text-center">
                                       <input
+                                        id={`add-qty-${product.id}`}
                                         type="number"
                                         min="1"
                                         value={addQuantities[product.id] || ''}
@@ -1224,17 +1284,26 @@ const OrderAdjustment = () => {
                                           ...addQuantities,
                                           [product.id]: parseInt(e.target.value) || 1
                                         })}
+                                        onKeyDown={(e) => handleAddItemKeyDown(e, product)}
+                                        onFocus={() => setActiveAddProductId(product.id)}
                                         placeholder="1"
                                         className="w-14 px-1 py-0.5 border rounded text-center text-sm"
                                       />
                                     </td>
-                                    <td className="px-2 py-1.5 text-center">
+                                    <td className="px-2 py-1.5 text-center whitespace-nowrap">
                                       <button
                                         onClick={() => addItemToOrder(product)}
                                         disabled={saving}
                                         className="px-2 py-0.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50"
                                       >
                                         Add
+                                      </button>
+                                      <button
+                                        onClick={() => ignoreProduct(product)}
+                                        title="Ignore this product in future adjustments"
+                                        className="ml-1 px-1.5 py-0.5 bg-gray-200 text-gray-600 rounded text-xs hover:bg-gray-300"
+                                      >
+                                        ✕
                                       </button>
                                     </td>
                                   </tr>
