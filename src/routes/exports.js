@@ -684,6 +684,16 @@ router.post('/update-order-form', authenticateToken, upload.single('file'), asyn
 
     // Parse the uploaded Excel file
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+
+    // Check if this is a Petzl-style multi-column order form
+    const isPetzlFormat = workbook.SheetNames.includes('Order Form');
+
+    if (isPetzlFormat) {
+      // Handle Petzl's special format
+      return handlePetzlOrderForm(workbook, seasonId, brandId, locationId, res);
+    }
+
+    // Standard format handling
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
 
@@ -821,6 +831,126 @@ router.post('/update-order-form', authenticateToken, upload.single('file'), asyn
     res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
+
+// Handle Petzl's special order form format
+async function handlePetzlOrderForm(workbook, seasonId, brandId, locationId, res) {
+  const worksheet = workbook.Sheets['Order Form'];
+  const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+  // Petzl format: Header row is row 8 (index 7)
+  // EAN is column index 7
+  // Qty columns: 12=1st PO (Jan), 13=2nd PO (Feb), 14=3rd (Mar), 15=4th (Apr), 16=5th (May), 17=6th (Jun)
+  const HEADER_ROW = 7;
+  const EAN_COL = 7;
+  const QTY_COLS = {
+    1: 12,  // January = 1st PO
+    2: 13,  // February = 2nd PO
+    3: 14,  // March = 3rd PO
+    4: 15,  // April = 4th PO
+    5: 16,  // May = 5th PO
+    6: 17   // June = 6th PO
+  };
+
+  // Get finalized adjustments with ship dates
+  let adjustmentsQuery = `
+    SELECT fa.adjusted_quantity, fa.ship_date, p.upc
+    FROM finalized_adjustments fa
+    JOIN products p ON fa.product_id = p.id
+    WHERE fa.season_id = $1 AND fa.brand_id = $2 AND p.upc IS NOT NULL
+  `;
+  const queryParams = [seasonId, brandId];
+
+  if (locationId) {
+    adjustmentsQuery += ` AND fa.location_id = $3`;
+    queryParams.push(locationId);
+  }
+
+  const adjustmentsResult = await pool.query(adjustmentsQuery, queryParams);
+
+  // Create a map of UPC -> { month: quantity }
+  const adjustmentsMap = {};
+  for (const row of adjustmentsResult.rows) {
+    if (row.upc && row.ship_date) {
+      const upc = row.upc.toString().trim();
+      const month = new Date(row.ship_date).getMonth() + 1; // 1-12
+
+      if (!adjustmentsMap[upc]) {
+        adjustmentsMap[upc] = {};
+      }
+      adjustmentsMap[upc][month] = row.adjusted_quantity;
+    }
+  }
+
+  // Track results
+  const results = {
+    matched: 0,
+    notFound: [],
+    updated: []
+  };
+
+  // Update quantities in the worksheet (data starts at row 9, index 8)
+  for (let rowIdx = HEADER_ROW + 1; rowIdx < data.length; rowIdx++) {
+    const row = data[rowIdx];
+    const ean = row[EAN_COL]?.toString().trim();
+
+    if (!ean || ean.length < 5) continue; // Skip non-EAN rows (like category headers)
+
+    if (adjustmentsMap.hasOwnProperty(ean)) {
+      const monthQtys = adjustmentsMap[ean];
+
+      // Update each month's quantity column
+      for (const [month, qtyColIdx] of Object.entries(QTY_COLS)) {
+        const newQty = monthQtys[parseInt(month)] || 0;
+        const cellAddress = XLSX.utils.encode_cell({ r: rowIdx, c: qtyColIdx });
+        const oldQty = worksheet[cellAddress]?.v || 0;
+
+        if (!worksheet[cellAddress]) {
+          worksheet[cellAddress] = { t: 'n', v: newQty };
+        } else {
+          worksheet[cellAddress].v = newQty;
+        }
+
+        if (oldQty !== newQty && (oldQty > 0 || newQty > 0)) {
+          results.updated.push({ upc: ean, month: parseInt(month), oldQty, newQty });
+        }
+      }
+      results.matched++;
+    } else {
+      // Only report as not found if it looks like a real product row
+      results.notFound.push({ upc: ean, row: rowIdx + 1 });
+    }
+  }
+
+  // Generate updated file
+  const outputBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+  // Get location name for filename
+  let locationName = 'all';
+  if (locationId) {
+    const locResult = await pool.query('SELECT name FROM locations WHERE id = $1', [locationId]);
+    locationName = locResult.rows[0]?.name?.replace(/[^a-zA-Z0-9]/g, '_') || locationId;
+  }
+
+  const filename = `Petzl_${locationName}_updated_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+  res.json({
+    success: true,
+    format: 'petzl',
+    results: {
+      totalProducts: Object.keys(adjustmentsMap).length,
+      matched: results.matched,
+      updated: results.updated.length,
+      notFoundCount: results.notFound.length,
+      notFound: results.notFound.slice(0, 20),
+      changes: results.updated.slice(0, 50)
+    },
+    file: {
+      name: filename,
+      data: outputBuffer.toString('base64'),
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    }
+  });
+}
 
 // POST /api/exports/orders/brand-template - Export using brand template
 router.post('/orders/brand-template', authenticateToken, async (req, res) => {
