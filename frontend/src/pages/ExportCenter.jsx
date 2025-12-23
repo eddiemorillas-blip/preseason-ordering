@@ -170,26 +170,34 @@ const ExportCenter = () => {
 
       const response = await exportAPI.updateOrderForm(formData);
 
+      console.log('Upload response:', response.data);
       setUploadResult(response.data);
 
       // Auto-download the updated file
-      if (response.data.file) {
-        const byteCharacters = atob(response.data.file.data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: response.data.file.type });
+      if (response.data?.file?.data) {
+        try {
+          const byteCharacters = atob(response.data.file.data);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          const blob = new Blob([byteArray], { type: response.data.file.type });
 
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = response.data.file.name;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = response.data.file.name;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+        } catch (downloadErr) {
+          console.error('Download error:', downloadErr);
+          setError('File processed but download failed. Check console.');
+        }
+      } else {
+        console.log('No file data in response');
       }
     } catch (err) {
       console.error('Error uploading order form:', err);
@@ -391,17 +399,39 @@ const ExportCenter = () => {
                 {/* Upload Results */}
                 {uploadResult && (
                   <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-                    <div className="flex items-center gap-4 text-sm">
+                    <div className="flex items-center gap-4 text-sm flex-wrap">
                       <span className="text-green-600 font-medium">
-                        {uploadResult.results.matched} products matched
+                        {uploadResult.results?.matched || 0} products matched
                       </span>
                       <span className="text-blue-600">
-                        {uploadResult.results.updated} quantities updated
+                        {uploadResult.results?.updated || 0} quantities updated
                       </span>
-                      {uploadResult.results.notFoundCount > 0 && (
+                      {uploadResult.results?.notFoundCount > 0 && (
                         <span className="text-orange-600">
                           {uploadResult.results.notFoundCount} not found in your adjustments
                         </span>
+                      )}
+                      {uploadResult.file && (
+                        <button
+                          onClick={() => {
+                            const byteCharacters = atob(uploadResult.file.data);
+                            const byteNumbers = new Array(byteCharacters.length);
+                            for (let i = 0; i < byteCharacters.length; i++) {
+                              byteNumbers[i] = byteCharacters.charCodeAt(i);
+                            }
+                            const byteArray = new Uint8Array(byteNumbers);
+                            const blob = new Blob([byteArray], { type: uploadResult.file.type });
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = uploadResult.file.name;
+                            a.click();
+                            window.URL.revokeObjectURL(url);
+                          }}
+                          className="px-3 py-1 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700"
+                        >
+                          Download Updated File
+                        </button>
                       )}
                     </div>
 
