@@ -354,6 +354,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
 
     // Get products in catalog for brand/season that are NOT in any order for this location
     // Also exclude products that have been ignored
+    // IMPORTANT: Only include products with season pricing (confirms vendor availability)
     const productsResult = await pool.query(`
       SELECT
         p.id,
@@ -364,13 +365,13 @@ router.get('/available-products', authenticateToken, async (req, res) => {
         p.size,
         p.color,
         p.inseam,
-        p.wholesale_cost,
-        p.msrp,
+        COALESCE(sp.wholesale_price, p.wholesale_cost) as wholesale_cost,
+        COALESCE(sp.msrp, p.msrp) as msrp,
         p.category,
         p.gender
       FROM products p
+      INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
       WHERE p.brand_id = $1
-        AND (p.season_id = $2 OR p.season_id IS NULL)
         AND p.active = true
         AND p.id NOT IN (
           SELECT DISTINCT oi.product_id
