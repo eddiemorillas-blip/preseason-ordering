@@ -742,6 +742,54 @@ router.get('/inventory', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/orders/finalized-status - Get finalization status for orders
+// NOTE: Must be defined BEFORE /:id routes to avoid path conflicts
+router.get('/finalized-status', authenticateToken, async (req, res) => {
+  try {
+    const { seasonId, brandId } = req.query;
+
+    if (!seasonId || !brandId) {
+      return res.status(400).json({ error: 'seasonId and brandId are required' });
+    }
+
+    // Get all orders for this season/brand with finalization info
+    const ordersResult = await pool.query(`
+      SELECT
+        o.id as order_id,
+        o.order_number,
+        o.ship_date,
+        o.finalized_at,
+        l.name as location_name,
+        l.id as location_id,
+        COUNT(oi.id) as total_items,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as total_units,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity) * oi.unit_cost) as total_cost
+      FROM orders o
+      LEFT JOIN locations l ON o.location_id = l.id
+      LEFT JOIN order_items oi ON oi.order_id = o.id
+      WHERE o.season_id = $1
+        AND o.brand_id = $2
+        AND o.status != 'cancelled'
+      GROUP BY o.id, o.order_number, o.ship_date, o.finalized_at, l.name, l.id
+      ORDER BY o.ship_date, l.name
+    `, [seasonId, brandId]);
+
+    // Calculate summary
+    const orders = ordersResult.rows;
+    const summary = {
+      totalOrders: orders.length,
+      finalizedOrders: orders.filter(o => o.finalized_at).length,
+      totalUnits: orders.reduce((sum, o) => sum + parseInt(o.total_units || 0), 0),
+      totalCost: orders.reduce((sum, o) => sum + parseFloat(o.total_cost || 0), 0)
+    };
+
+    res.json({ orders, summary });
+  } catch (error) {
+    console.error('Get finalized status error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/orders - List orders with filtering
 router.get('/', authenticateToken, async (req, res) => {
   try {
@@ -2000,53 +2048,6 @@ router.post('/batch-adjust', authenticateToken, authorizeRoles('admin', 'buyer')
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
-  }
-});
-
-// GET /api/orders/finalized-status - Get finalization status for orders
-router.get('/finalized-status', authenticateToken, async (req, res) => {
-  try {
-    const { seasonId, brandId } = req.query;
-
-    if (!seasonId || !brandId) {
-      return res.status(400).json({ error: 'seasonId and brandId are required' });
-    }
-
-    // Get all orders for this season/brand with finalization info
-    const ordersResult = await pool.query(`
-      SELECT
-        o.id as order_id,
-        o.order_number,
-        o.ship_date,
-        o.finalized_at,
-        l.name as location_name,
-        l.id as location_id,
-        COUNT(oi.id) as total_items,
-        SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as total_units,
-        SUM(COALESCE(oi.adjusted_quantity, oi.quantity) * oi.unit_cost) as total_cost
-      FROM orders o
-      LEFT JOIN locations l ON o.location_id = l.id
-      LEFT JOIN order_items oi ON oi.order_id = o.id
-      WHERE o.season_id = $1
-        AND o.brand_id = $2
-        AND o.status != 'cancelled'
-      GROUP BY o.id, o.order_number, o.ship_date, o.finalized_at, l.name, l.id
-      ORDER BY o.ship_date, l.name
-    `, [seasonId, brandId]);
-
-    // Calculate summary
-    const orders = ordersResult.rows;
-    const summary = {
-      totalOrders: orders.length,
-      finalizedOrders: orders.filter(o => o.finalized_at).length,
-      totalUnits: orders.reduce((sum, o) => sum + parseInt(o.total_units || 0), 0),
-      totalCost: orders.reduce((sum, o) => sum + parseFloat(o.total_cost || 0), 0)
-    };
-
-    res.json({ orders, summary });
-  } catch (error) {
-    console.error('Get finalized status error:', error);
-    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
