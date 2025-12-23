@@ -1234,15 +1234,35 @@ const OrderAdjustment = () => {
                     </div>
                     {availableProducts.map(family => (
                       <div key={family.base_name} className="border rounded bg-white">
-                        <button
-                          onClick={() => toggleFamily(family.base_name)}
-                          className="w-full px-3 py-2 flex justify-between items-center hover:bg-gray-50 text-left"
-                        >
-                          <span className="font-medium">{family.base_name}</span>
-                          <span className="text-sm text-gray-500">
-                            {expandedFamilies.has(family.base_name) ? '▼' : '▶'} {family.products.length} variant(s)
-                          </span>
-                        </button>
+                        <div className="flex items-center justify-between hover:bg-gray-50">
+                          <button
+                            onClick={() => toggleFamily(family.base_name)}
+                            className="flex-1 px-3 py-2 flex justify-between items-center text-left"
+                          >
+                            <span className="font-medium">{family.base_name}</span>
+                            <span className="text-sm text-gray-500">
+                              {expandedFamilies.has(family.base_name) ? '▼' : '▶'} {family.products.length} variant(s)
+                            </span>
+                          </button>
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              // Ignore all products in this family
+                              for (const product of family.products) {
+                                await orderAPI.ignoreProduct({
+                                  productId: product.id,
+                                  brandId: selectedBrandId
+                                });
+                              }
+                              // Remove family from list
+                              setAvailableProducts(prev => prev.filter(f => f.base_name !== family.base_name));
+                            }}
+                            title="Ignore all variants of this product"
+                            className="mr-2 px-2 py-1 text-xs bg-gray-200 text-gray-600 rounded hover:bg-gray-300"
+                          >
+                            Ignore All
+                          </button>
+                        </div>
 
                         {expandedFamilies.has(family.base_name) && (
                           <div className="border-t">
