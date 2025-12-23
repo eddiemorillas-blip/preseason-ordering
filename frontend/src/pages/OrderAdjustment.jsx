@@ -761,13 +761,13 @@ const OrderAdjustment = () => {
     }
   };
 
-  // Ignore a product from future add suggestions
+  // Ignore a product from future add suggestions (globally for this brand)
   const ignoreProduct = async (product) => {
     try {
       await orderAPI.ignoreProduct({
         productId: product.id,
-        brandId: selectedBrandId,
-        locationId: selectedLocationId
+        brandId: selectedBrandId
+        // No locationId = global ignore for this brand
       });
 
       // Remove from available list locally
