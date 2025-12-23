@@ -25,6 +25,7 @@ const ExportCenter = () => {
   const [uploadFile, setUploadFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
+  const [uploadLocationId, setUploadLocationId] = useState('');
 
   // Fetch filter options on mount
   useEffect(() => {
@@ -163,6 +164,9 @@ const ExportCenter = () => {
       formData.append('file', uploadFile);
       formData.append('seasonId', selectedSeasonId);
       formData.append('brandId', selectedBrandId);
+      if (uploadLocationId) {
+        formData.append('locationId', uploadLocationId);
+      }
 
       const response = await exportAPI.updateOrderForm(formData);
 
@@ -346,7 +350,26 @@ const ExportCenter = () => {
                 <p className="text-sm text-gray-600 mb-4">
                   Upload the vendor's Excel order form and we'll fill in your adjusted quantities by matching UPCs.
                 </p>
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <select
+                    value={uploadLocationId}
+                    onChange={(e) => setUploadLocationId(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">All Locations</option>
+                    {orders
+                      .filter(o => o.finalized_at)
+                      .reduce((acc, o) => {
+                        if (!acc.find(x => x.id === o.location_id)) {
+                          acc.push({ id: o.location_id, name: o.location_name });
+                        }
+                        return acc;
+                      }, [])
+                      .map(loc => (
+                        <option key={loc.id} value={loc.id}>{loc.name}</option>
+                      ))
+                    }
+                  </select>
                   <input
                     type="file"
                     accept=".xlsx,.xls,.csv"

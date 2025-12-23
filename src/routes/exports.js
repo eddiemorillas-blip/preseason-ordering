@@ -672,7 +672,7 @@ router.post('/finalized', authenticateToken, async (req, res) => {
 // POST /api/exports/update-order-form - Upload vendor order form and fill in adjusted quantities
 router.post('/update-order-form', authenticateToken, upload.single('file'), async (req, res) => {
   try {
-    const { seasonId, brandId, quantityColumn, upcColumn } = req.body;
+    const { seasonId, brandId, locationId, quantityColumn, upcColumn } = req.body;
 
     if (!req.file) {
       return res.status(400).json({ error: 'File is required' });
@@ -729,13 +729,21 @@ router.post('/update-order-form', authenticateToken, upload.single('file'), asyn
       });
     }
 
-    // Get finalized adjustments for this brand/season
-    const adjustmentsResult = await pool.query(`
+    // Get finalized adjustments for this brand/season (optionally filtered by location)
+    let adjustmentsQuery = `
       SELECT fa.adjusted_quantity, p.upc
       FROM finalized_adjustments fa
       JOIN products p ON fa.product_id = p.id
       WHERE fa.season_id = $1 AND fa.brand_id = $2 AND p.upc IS NOT NULL
-    `, [seasonId, brandId]);
+    `;
+    const queryParams = [seasonId, brandId];
+
+    if (locationId) {
+      adjustmentsQuery += ` AND fa.location_id = $3`;
+      queryParams.push(locationId);
+    }
+
+    const adjustmentsResult = await pool.query(adjustmentsQuery, queryParams);
 
     // Create a map of UPC -> adjusted quantity
     const adjustmentsMap = {};
