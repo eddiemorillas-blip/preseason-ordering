@@ -18,6 +18,7 @@ import PriceHistory from './pages/PriceHistory';
 import SalesSync from './pages/SalesSync';
 import BudgetManagement from './pages/BudgetManagement';
 import OrderAdjustment from './pages/OrderAdjustment';
+import ExportCenter from './pages/ExportCenter';
 import Help from './pages/Help';
 
 function App() {
@@ -150,6 +151,14 @@ function App() {
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <OrderAdjustment />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/export-center"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <ExportCenter />
               </ProtectedRoute>
             }
           />

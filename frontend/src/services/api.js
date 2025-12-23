@@ -112,6 +112,13 @@ export const orderAPI = {
   ignoreProduct: (data) => api.post('/orders/ignore-product', data),
   getIgnoredProducts: (params) => api.get('/orders/ignored-products', { params }),
   unignoreProduct: (data) => api.post('/orders/unignore-product', data),
+  finalize: (orderId) => api.post(`/orders/${orderId}/finalize`),
+  getFinalizedStatus: (params) => api.get('/orders/finalized-status', { params }),
+};
+
+// Export API calls
+export const exportAPI = {
+  finalized: (data) => api.post('/exports/finalized', data, { responseType: 'blob' }),
 };
 
 // Price API calls (seasonal pricing)

@@ -18,6 +18,33 @@ pool.query(`
 `).then(() => console.log('ignored_products table verified/created'))
   .catch(err => console.error('Error creating ignored_products table:', err.message));
 
+// Create finalized_adjustments table if it doesn't exist
+pool.query(`
+  CREATE TABLE IF NOT EXISTS finalized_adjustments (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    order_item_id INTEGER NOT NULL REFERENCES order_items(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    original_quantity INTEGER NOT NULL,
+    adjusted_quantity INTEGER NOT NULL,
+    unit_cost DECIMAL(10,2) NOT NULL,
+    season_id INTEGER NOT NULL,
+    brand_id INTEGER NOT NULL,
+    location_id INTEGER NOT NULL,
+    ship_date DATE,
+    finalized_by INTEGER REFERENCES users(id),
+    finalized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(order_item_id)
+  )
+`).then(() => console.log('finalized_adjustments table verified/created'))
+  .catch(err => console.error('Error creating finalized_adjustments table:', err.message));
+
+// Add finalized_at column to orders if it doesn't exist
+pool.query(`
+  ALTER TABLE orders ADD COLUMN IF NOT EXISTS finalized_at TIMESTAMP
+`).then(() => console.log('orders.finalized_at column verified/created'))
+  .catch(err => console.error('Error adding finalized_at column:', err.message));
+
 // Month abbreviations for order numbers
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
@@ -1970,6 +1997,152 @@ router.post('/batch-adjust', authenticateToken, authorizeRoles('admin', 'buyer')
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Batch adjust error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/orders/finalized-status - Get finalization status for orders
+router.get('/finalized-status', authenticateToken, async (req, res) => {
+  try {
+    const { seasonId, brandId } = req.query;
+
+    if (!seasonId || !brandId) {
+      return res.status(400).json({ error: 'seasonId and brandId are required' });
+    }
+
+    // Get all orders for this season/brand with finalization info
+    const ordersResult = await pool.query(`
+      SELECT
+        o.id as order_id,
+        o.order_number,
+        o.ship_date,
+        o.finalized_at,
+        l.name as location_name,
+        l.id as location_id,
+        COUNT(oi.id) as total_items,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as total_units,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity) * oi.unit_cost) as total_cost
+      FROM orders o
+      LEFT JOIN locations l ON o.location_id = l.id
+      LEFT JOIN order_items oi ON oi.order_id = o.id
+      WHERE o.season_id = $1
+        AND o.brand_id = $2
+        AND o.status != 'cancelled'
+      GROUP BY o.id, o.order_number, o.ship_date, o.finalized_at, l.name, l.id
+      ORDER BY o.ship_date, l.name
+    `, [seasonId, brandId]);
+
+    // Calculate summary
+    const orders = ordersResult.rows;
+    const summary = {
+      totalOrders: orders.length,
+      finalizedOrders: orders.filter(o => o.finalized_at).length,
+      totalUnits: orders.reduce((sum, o) => sum + parseInt(o.total_units || 0), 0),
+      totalCost: orders.reduce((sum, o) => sum + parseFloat(o.total_cost || 0), 0)
+    };
+
+    res.json({ orders, summary });
+  } catch (error) {
+    console.error('Get finalized status error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/orders/:id/finalize - Finalize an order's adjustments for export
+router.post('/:id/finalize', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { id } = req.params;
+
+    // Get order details
+    const orderResult = await client.query(`
+      SELECT o.*, b.name as brand_name, l.name as location_name
+      FROM orders o
+      LEFT JOIN brands b ON o.brand_id = b.id
+      LEFT JOIN locations l ON o.location_id = l.id
+      WHERE o.id = $1
+    `, [id]);
+
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = orderResult.rows[0];
+
+    // Get all order items
+    const itemsResult = await client.query(`
+      SELECT
+        oi.id as order_item_id,
+        oi.product_id,
+        oi.quantity as original_quantity,
+        COALESCE(oi.adjusted_quantity, oi.quantity) as adjusted_quantity,
+        oi.unit_cost
+      FROM order_items oi
+      WHERE oi.order_id = $1
+    `, [id]);
+
+    if (itemsResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Order has no items to finalize' });
+    }
+
+    await client.query('BEGIN');
+
+    // UPSERT each item into finalized_adjustments
+    let finalizedCount = 0;
+    for (const item of itemsResult.rows) {
+      await client.query(`
+        INSERT INTO finalized_adjustments (
+          order_id, order_item_id, product_id,
+          original_quantity, adjusted_quantity, unit_cost,
+          season_id, brand_id, location_id, ship_date,
+          finalized_by, finalized_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
+        ON CONFLICT (order_item_id) DO UPDATE SET
+          original_quantity = EXCLUDED.original_quantity,
+          adjusted_quantity = EXCLUDED.adjusted_quantity,
+          unit_cost = EXCLUDED.unit_cost,
+          finalized_by = EXCLUDED.finalized_by,
+          finalized_at = CURRENT_TIMESTAMP
+      `, [
+        id,
+        item.order_item_id,
+        item.product_id,
+        item.original_quantity,
+        item.adjusted_quantity,
+        item.unit_cost,
+        order.season_id,
+        order.brand_id,
+        order.location_id,
+        order.ship_date,
+        req.user.id
+      ]);
+      finalizedCount++;
+    }
+
+    // Update order's finalized_at timestamp
+    await client.query(`
+      UPDATE orders SET finalized_at = CURRENT_TIMESTAMP WHERE id = $1
+    `, [id]);
+
+    await client.query('COMMIT');
+
+    // Get updated order
+    const updatedOrder = await client.query(`
+      SELECT id, order_number, finalized_at FROM orders WHERE id = $1
+    `, [id]);
+
+    res.json({
+      success: true,
+      finalizedItems: finalizedCount,
+      order: updatedOrder.rows[0]
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Finalize order error:', error);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();

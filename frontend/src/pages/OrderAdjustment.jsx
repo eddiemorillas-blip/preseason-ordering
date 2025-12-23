@@ -62,6 +62,10 @@ const OrderAdjustment = () => {
   const [addQuantities, setAddQuantities] = useState({});
   const [activeAddProductId, setActiveAddProductId] = useState(null);
 
+  // Order finalization state
+  const [currentOrder, setCurrentOrder] = useState(null);
+  const [finalizing, setFinalizing] = useState(false);
+
   // Fetch filter options on mount
   useEffect(() => {
     const fetchFilters = async () => {
@@ -142,6 +146,7 @@ const OrderAdjustment = () => {
     } else {
       setInventory([]);
       setSummary(null);
+      setCurrentOrder(null);
     }
     // Clear suggestions and cached velocity data when filters change
     setSuggestions({});
@@ -159,13 +164,25 @@ const OrderAdjustment = () => {
       if (selectedShipDate) params.shipDate = selectedShipDate;
 
       const response = await orderAPI.getInventory(params);
-      setInventory(response.data.inventory || []);
+      const inv = response.data.inventory || [];
+      setInventory(inv);
       setSummary(response.data.summary || null);
+
+      // Check if all items belong to a single order
+      const orderIds = [...new Set(inv.map(i => i.order_id))];
+      if (orderIds.length === 1 && orderIds[0]) {
+        // Fetch full order details including finalized_at
+        const orderRes = await orderAPI.getById(orderIds[0]);
+        setCurrentOrder(orderRes.data.order);
+      } else {
+        setCurrentOrder(null);
+      }
     } catch (err) {
       console.error('Error fetching inventory:', err);
       setError(err.response?.data?.error || 'Failed to load inventory');
       setInventory([]);
       setSummary(null);
+      setCurrentOrder(null);
     } finally {
       setLoading(false);
     }
@@ -783,6 +800,26 @@ const OrderAdjustment = () => {
     }
   };
 
+  // Finalize order for export
+  const finalizeOrder = async () => {
+    if (!currentOrder) return;
+
+    setFinalizing(true);
+    try {
+      const response = await orderAPI.finalize(currentOrder.id);
+      // Update current order with new finalized_at timestamp
+      setCurrentOrder(prev => ({
+        ...prev,
+        finalized_at: response.data.order.finalized_at
+      }));
+    } catch (err) {
+      console.error('Error finalizing order:', err);
+      setError('Failed to finalize order');
+    } finally {
+      setFinalizing(false);
+    }
+  };
+
   // Calculate suggested totals for display
   const suggestedTotal = inventory.reduce((sum, item) => {
     const qty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
@@ -942,6 +979,47 @@ const OrderAdjustment = () => {
                 <div className="text-xl font-bold text-yellow-700">{formatPrice(suggestedTotal)}</div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Finalize Section */}
+        {currentOrder && (
+          <div className="bg-white p-4 rounded-lg shadow flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div>
+                <span className="text-sm text-gray-500">Order:</span>
+                <span className="ml-2 font-medium text-gray-900">{currentOrder.order_number}</span>
+              </div>
+              {currentOrder.finalized_at && (
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                    ✓ Finalized
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    {new Date(currentOrder.finalized_at).toLocaleString()}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={finalizeOrder}
+                disabled={finalizing}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  currentOrder.finalized_at
+                    ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                } disabled:opacity-50`}
+              >
+                {finalizing ? 'Finalizing...' : currentOrder.finalized_at ? 'Re-finalize' : 'Finalize for Export'}
+              </button>
+              <a
+                href={`/export-center?season=${selectedSeasonId}&brand=${selectedBrandId}`}
+                className="px-4 py-2 text-sm text-blue-600 hover:text-blue-800 hover:underline"
+              >
+                View Export Center →
+              </a>
+            </div>
           </div>
         )}
 

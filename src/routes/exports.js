@@ -509,6 +509,146 @@ function findShipColumn(itemShipDate, shipDateColumns, dateToShipNum) {
   return null;
 }
 
+// POST /api/exports/finalized - Export finalized adjustments for a brand/season
+router.post('/finalized', authenticateToken, async (req, res) => {
+  try {
+    const { seasonId, brandId, format = 'xlsx', template = 'standard' } = req.body;
+
+    if (!seasonId || !brandId) {
+      return res.status(400).json({ error: 'seasonId and brandId are required' });
+    }
+
+    // Get finalized adjustments with product details
+    const result = await pool.query(`
+      SELECT
+        fa.id,
+        fa.original_quantity,
+        fa.adjusted_quantity,
+        fa.unit_cost,
+        fa.ship_date,
+        fa.finalized_at,
+        o.order_number,
+        l.name as location_name,
+        l.code as location_code,
+        p.sku,
+        p.upc,
+        p.name as product_name,
+        p.base_name as style_name,
+        p.color,
+        p.size,
+        p.msrp,
+        p.category,
+        p.gender,
+        b.name as brand_name,
+        s.name as season_name
+      FROM finalized_adjustments fa
+      JOIN orders o ON fa.order_id = o.id
+      JOIN products p ON fa.product_id = p.id
+      LEFT JOIN locations l ON fa.location_id = l.id
+      LEFT JOIN brands b ON fa.brand_id = b.id
+      LEFT JOIN seasons s ON fa.season_id = s.id
+      WHERE fa.season_id = $1 AND fa.brand_id = $2
+      ORDER BY l.name, p.base_name, p.color, p.size
+    `, [seasonId, brandId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No finalized adjustments found for this brand/season' });
+    }
+
+    const items = result.rows;
+
+    // Transform to requested format
+    let data;
+    switch (template) {
+      case 'nuorder':
+        data = items.map(item => ({
+          'STYLE_NUMBER': item.sku || '',
+          'SEASON': item.season_name || '',
+          'COLOR': item.color || '',
+          'SIZE': item.size || '',
+          'UPC': item.upc || '',
+          'ORIGINAL_QTY': item.original_quantity,
+          'ADJUSTED_QTY': item.adjusted_quantity,
+          'WHOLESALE': item.unit_cost || 0,
+          'MSRP': item.msrp || 0,
+          'SHIP_DATE': formatDateNuOrder(item.ship_date),
+          'PRODUCT_NAME': item.product_name || '',
+          'ORDER_NUMBER': item.order_number,
+          'LOCATION': `${item.location_name} (${item.location_code})`,
+          'BRAND': item.brand_name
+        }));
+        break;
+      case 'elastic':
+        data = items.map(item => ({
+          'UPC': item.upc || '',
+          'SKU': item.sku || '',
+          'ORIGINAL_QTY': item.original_quantity,
+          'ADJUSTED_QTY': item.adjusted_quantity,
+          'COLOR': item.color || '',
+          'SIZE': item.size || '',
+          'PRODUCT_NAME': item.product_name || '',
+          'WHOLESALE_PRICE': item.unit_cost || 0,
+          'MSRP': item.msrp || 0,
+          'ORDER_NUMBER': item.order_number,
+          'SHIP_DATE': item.ship_date ? new Date(item.ship_date).toISOString().split('T')[0] : '',
+          'LOCATION': `${item.location_name} (${item.location_code})`,
+          'BRAND': item.brand_name,
+          'SEASON': item.season_name || ''
+        }));
+        break;
+      default:
+        // Standard format with adjustment columns
+        data = items.map(item => ({
+          'Order Number': item.order_number,
+          'Brand': item.brand_name,
+          'Season': item.season_name,
+          'Location': item.location_name,
+          'Location Code': item.location_code,
+          'Ship Date': item.ship_date ? new Date(item.ship_date).toLocaleDateString() : '',
+          'SKU': item.sku || '',
+          'UPC': item.upc || '',
+          'Product Name': item.product_name,
+          'Style Name': item.style_name || '',
+          'Color': item.color || '',
+          'Size': item.size || '',
+          'Category': item.category || '',
+          'Gender': item.gender || '',
+          'Original Qty': item.original_quantity,
+          'Adjusted Qty': item.adjusted_quantity,
+          'Change': item.adjusted_quantity - item.original_quantity,
+          'Unit Cost': item.unit_cost || 0,
+          'Line Total': (item.adjusted_quantity * item.unit_cost) || 0,
+          'MSRP': item.msrp || 0,
+          'Finalized At': item.finalized_at ? new Date(item.finalized_at).toLocaleString() : ''
+        }));
+    }
+
+    // Get brand name for filename
+    const brandResult = await pool.query('SELECT name FROM brands WHERE id = $1', [brandId]);
+    const brandName = brandResult.rows[0]?.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'brand';
+
+    const seasonResult = await pool.query('SELECT name FROM seasons WHERE id = $1', [seasonId]);
+    const seasonName = seasonResult.rows[0]?.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'season';
+
+    const filename = `finalized_${brandName}_${seasonName}_${template}_${new Date().toISOString().split('T')[0]}`;
+
+    if (format === 'csv') {
+      const csv = createCSVString(data);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+      return res.send(csv);
+    } else {
+      const buffer = createExcelBuffer(data, 'Finalized Adjustments');
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+      return res.send(buffer);
+    }
+  } catch (error) {
+    console.error('Export finalized error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // POST /api/exports/orders/brand-template - Export using brand template
 router.post('/orders/brand-template', authenticateToken, async (req, res) => {
   try {
