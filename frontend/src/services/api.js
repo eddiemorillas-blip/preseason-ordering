@@ -119,6 +119,9 @@ export const orderAPI = {
 // Export API calls
 export const exportAPI = {
   finalized: (data) => api.post('/exports/finalized', data, { responseType: 'blob' }),
+  updateOrderForm: (formData) => api.post('/exports/update-order-form', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
 };
 
 // Price API calls (seasonal pricing)

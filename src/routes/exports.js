@@ -3,6 +3,26 @@ const router = express.Router();
 const pool = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
 const XLSX = require('xlsx');
+const multer = require('multer');
+
+// Configure multer for memory storage (process files without saving)
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'text/csv'
+    ];
+    if (allowedTypes.includes(file.mimetype) || file.originalname.match(/\.(xlsx|xls|csv)$/)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only Excel and CSV files are allowed'), false);
+    }
+  }
+});
 
 // Helper to format date for NuOrder (MM/DD/YYYY)
 function formatDateNuOrder(date) {
@@ -646,6 +666,151 @@ router.post('/finalized', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Export finalized error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/exports/update-order-form - Upload vendor order form and fill in adjusted quantities
+router.post('/update-order-form', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const { seasonId, brandId, quantityColumn, upcColumn } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'File is required' });
+    }
+
+    if (!seasonId || !brandId) {
+      return res.status(400).json({ error: 'seasonId and brandId are required' });
+    }
+
+    // Parse the uploaded Excel file
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+
+    // Convert to JSON to find columns
+    const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+    if (data.length < 2) {
+      return res.status(400).json({ error: 'File appears to be empty or has no data rows' });
+    }
+
+    const headers = data[0];
+
+    // Find UPC column (try common names if not specified)
+    let upcColIndex = -1;
+    if (upcColumn) {
+      upcColIndex = headers.findIndex(h => h && h.toString().toLowerCase() === upcColumn.toLowerCase());
+    }
+    if (upcColIndex === -1) {
+      const upcPatterns = ['upc', 'upc code', 'upc_code', 'barcode', 'ean'];
+      upcColIndex = headers.findIndex(h => h && upcPatterns.some(p => h.toString().toLowerCase().includes(p)));
+    }
+
+    if (upcColIndex === -1) {
+      return res.status(400).json({
+        error: 'Could not find UPC column',
+        headers: headers.filter(h => h) // Return headers so user can specify
+      });
+    }
+
+    // Find quantity column (try common names if not specified)
+    let qtyColIndex = -1;
+    if (quantityColumn) {
+      qtyColIndex = headers.findIndex(h => h && h.toString().toLowerCase() === quantityColumn.toLowerCase());
+    }
+    if (qtyColIndex === -1) {
+      const qtyPatterns = ['qty', 'quantity', 'order qty', 'order_qty', 'units'];
+      qtyColIndex = headers.findIndex(h => h && qtyPatterns.some(p => h.toString().toLowerCase().includes(p)));
+    }
+
+    if (qtyColIndex === -1) {
+      return res.status(400).json({
+        error: 'Could not find quantity column',
+        headers: headers.filter(h => h)
+      });
+    }
+
+    // Get finalized adjustments for this brand/season
+    const adjustmentsResult = await pool.query(`
+      SELECT fa.adjusted_quantity, p.upc
+      FROM finalized_adjustments fa
+      JOIN products p ON fa.product_id = p.id
+      WHERE fa.season_id = $1 AND fa.brand_id = $2 AND p.upc IS NOT NULL
+    `, [seasonId, brandId]);
+
+    // Create a map of UPC -> adjusted quantity
+    const adjustmentsMap = {};
+    for (const row of adjustmentsResult.rows) {
+      if (row.upc) {
+        // Store by UPC (handle both string and numeric UPCs)
+        adjustmentsMap[row.upc.toString().trim()] = row.adjusted_quantity;
+      }
+    }
+
+    // Track results
+    const results = {
+      matched: 0,
+      notFound: [],
+      updated: []
+    };
+
+    // Update quantities in the worksheet
+    for (let rowIdx = 1; rowIdx < data.length; rowIdx++) {
+      const row = data[rowIdx];
+      const upc = row[upcColIndex]?.toString().trim();
+
+      if (!upc) continue;
+
+      if (adjustmentsMap.hasOwnProperty(upc)) {
+        const newQty = adjustmentsMap[upc];
+        const oldQty = row[qtyColIndex];
+
+        // Update the cell in the worksheet
+        const cellAddress = XLSX.utils.encode_cell({ r: rowIdx, c: qtyColIndex });
+        if (!worksheet[cellAddress]) {
+          worksheet[cellAddress] = { t: 'n', v: newQty };
+        } else {
+          worksheet[cellAddress].v = newQty;
+        }
+
+        results.matched++;
+        if (oldQty !== newQty) {
+          results.updated.push({ upc, oldQty, newQty });
+        }
+      } else {
+        results.notFound.push({ upc, row: rowIdx + 1 });
+      }
+    }
+
+    // Generate updated file
+    const outputBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    // Get brand name for filename
+    const brandResult = await pool.query('SELECT name FROM brands WHERE id = $1', [brandId]);
+    const brandName = brandResult.rows[0]?.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'brand';
+
+    const filename = `${brandName}_updated_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    // Return JSON with results and file download info
+    // We'll send the file as base64 along with the report
+    res.json({
+      success: true,
+      results: {
+        totalRows: data.length - 1,
+        matched: results.matched,
+        updated: results.updated.length,
+        notFoundCount: results.notFound.length,
+        notFound: results.notFound.slice(0, 20), // Limit to first 20 for display
+        changes: results.updated.slice(0, 50) // Show first 50 changes
+      },
+      file: {
+        name: filename,
+        data: outputBuffer.toString('base64'),
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      }
+    });
+  } catch (error) {
+    console.error('Update order form error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 
