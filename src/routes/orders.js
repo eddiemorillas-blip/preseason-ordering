@@ -400,8 +400,6 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     let paramIndex = 4;
     let categoryFilter = '';
     let genderFilter = '';
-    let salesHistoryJoin = '';
-    let salesHistoryFilter = '';
 
     if (category) {
       categoryFilter = ` AND p.category = $${paramIndex}`;
@@ -415,17 +413,16 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       paramIndex++;
     }
 
-    // For sales history filter, join with sales_by_upc table
-    if (hasSalesHistory === 'true') {
-      salesHistoryJoin = `
-        INNER JOIN sales_by_upc sbu ON sbu.upc = p.upc AND sbu.total_qty_sold > 0`;
-    }
+    // Build sales history filter using EXISTS subquery (avoids DISTINCT issues)
+    const salesHistoryFilter = hasSalesHistory === 'true'
+      ? ` AND EXISTS (SELECT 1 FROM sales_by_upc sbu WHERE sbu.upc = p.upc AND sbu.total_qty_sold > 0)`
+      : '';
 
     // Get products in catalog for brand/season that are NOT in any order for this location
     // Also exclude products that have been ignored
     // IMPORTANT: Only include products with season pricing (confirms vendor availability)
     const productsResult = await pool.query(`
-      SELECT DISTINCT
+      SELECT
         p.id,
         p.name,
         p.base_name,
@@ -440,8 +437,8 @@ router.get('/available-products', authenticateToken, async (req, res) => {
         p.gender
       FROM products p
       INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
-      ${salesHistoryJoin}
-      WHERE p.brand_id = $1
+      WHERE
+        p.brand_id = $1
         AND p.active = true
         AND p.id NOT IN (
           SELECT DISTINCT oi.product_id
@@ -458,6 +455,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
         )
         ${categoryFilter}
         ${genderFilter}
+        ${salesHistoryFilter}
       ORDER BY p.base_name, p.color,
         CASE
           WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
