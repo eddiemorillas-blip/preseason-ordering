@@ -109,6 +109,7 @@ export const orderAPI = {
   batchAdjust: (adjustments) => api.post('/orders/batch-adjust', { adjustments }),
   getVelocity: (params) => api.get('/orders/inventory/velocity', { params }),
   getAvailableProducts: (params) => api.get('/orders/available-products', { params }),
+  getAvailableProductFilters: (params) => api.get('/orders/available-products/filters', { params }),
   ignoreProduct: (data) => api.post('/orders/ignore-product', data),
   getIgnoredProducts: (params) => api.get('/orders/ignored-products', { params }),
   unignoreProduct: (data) => api.post('/orders/unignore-product', data),

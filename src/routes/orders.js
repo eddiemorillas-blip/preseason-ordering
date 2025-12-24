@@ -343,20 +343,89 @@ router.get('/inventory/velocity', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/orders/available-products/filters - Get available filter options for add items
+router.get('/available-products/filters', authenticateToken, async (req, res) => {
+  try {
+    const { seasonId, brandId } = req.query;
+
+    if (!seasonId || !brandId) {
+      return res.status(400).json({ error: 'seasonId and brandId are required' });
+    }
+
+    // Get distinct categories and genders for products in this brand's pricelist for the season
+    const [categoriesResult, gendersResult] = await Promise.all([
+      pool.query(`
+        SELECT DISTINCT p.category
+        FROM products p
+        INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
+        WHERE p.brand_id = $1
+          AND p.active = true
+          AND p.category IS NOT NULL
+          AND p.category != ''
+        ORDER BY p.category
+      `, [brandId, seasonId]),
+      pool.query(`
+        SELECT DISTINCT p.gender
+        FROM products p
+        INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
+        WHERE p.brand_id = $1
+          AND p.active = true
+          AND p.gender IS NOT NULL
+          AND p.gender != ''
+        ORDER BY p.gender
+      `, [brandId, seasonId])
+    ]);
+
+    res.json({
+      categories: categoriesResult.rows.map(r => r.category),
+      genders: gendersResult.rows.map(r => r.gender)
+    });
+  } catch (error) {
+    console.error('Get available products filters error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/orders/available-products - Get products not in order with zero stock
 router.get('/available-products', authenticateToken, async (req, res) => {
   try {
-    const { seasonId, brandId, locationId, shipDate } = req.query;
+    const { seasonId, brandId, locationId, shipDate, category, gender, hasSalesHistory, includeWithStock } = req.query;
 
     if (!seasonId || !brandId || !locationId) {
       return res.status(400).json({ error: 'seasonId, brandId, and locationId are required' });
+    }
+
+    // Build dynamic WHERE clause for filters
+    const params = [brandId, seasonId, locationId];
+    let paramIndex = 4;
+    let categoryFilter = '';
+    let genderFilter = '';
+    let salesHistoryJoin = '';
+    let salesHistoryFilter = '';
+
+    if (category) {
+      categoryFilter = ` AND p.category = $${paramIndex}`;
+      params.push(category);
+      paramIndex++;
+    }
+
+    if (gender) {
+      genderFilter = ` AND p.gender = $${paramIndex}`;
+      params.push(gender);
+      paramIndex++;
+    }
+
+    // For sales history filter, join with sales_by_upc table
+    if (hasSalesHistory === 'true') {
+      salesHistoryJoin = `
+        INNER JOIN sales_by_upc sbu ON sbu.upc = p.upc AND sbu.total_qty_sold > 0`;
     }
 
     // Get products in catalog for brand/season that are NOT in any order for this location
     // Also exclude products that have been ignored
     // IMPORTANT: Only include products with season pricing (confirms vendor availability)
     const productsResult = await pool.query(`
-      SELECT
+      SELECT DISTINCT
         p.id,
         p.name,
         p.base_name,
@@ -371,6 +440,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
         p.gender
       FROM products p
       INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
+      ${salesHistoryJoin}
       WHERE p.brand_id = $1
         AND p.active = true
         AND p.id NOT IN (
@@ -386,6 +456,8 @@ router.get('/available-products', authenticateToken, async (req, res) => {
           WHERE brand_id = $1
             AND (location_id = $3 OR location_id IS NULL)
         )
+        ${categoryFilter}
+        ${genderFilter}
       ORDER BY p.base_name, p.color,
         CASE
           WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
@@ -403,10 +475,10 @@ router.get('/available-products', authenticateToken, async (req, res) => {
           ELSE 50
         END,
         p.size ASC
-    `, [brandId, seasonId, locationId]);
+    `, params);
 
     const products = productsResult.rows;
-    console.log(`Found ${products.length} products not in order for brand ${brandId}, season ${seasonId}, location ${locationId}`);
+    console.log(`Found ${products.length} products not in order for brand ${brandId}, season ${seasonId}, location ${locationId} (filters: category=${category || 'all'}, gender=${gender || 'all'}, hasSalesHistory=${hasSalesHistory || 'false'})`);
 
     if (products.length === 0) {
       return res.json({ families: [], totalProducts: 0 });
@@ -426,20 +498,22 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       }
     }
 
-    // Filter to zero-stock items only and add stock_on_hand to each product
-    const zeroStockProducts = products.filter(product => {
+    // Add stock_on_hand to each product, optionally filter to zero-stock only
+    const filteredProducts = products.filter(product => {
       const upcStock = stockData[product.upc];
       const stockOnHand = upcStock ? (upcStock[parseInt(locationId)] || 0) : 0;
       product.stock_on_hand = stockOnHand;
-      return stockOnHand === 0;
+      // If includeWithStock is true, return all products regardless of stock
+      // Otherwise, only return zero-stock items
+      return includeWithStock === 'true' || stockOnHand === 0;
     });
 
-    console.log(`Filtered to ${zeroStockProducts.length} zero-stock products`);
+    console.log(`Filtered to ${filteredProducts.length} products (includeWithStock=${includeWithStock || 'false'})`);
 
     // Check if any of these products exist in future orders for this location
     let futureOrdersMap = {};
-    if (shipDate && zeroStockProducts.length > 0) {
-      const productIds = zeroStockProducts.map(p => p.id);
+    if (shipDate && filteredProducts.length > 0) {
+      const productIds = filteredProducts.map(p => p.id);
       const futureOrdersResult = await pool.query(`
         SELECT
           oi.product_id,
@@ -471,7 +545,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     }
 
     // Add future orders info to each product
-    zeroStockProducts.forEach(product => {
+    filteredProducts.forEach(product => {
       product.future_orders = futureOrdersMap[product.id] || [];
     });
 
@@ -498,7 +572,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
 
     // Group by extracted family name
     const familyMap = {};
-    zeroStockProducts.forEach(product => {
+    filteredProducts.forEach(product => {
       const familyName = extractFamilyName(product);
       if (!familyMap[familyName]) {
         familyMap[familyName] = {
@@ -516,7 +590,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
 
     res.json({
       families,
-      totalProducts: zeroStockProducts.length
+      totalProducts: filteredProducts.length
     });
   } catch (error) {
     console.error('Get available products error:', error);

@@ -62,6 +62,15 @@ const OrderAdjustment = () => {
   const [addQuantities, setAddQuantities] = useState({});
   const [activeAddProductId, setActiveAddProductId] = useState(null);
 
+  // Add Items filter state
+  const [addItemsFilters, setAddItemsFilters] = useState({
+    category: '',
+    gender: '',
+    hasSalesHistory: false,
+    includeWithStock: false
+  });
+  const [availableFilters, setAvailableFilters] = useState({ categories: [], genders: [] });
+
   // Order finalization state
   const [currentOrder, setCurrentOrder] = useState(null);
   const [finalizing, setFinalizing] = useState(false);
@@ -644,7 +653,25 @@ const OrderAdjustment = () => {
     setSuggestions(newSuggestions);
   };
 
-  // Fetch available zero-stock products
+  // Fetch filter options for Add Items panel
+  const fetchAvailableFilters = async () => {
+    if (!selectedSeasonId || !selectedBrandId) return;
+
+    try {
+      const response = await orderAPI.getAvailableProductFilters({
+        seasonId: selectedSeasonId,
+        brandId: selectedBrandId
+      });
+      setAvailableFilters({
+        categories: response.data.categories || [],
+        genders: response.data.genders || []
+      });
+    } catch (err) {
+      console.error('Error fetching available filters:', err);
+    }
+  };
+
+  // Fetch available products (with optional filters)
   const fetchAvailableProducts = async () => {
     if (!selectedSeasonId || !selectedBrandId || !selectedLocationId) return;
 
@@ -654,7 +681,11 @@ const OrderAdjustment = () => {
         seasonId: selectedSeasonId,
         brandId: selectedBrandId,
         locationId: selectedLocationId,
-        shipDate: selectedShipDate || undefined
+        shipDate: selectedShipDate || undefined,
+        category: addItemsFilters.category || undefined,
+        gender: addItemsFilters.gender || undefined,
+        hasSalesHistory: addItemsFilters.hasSalesHistory || undefined,
+        includeWithStock: addItemsFilters.includeWithStock || undefined
       });
       setAvailableProducts(response.data.families || []);
     } catch (err) {
@@ -1041,8 +1072,9 @@ const OrderAdjustment = () => {
                   onClick={() => {
                     const newPanel = activePanel === tab.id ? null : tab.id;
                     setActivePanel(newPanel);
-                    // Fetch available products when opening Add Items panel
+                    // Fetch available products and filters when opening Add Items panel
                     if (newPanel === 'add' && selectedBrandId) {
+                      fetchAvailableFilters();
                       fetchAvailableProducts();
                     }
                   }}
@@ -1296,20 +1328,78 @@ const OrderAdjustment = () => {
                   <div className="text-center py-4 text-orange-600">
                     Select a brand to view available items
                   </div>
-                ) : availableLoading ? (
-                  <div className="text-center py-4">
-                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto"></div>
-                    <p className="mt-2 text-sm text-gray-500">Loading available products...</p>
-                  </div>
-                ) : availableProducts.length === 0 ? (
-                  <div className="text-center py-4 text-gray-500">
-                    No zero-stock items available to add
-                  </div>
                 ) : (
-                  <div className="space-y-2">
-                    <div className="text-sm text-gray-600 mb-3">
-                      {availableProducts.reduce((sum, f) => sum + f.products.length, 0)} items with zero stock available to add
+                  <>
+                    {/* Filter Controls */}
+                    <div className="flex flex-wrap items-center gap-3 mb-3 pb-3 border-b">
+                      <select
+                        value={addItemsFilters.category}
+                        onChange={(e) => {
+                          setAddItemsFilters(prev => ({ ...prev, category: e.target.value }));
+                        }}
+                        className="px-2 py-1 text-sm border rounded"
+                      >
+                        <option value="">All Categories</option>
+                        {availableFilters.categories.map(cat => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={addItemsFilters.gender}
+                        onChange={(e) => {
+                          setAddItemsFilters(prev => ({ ...prev, gender: e.target.value }));
+                        }}
+                        className="px-2 py-1 text-sm border rounded"
+                      >
+                        <option value="">All Genders</option>
+                        {availableFilters.genders.map(g => (
+                          <option key={g} value={g}>{g}</option>
+                        ))}
+                      </select>
+                      <label className="flex items-center gap-1.5 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={addItemsFilters.hasSalesHistory}
+                          onChange={(e) => {
+                            setAddItemsFilters(prev => ({ ...prev, hasSalesHistory: e.target.checked }));
+                          }}
+                          className="rounded"
+                        />
+                        Has sales
+                      </label>
+                      <label className="flex items-center gap-1.5 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={addItemsFilters.includeWithStock}
+                          onChange={(e) => {
+                            setAddItemsFilters(prev => ({ ...prev, includeWithStock: e.target.checked }));
+                          }}
+                          className="rounded"
+                        />
+                        Include in-stock
+                      </label>
+                      <button
+                        onClick={fetchAvailableProducts}
+                        className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                      >
+                        Apply
+                      </button>
                     </div>
+
+                    {availableLoading ? (
+                      <div className="text-center py-4">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto"></div>
+                        <p className="mt-2 text-sm text-gray-500">Loading available products...</p>
+                      </div>
+                    ) : availableProducts.length === 0 ? (
+                      <div className="text-center py-4 text-gray-500">
+                        No items match your filters
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="text-sm text-gray-600 mb-3">
+                          {availableProducts.reduce((sum, f) => sum + f.products.length, 0)} items available to add
+                        </div>
                     {availableProducts.map(family => (
                       <div key={family.base_name} className="border rounded bg-white">
                         <div className="flex items-center justify-between hover:bg-gray-50">
@@ -1416,7 +1506,9 @@ const OrderAdjustment = () => {
                         )}
                       </div>
                     ))}
-                  </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
