@@ -365,7 +365,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
         p.size,
         p.color,
         p.inseam,
-        COALESCE(sp.wholesale_price, p.wholesale_cost) as wholesale_cost,
+        COALESCE(sp.wholesale_cost, p.wholesale_cost) as wholesale_cost,
         COALESCE(sp.msrp, p.msrp) as msrp,
         p.category,
         p.gender
