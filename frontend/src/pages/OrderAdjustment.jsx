@@ -71,6 +71,7 @@ const OrderAdjustment = () => {
   });
   const [availableFilters, setAvailableFilters] = useState({ categories: [], genders: [] });
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  const [selectedFamilies, setSelectedFamilies] = useState(new Set());
 
   // Order finalization state
   const [currentOrder, setCurrentOrder] = useState(null);
@@ -1434,12 +1435,70 @@ const OrderAdjustment = () => {
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        <div className="text-sm text-gray-600 mb-3">
-                          {availableProducts.reduce((sum, f) => sum + f.products.length, 0)} items available to add
+                        {/* Header with select all and bulk ignore */}
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            <label className="flex items-center gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={selectedFamilies.size === availableProducts.length && availableProducts.length > 0}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedFamilies(new Set(availableProducts.map(f => f.base_name)));
+                                  } else {
+                                    setSelectedFamilies(new Set());
+                                  }
+                                }}
+                                className="rounded"
+                              />
+                              Select All
+                            </label>
+                            <span className="text-sm text-gray-600">
+                              {availableProducts.reduce((sum, f) => sum + f.products.length, 0)} items in {availableProducts.length} families
+                            </span>
+                          </div>
+                          {selectedFamilies.size > 0 && (
+                            <button
+                              onClick={async () => {
+                                const familiesToIgnore = availableProducts.filter(f => selectedFamilies.has(f.base_name));
+                                for (const family of familiesToIgnore) {
+                                  for (const product of family.products) {
+                                    await orderAPI.ignoreProduct({
+                                      productId: product.id,
+                                      brandId: selectedBrandId
+                                    });
+                                  }
+                                }
+                                setAvailableProducts(prev => prev.filter(f => !selectedFamilies.has(f.base_name)));
+                                setSelectedFamilies(new Set());
+                              }}
+                              className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                            >
+                              Ignore Selected ({selectedFamilies.size})
+                            </button>
+                          )}
                         </div>
                     {availableProducts.map(family => (
                       <div key={family.base_name} className="border rounded bg-white">
-                        <div className="flex items-center justify-between hover:bg-gray-50">
+                        <div className="flex items-center hover:bg-gray-50">
+                          <label className="pl-3 flex items-center" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={selectedFamilies.has(family.base_name)}
+                              onChange={(e) => {
+                                setSelectedFamilies(prev => {
+                                  const newSet = new Set(prev);
+                                  if (e.target.checked) {
+                                    newSet.add(family.base_name);
+                                  } else {
+                                    newSet.delete(family.base_name);
+                                  }
+                                  return newSet;
+                                });
+                              }}
+                              className="rounded"
+                            />
+                          </label>
                           <button
                             onClick={() => toggleFamily(family.base_name)}
                             className="flex-1 px-3 py-2 flex justify-between items-center text-left"
@@ -1452,20 +1511,23 @@ const OrderAdjustment = () => {
                           <button
                             onClick={async (e) => {
                               e.stopPropagation();
-                              // Ignore all products in this family
                               for (const product of family.products) {
                                 await orderAPI.ignoreProduct({
                                   productId: product.id,
                                   brandId: selectedBrandId
                                 });
                               }
-                              // Remove family from list
                               setAvailableProducts(prev => prev.filter(f => f.base_name !== family.base_name));
+                              setSelectedFamilies(prev => {
+                                const newSet = new Set(prev);
+                                newSet.delete(family.base_name);
+                                return newSet;
+                              });
                             }}
                             title="Ignore all variants of this product"
                             className="mr-2 px-2 py-1 text-xs bg-gray-200 text-gray-600 rounded hover:bg-gray-300"
                           >
-                            Ignore All
+                            Ignore
                           </button>
                         </div>
 
