@@ -888,6 +888,89 @@ const OrderAdjustment = () => {
     }
   };
 
+  // Bulk add all products from selected families
+  const addAllSelectedFamilies = async () => {
+    if (selectedFamilies.size === 0) return;
+
+    const orderId = inventory[0]?.order_id;
+    if (!orderId) {
+      setError('No order found for this location');
+      return;
+    }
+
+    setSaving(true);
+    const addedProductIds = [];
+    const newItems = [];
+
+    try {
+      // Get all products from selected families
+      const productsToAdd = availableProducts
+        .filter(family => selectedFamilies.has(family.base_name))
+        .flatMap(family => family.products);
+
+      for (const product of productsToAdd) {
+        const qty = bulkAddQty;
+        try {
+          const response = await orderAPI.addItem(orderId, {
+            product_id: product.id,
+            quantity: qty,
+            unit_price: product.wholesale_cost,
+            is_addition: true
+          });
+
+          addedProductIds.push(product.id);
+
+          const newItem = response.data.item;
+          if (newItem) {
+            newItems.push({
+              item_id: newItem.id,
+              order_id: newItem.order_id,
+              product_id: newItem.product_id,
+              original_quantity: 0,
+              adjusted_quantity: qty,
+              unit_cost: newItem.unit_cost,
+              line_total: newItem.line_total,
+              product_name: product.name,
+              base_name: product.base_name,
+              upc: product.upc,
+              size: product.size,
+              color: product.color,
+              inseam: product.inseam,
+              stock_on_hand: 0
+            });
+          }
+        } catch (err) {
+          console.error(`Error adding product ${product.id}:`, err);
+        }
+      }
+
+      // Remove added products from available list
+      if (addedProductIds.length > 0) {
+        setAvailableProducts(prev =>
+          prev.map(family => ({
+            ...family,
+            products: family.products.filter(p => !addedProductIds.includes(p.id))
+          })).filter(family => family.products.length > 0)
+        );
+
+        // Clear selection
+        setSelectedFamilies(new Set());
+        setSelectedProducts(new Set());
+
+        // Add new items to inventory
+        if (newItems.length > 0) {
+          setInventory(prev => [...prev, ...newItems]);
+          recalculateSummary();
+        }
+      }
+    } catch (err) {
+      console.error('Error in bulk add families:', err);
+      setError('Failed to add some items');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // Toggle product selection within family
   const toggleProductSelection = (productId) => {
     setSelectedProducts(prev => {
@@ -1671,24 +1754,43 @@ const OrderAdjustment = () => {
                             </span>
                           </div>
                           {selectedFamilies.size > 0 && (
-                            <button
-                              onClick={async () => {
-                                const familiesToIgnore = availableProducts.filter(f => selectedFamilies.has(f.base_name));
-                                for (const family of familiesToIgnore) {
-                                  for (const product of family.products) {
-                                    await orderAPI.ignoreProduct({
-                                      productId: product.id,
-                                      brandId: selectedBrandId
-                                    });
+                            <div className="flex items-center gap-2">
+                              <label className="flex items-center gap-1 text-sm">
+                                <span className="text-gray-600">Qty:</span>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={bulkAddQty}
+                                  onChange={(e) => setBulkAddQty(parseInt(e.target.value) || 1)}
+                                  className="w-14 px-1 py-0.5 border rounded text-center text-sm"
+                                />
+                              </label>
+                              <button
+                                onClick={addAllSelectedFamilies}
+                                disabled={saving}
+                                className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                              >
+                                {saving ? 'Adding...' : `Add All (${availableProducts.filter(f => selectedFamilies.has(f.base_name)).reduce((sum, f) => sum + f.products.length, 0)})`}
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  const familiesToIgnore = availableProducts.filter(f => selectedFamilies.has(f.base_name));
+                                  for (const family of familiesToIgnore) {
+                                    for (const product of family.products) {
+                                      await orderAPI.ignoreProduct({
+                                        productId: product.id,
+                                        brandId: selectedBrandId
+                                      });
+                                    }
                                   }
-                                }
-                                setAvailableProducts(prev => prev.filter(f => !selectedFamilies.has(f.base_name)));
-                                setSelectedFamilies(new Set());
-                              }}
-                              className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
-                            >
-                              Ignore Selected ({selectedFamilies.size})
-                            </button>
+                                  setAvailableProducts(prev => prev.filter(f => !selectedFamilies.has(f.base_name)));
+                                  setSelectedFamilies(new Set());
+                                }}
+                                className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                              >
+                                Ignore ({selectedFamilies.size})
+                              </button>
+                            </div>
                           )}
                         </div>
                     {availableProducts.map(family => (
