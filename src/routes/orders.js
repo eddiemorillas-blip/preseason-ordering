@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
-const { getStockByUPCs, bigquery, FACILITY_TO_LOCATION } = require('../services/bigquery');
+const { getStockByUPCs, getStockOnHand, FACILITY_TO_LOCATION } = require('../services/bigquery');
 
 // Create ignored_products table if it doesn't exist
 pool.query(`
@@ -2290,26 +2290,29 @@ router.post('/:id/finalize', authenticateToken, authorizeRoles('admin', 'buyer')
 router.get('/debug-upc/:upc', async (req, res) => {
   try {
     const upc = req.params.upc;
-    const searchTerm = upc.slice(-8); // Last 8 digits
 
-    const query = `
-      SELECT
-        barcode,
-        CAST(facility_id AS STRING) as facility_id,
-        facility_name,
-        on_hand_qty
-      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\`
-      WHERE barcode LIKE '%${searchTerm}%'
-      LIMIT 30
-    `;
+    // Try exact match
+    const exactMatch = await getStockOnHand([upc]);
 
-    const [rows] = await bigquery.query({ query });
+    // Try with leading zero
+    const withLeadingZero = await getStockOnHand(['0' + upc]);
+
+    // Try without leading zeros
+    const withoutLeadingZeros = await getStockOnHand([upc.replace(/^0+/, '')]);
+
+    // Also check what similar UPCs exist in the products table
+    const similarProducts = await pool.query(`
+      SELECT upc, name, size FROM products
+      WHERE upc LIKE $1 OR upc LIKE $2
+      LIMIT 20
+    `, [`%${upc.slice(-6)}%`, `%${upc.slice(0, 8)}%`]);
 
     res.json({
       searchedFor: upc,
-      searchTerm: searchTerm,
-      resultsCount: rows.length,
-      results: rows,
+      exactMatch: exactMatch,
+      withLeadingZero: withLeadingZero,
+      withoutLeadingZeros: withoutLeadingZeros,
+      similarProductsInDB: similarProducts.rows,
       facilityMapping: FACILITY_TO_LOCATION
     });
   } catch (error) {
