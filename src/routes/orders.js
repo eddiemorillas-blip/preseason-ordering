@@ -598,36 +598,31 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       product.future_orders = futureOrdersMap[product.id] || [];
     });
 
-    // Helper to extract family name from product name
-    // Removes size patterns from the end, preserving model and color
-    // (e.g., "Instinct VS Black/Orange 42" -> "Instinct VS Black/Orange")
-    // NOTE: We use full `name` instead of `base_name` because base_name strips color,
-    // which incorrectly merges different colorways into the same family
+    // Helper to extract family name from product
+    // Groups by base_name + color to keep different models and colorways separate
+    // e.g., "Instinct VSR" + "Black/Azure" = "Instinct VSR Black/Azure"
+    //       "Instinct S" + "Black/Azure" = "Instinct S Black/Azure"
     const extractFamilyName = (product) => {
-      // Use full name to preserve model variations
-      let name = product.name || product.base_name || '';
+      // Use base_name for the model (includes variant like VSR, S, VS)
+      let baseName = product.base_name || product.name || '';
 
-      // Common size patterns to remove from the end
+      // Strip any size that might have leaked into base_name
       const sizePatterns = [
         /\s+(XXS|XS|S|M|L|XL|XXL|2XL|3XL|XXXL)$/i,
-        /\s+\d+(\.\d+)?$/,  // Numeric sizes like "32" or "10.5"
-        /\s+\d+\/\d+$/,     // Fraction sizes like "1/2"
+        /\s+\d+(\.\d+)?$/,
+        /\s+\d+\/\d+$/,
         /\s+(One Size|OS|OSFA)$/i
       ];
-
       for (const pattern of sizePatterns) {
-        name = name.replace(pattern, '');
+        baseName = baseName.replace(pattern, '');
       }
+      baseName = baseName.trim();
 
-      name = name.trim();
-
-      // If color is stored separately and not already in name, append it
-      // This ensures different colorways are separate families
-      if (product.color && !name.toLowerCase().includes(product.color.toLowerCase())) {
-        name = `${name} ${product.color}`;
+      // Always append color to create unique family per colorway
+      if (product.color) {
+        return `${baseName} ${product.color}`;
       }
-
-      return name;
+      return baseName;
     };
 
     // Group by extracted family name
