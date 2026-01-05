@@ -604,7 +604,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     // NOTE: We use full `name` instead of `base_name` because base_name strips color,
     // which incorrectly merges different colorways into the same family
     const extractFamilyName = (product) => {
-      // Use full name to preserve model variations and colors
+      // Use full name to preserve model variations
       let name = product.name || product.base_name || '';
 
       // Common size patterns to remove from the end
@@ -619,7 +619,15 @@ router.get('/available-products', authenticateToken, async (req, res) => {
         name = name.replace(pattern, '');
       }
 
-      return name.trim();
+      name = name.trim();
+
+      // If color is stored separately and not already in name, append it
+      // This ensures different colorways are separate families
+      if (product.color && !name.toLowerCase().includes(product.color.toLowerCase())) {
+        name = `${name} ${product.color}`;
+      }
+
+      return name;
     };
 
     // Group by extracted family name
