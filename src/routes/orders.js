@@ -540,13 +540,15 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     }
 
     // Add stock_on_hand to each product, optionally filter to zero-stock only
+    // Use null when no stock data found (to distinguish from "has data, qty is 0")
     const filteredProducts = products.filter(product => {
       const upcStock = stockData[product.upc];
-      const stockOnHand = upcStock ? (upcStock[parseInt(locationId)] || 0) : 0;
+      // null = no data found, 0 = data found but stock is zero
+      const stockOnHand = upcStock !== undefined ? (upcStock[parseInt(locationId)] || 0) : null;
       product.stock_on_hand = stockOnHand;
       // If includeWithStock is true, return all products regardless of stock
-      // Otherwise, only return zero-stock items
-      return includeWithStock === 'true' || stockOnHand === 0;
+      // Otherwise, only return zero-stock items (null treated as zero for filtering)
+      return includeWithStock === 'true' || (stockOnHand === null || stockOnHand === 0);
     });
 
     console.log(`Filtered to ${filteredProducts.length} products (includeWithStock=${includeWithStock || 'false'})`);

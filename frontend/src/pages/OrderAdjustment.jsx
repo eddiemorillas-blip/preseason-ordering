@@ -1772,6 +1772,7 @@ const OrderAdjustment = () => {
                                   </th>
                                   <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Color</th>
                                   <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Size</th>
+                                  <th className="px-2 py-1 text-center text-xs font-medium text-gray-500">Stock</th>
                                   <th className="px-2 py-1 text-right text-xs font-medium text-gray-500">Cost</th>
                                   <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Future Orders</th>
                                   <th className="px-2 py-1 text-center text-xs font-medium text-gray-500">Qty</th>
@@ -1791,6 +1792,9 @@ const OrderAdjustment = () => {
                                     </td>
                                     <td className="px-2 py-1.5">{product.color || '-'}</td>
                                     <td className="px-2 py-1.5">{product.size || '-'}{product.inseam && `/${product.inseam}`}</td>
+                                    <td className="px-2 py-1.5 text-center text-gray-500">
+                                      {product.stock_on_hand !== null ? product.stock_on_hand : '-'}
+                                    </td>
                                     <td className="px-2 py-1.5 text-right">
                                       ${parseFloat(product.wholesale_cost || 0).toFixed(2)}
                                     </td>
