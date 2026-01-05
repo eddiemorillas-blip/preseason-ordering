@@ -590,11 +590,14 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       product.future_orders = futureOrdersMap[product.id] || [];
     });
 
-    // Helper to extract family name from product name/base_name
-    // Removes size patterns from the end (e.g., "Adjama Blue M" -> "Adjama Blue")
+    // Helper to extract family name from product name
+    // Removes size patterns from the end, preserving model and color
+    // (e.g., "Instinct VS Black/Orange 42" -> "Instinct VS Black/Orange")
+    // NOTE: We use full `name` instead of `base_name` because base_name strips color,
+    // which incorrectly merges different colorways into the same family
     const extractFamilyName = (product) => {
-      // Prefer base_name if it looks like a proper family name (doesn't end with a size)
-      let name = product.base_name || product.name || '';
+      // Use full name to preserve model variations and colors
+      let name = product.name || product.base_name || '';
 
       // Common size patterns to remove from the end
       const sizePatterns = [
