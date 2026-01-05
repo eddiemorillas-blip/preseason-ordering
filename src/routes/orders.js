@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
-const { getStockByUPCs } = require('../services/bigquery');
+const { getStockByUPCs, bigquery, FACILITY_TO_LOCATION } = require('../services/bigquery');
 
 // Create ignored_products table if it doesn't exist
 pool.query(`
@@ -2283,6 +2283,38 @@ router.post('/:id/finalize', authenticateToken, authorizeRoles('admin', 'buyer')
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
+  }
+});
+
+// GET /api/orders/debug-upc/:upc - Debug UPC lookup in BigQuery (temporary)
+router.get('/debug-upc/:upc', async (req, res) => {
+  try {
+    const upc = req.params.upc;
+    const searchTerm = upc.slice(-8); // Last 8 digits
+
+    const query = `
+      SELECT
+        barcode,
+        CAST(facility_id AS STRING) as facility_id,
+        facility_name,
+        on_hand_qty
+      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\`
+      WHERE barcode LIKE '%${searchTerm}%'
+      LIMIT 30
+    `;
+
+    const [rows] = await bigquery.query({ query });
+
+    res.json({
+      searchedFor: upc,
+      searchTerm: searchTerm,
+      resultsCount: rows.length,
+      results: rows,
+      facilityMapping: FACILITY_TO_LOCATION
+    });
+  } catch (error) {
+    console.error('Debug UPC error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
