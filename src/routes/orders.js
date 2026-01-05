@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
-const { getStockByUPCs, getStockOnHand, FACILITY_TO_LOCATION } = require('../services/bigquery');
+const { getStockByUPCs } = require('../services/bigquery');
 
 // Create ignored_products table if it doesn't exist
 pool.query(`
@@ -533,11 +533,6 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       try {
         stockData = await getStockByUPCs(upcs);
         console.log(`Got stock data for ${Object.keys(stockData).length}/${upcs.length} UPCs`);
-        // Debug: check specific UPC
-        const debugUpc = '8057963494218';
-        if (upcs.includes(debugUpc)) {
-          console.log(`DEBUG: UPC ${debugUpc} in request, stockData has it: ${!!stockData[debugUpc]}, value:`, stockData[debugUpc]);
-        }
       } catch (bqError) {
         console.error('BigQuery stock fetch error:', bqError.message);
         // Continue without stock data
@@ -827,16 +822,6 @@ router.get('/inventory', authenticateToken, async (req, res) => {
       try {
         stockData = await getStockByUPCs(upcs);
         console.log(`Got stock data for ${Object.keys(stockData).length} UPCs`);
-        // Debug: check specific UPC (Crux 42)
-        const debugUpc = '8057963494218';
-        if (upcs.includes(debugUpc)) {
-          console.log(`DEBUG INVENTORY: UPC ${debugUpc} in request, stockData has it: ${!!stockData[debugUpc]}, value:`, stockData[debugUpc]);
-        }
-        // Log a few sample UPCs that have vs don't have stock
-        const withStock = Object.keys(stockData).slice(0, 3);
-        const withoutStock = upcs.filter(u => !stockData[u]).slice(0, 3);
-        console.log('Sample UPCs WITH stock data:', withStock);
-        console.log('Sample UPCs WITHOUT stock data:', withoutStock);
       } catch (bqError) {
         console.error('BigQuery stock fetch error:', bqError.message, bqError.stack);
         // Continue without stock data if BigQuery fails
@@ -2283,55 +2268,6 @@ router.post('/:id/finalize', authenticateToken, authorizeRoles('admin', 'buyer')
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
-  }
-});
-
-// GET /api/orders/debug-upc/:upc - Debug UPC lookup in BigQuery (temporary)
-router.get('/debug-upc/:upc', async (req, res) => {
-  try {
-    const upc = req.params.upc;
-
-    // Check env var
-    const hasEnvVar = !!process.env.GOOGLE_CREDENTIALS_BASE64;
-    console.log('Debug endpoint - GOOGLE_CREDENTIALS_BASE64 set:', hasEnvVar);
-
-    // Try exact match
-    const exactMatch = await getStockOnHand([upc]);
-
-    // Try with leading zero
-    const withLeadingZero = await getStockOnHand(['0' + upc]);
-
-    // Try without leading zeros
-    const withoutLeadingZeros = await getStockOnHand([upc.replace(/^0+/, '')]);
-
-    // Also check what similar UPCs exist in the products table
-    const similarProducts = await pool.query(`
-      SELECT upc, name, size FROM products
-      WHERE upc LIKE $1 OR upc LIKE $2
-      LIMIT 20
-    `, [`%${upc.slice(-6)}%`, `%${upc.slice(0, 8)}%`]);
-
-    res.json({
-      searchedFor: upc,
-      exactMatch: exactMatch,
-      withLeadingZero: withLeadingZero,
-      withoutLeadingZeros: withoutLeadingZeros,
-      similarProductsInDB: similarProducts.rows,
-      facilityMapping: FACILITY_TO_LOCATION,
-      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64
-    });
-  } catch (error) {
-    console.error('Debug UPC error:', error);
-    // Log all env var keys containing GOOGLE or CRED
-    const relevantEnvVars = Object.keys(process.env).filter(k =>
-      k.includes('GOOGLE') || k.includes('CRED') || k.includes('BASE64')
-    );
-    console.log('Relevant env vars at request time:', relevantEnvVars);
-    res.status(500).json({
-      error: error.message,
-      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64,
-      relevantEnvVars: relevantEnvVars
-    });
   }
 });
 
