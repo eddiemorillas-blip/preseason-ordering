@@ -357,6 +357,42 @@ router.post('/fix-order-item-totals', authenticateToken, authorizeRoles('admin')
   }
 });
 
+// Refresh base_name from product name for a specific brand
+// This fixes incorrectly stripped model suffixes (e.g., "Instinct S" becoming "Instinct")
+router.post('/refresh-base-names', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const { brandId } = req.body;
+
+    let result;
+    if (brandId) {
+      // Refresh for specific brand
+      result = await pool.query(`
+        UPDATE products
+        SET base_name = name
+        WHERE brand_id = $1
+      `, [brandId]);
+    } else {
+      // Refresh for all products
+      result = await pool.query(`
+        UPDATE products
+        SET base_name = name
+      `);
+    }
+
+    res.json({
+      success: true,
+      message: `Refreshed base_name for ${result.rowCount} products`
+    });
+  } catch (error) {
+    console.error('Refresh base names error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to refresh base names',
+      message: error.message
+    });
+  }
+});
+
 // Fix products constraint - remove brand_id+sku unique constraint
 router.post('/fix-products-constraints', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {

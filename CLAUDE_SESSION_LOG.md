@@ -63,6 +63,7 @@ d75fcd9 - Fix SELECT DISTINCT error in available-products endpoint
 
 ### Bug Fixes
 - **Product family grouping (2026-01-05)**: Fixed issue where different shoe models were merged together (e.g., Scarpa "Instinct VS" and "Instinct"). The `extractFamilyName` function now uses `product.name` instead of `product.base_name` to preserve color information, since `base_name` strips both size AND color.
+- **Model suffix stripping (2026-01-05)**: Fixed issue where model suffixes like "S" in "Instinct S" were incorrectly stripped because the size-stripping regex matched standalone "S". Changed to only strip letter sizes when preceded by a delimiter like "-". Added `/api/migrations/refresh-base-names` endpoint to fix existing data.
 
 ---
 

@@ -607,11 +607,19 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       let baseName = product.base_name || product.name || '';
 
       // Strip any size that might have leaked into base_name
+      // IMPORTANT: Only strip letter sizes (S, M, L, etc.) when preceded by a delimiter
+      // to avoid stripping model suffixes like "Instinct S" or "Instinct VS"
       const sizePatterns = [
-        /\s+(XXS|XS|S|M|L|XL|XXL|2XL|3XL|XXXL)$/i,
+        // Letter sizes only when preceded by dash/hyphen (e.g., "Shirt - S" or "Shirt -S")
+        /\s*-\s*(XXS|XS|S|M|L|XL|XXL|2XL|3XL|XXXL)$/i,
+        // Numeric sizes (shoe sizes like 42, 10.5) - always strip these
         /\s+\d+(\.\d+)?$/,
+        // Fraction sizes (like 32/34 for waist/inseam)
         /\s+\d+\/\d+$/,
-        /\s+(One Size|OS|OSFA)$/i
+        // Explicit size indicators
+        /\s+(One Size|OS|OSFA)$/i,
+        // Size with explicit "Size" prefix (e.g., "Jacket Size M")
+        /\s+Size\s+(XXS|XS|S|M|L|XL|XXL|2XL|3XL|XXXL)$/i
       ];
       for (const pattern of sizePatterns) {
         baseName = baseName.replace(pattern, '');
