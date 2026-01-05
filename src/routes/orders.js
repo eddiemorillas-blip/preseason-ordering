@@ -418,7 +418,7 @@ router.get('/available-products/filters', authenticateToken, async (req, res) =>
 // GET /api/orders/available-products - Get products not in order with zero stock
 router.get('/available-products', authenticateToken, async (req, res) => {
   try {
-    const { seasonId, brandId, locationId, shipDate, categories, sizes, gender, hasSalesHistory, includeWithStock } = req.query;
+    const { seasonId, brandId, locationId, shipDate, categories, sizes, gender, hasSalesHistory, includeWithStock, hasInventoryData } = req.query;
 
     if (!seasonId || !brandId || !locationId) {
       return res.status(400).json({ error: 'seasonId, brandId, and locationId are required' });
@@ -546,12 +546,18 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       // null = no data found, 0 = data found but stock is zero
       const stockOnHand = upcStock !== undefined ? (upcStock[parseInt(locationId)] || 0) : null;
       product.stock_on_hand = stockOnHand;
+
+      // If hasInventoryData filter is on, exclude items without inventory data
+      if (hasInventoryData === 'true' && stockOnHand === null) {
+        return false;
+      }
+
       // If includeWithStock is true, return all products regardless of stock
       // Otherwise, only return zero-stock items (null treated as zero for filtering)
       return includeWithStock === 'true' || (stockOnHand === null || stockOnHand === 0);
     });
 
-    console.log(`Filtered to ${filteredProducts.length} products (includeWithStock=${includeWithStock || 'false'})`);
+    console.log(`Filtered to ${filteredProducts.length} products (includeWithStock=${includeWithStock || 'false'}, hasInventoryData=${hasInventoryData || 'false'})`);
 
     // Check if any of these products exist in future orders for this location
     let futureOrdersMap = {};

@@ -68,7 +68,8 @@ const OrderAdjustment = () => {
     sizes: [], // Array for multi-select sizes
     gender: '',
     hasSalesHistory: false,
-    includeWithStock: false
+    includeWithStock: false,
+    hasInventoryData: false
   });
   const [availableFilters, setAvailableFilters] = useState({ categories: [], genders: [], sizes: [] });
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
@@ -709,7 +710,8 @@ const OrderAdjustment = () => {
         sizes: addItemsFilters.sizes.length > 0 ? addItemsFilters.sizes.join(',') : undefined,
         gender: addItemsFilters.gender || undefined,
         hasSalesHistory: addItemsFilters.hasSalesHistory || undefined,
-        includeWithStock: addItemsFilters.includeWithStock || undefined
+        includeWithStock: addItemsFilters.includeWithStock || undefined,
+        hasInventoryData: addItemsFilters.hasInventoryData || undefined
       });
       setAvailableProducts(response.data.families || []);
     } catch (err) {
@@ -1614,6 +1616,17 @@ const OrderAdjustment = () => {
                             className="rounded"
                           />
                           Include in-stock
+                        </label>
+                        <label className="flex items-center gap-1.5 text-sm" title="Only show items with inventory data in system">
+                          <input
+                            type="checkbox"
+                            checked={addItemsFilters.hasInventoryData}
+                            onChange={(e) => {
+                              setAddItemsFilters(prev => ({ ...prev, hasInventoryData: e.target.checked }));
+                            }}
+                            className="rounded"
+                          />
+                          Has inventory
                         </label>
                         <button
                           onClick={fetchAvailableProducts}
