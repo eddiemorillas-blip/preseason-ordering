@@ -703,8 +703,8 @@ const OrderAdjustment = () => {
         brandId: selectedBrandId,
         locationId: selectedLocationId,
         shipDate: selectedShipDate || undefined,
-        categories: addItemsFilters.categories.length > 0 ? addItemsFilters.categories : undefined,
-        sizes: addItemsFilters.sizes.length > 0 ? addItemsFilters.sizes : undefined,
+        categories: addItemsFilters.categories.length > 0 ? addItemsFilters.categories.join(',') : undefined,
+        sizes: addItemsFilters.sizes.length > 0 ? addItemsFilters.sizes.join(',') : undefined,
         gender: addItemsFilters.gender || undefined,
         hasSalesHistory: addItemsFilters.hasSalesHistory || undefined,
         includeWithStock: addItemsFilters.includeWithStock || undefined

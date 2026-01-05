@@ -431,8 +431,8 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     let sizeFilter = '';
     let genderFilter = '';
 
-    // Handle multiple categories (can be array or single value)
-    const categoryList = Array.isArray(categories) ? categories : (categories ? [categories] : []);
+    // Handle multiple categories (comma-separated string or array)
+    const categoryList = categories ? (typeof categories === 'string' ? categories.split(',') : (Array.isArray(categories) ? categories : [categories])) : [];
     if (categoryList.length > 0) {
       const placeholders = categoryList.map((_, i) => `$${paramIndex + i}`).join(', ');
       categoryFilter = ` AND p.category IN (${placeholders})`;
@@ -440,8 +440,8 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       paramIndex += categoryList.length;
     }
 
-    // Handle multiple sizes (can be array or single value)
-    const sizeList = Array.isArray(sizes) ? sizes : (sizes ? [sizes] : []);
+    // Handle multiple sizes (comma-separated string or array)
+    const sizeList = sizes ? (typeof sizes === 'string' ? sizes.split(',') : (Array.isArray(sizes) ? sizes : [sizes])) : [];
     if (sizeList.length > 0) {
       const placeholders = sizeList.map((_, i) => `$${paramIndex + i}`).join(', ');
       sizeFilter = ` AND p.size IN (${placeholders})`;
