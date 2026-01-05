@@ -375,19 +375,21 @@ router.get('/available-products/filters', authenticateToken, async (req, res) =>
         ORDER BY p.gender
       `, [brandId, seasonId]),
       pool.query(`
-        SELECT DISTINCT p.size
-        FROM products p
-        INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
-        WHERE p.brand_id = $1
-          AND p.active = true
-          AND p.size IS NOT NULL
-          AND p.size != ''
+        SELECT size FROM (
+          SELECT DISTINCT p.size
+          FROM products p
+          INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
+          WHERE p.brand_id = $1
+            AND p.active = true
+            AND p.size IS NOT NULL
+            AND p.size != ''
+        ) sizes
         ORDER BY
           CASE
-            WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
+            WHEN size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(size AS DECIMAL)
             ELSE 0
           END ASC,
-          CASE p.size
+          CASE size
             WHEN 'XXS' THEN 1 WHEN '2XS' THEN 1
             WHEN 'XS' THEN 2
             WHEN 'S' THEN 3
@@ -398,7 +400,7 @@ router.get('/available-products/filters', authenticateToken, async (req, res) =>
             WHEN 'XXXL' THEN 8 WHEN '3XL' THEN 8
             ELSE 50
           END,
-          p.size ASC
+          size ASC
       `, [brandId, seasonId])
     ]);
 
