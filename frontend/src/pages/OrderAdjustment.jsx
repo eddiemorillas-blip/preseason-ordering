@@ -74,6 +74,8 @@ const OrderAdjustment = () => {
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [showSizeDropdown, setShowSizeDropdown] = useState(false);
   const [selectedFamilies, setSelectedFamilies] = useState(new Set());
+  const [selectedProducts, setSelectedProducts] = useState(new Set()); // For bulk add within families
+  const [bulkAddQty, setBulkAddQty] = useState(1); // Default qty for bulk add
   const categoryDropdownRef = useRef(null);
   const sizeDropdownRef = useRef(null);
 
@@ -793,6 +795,124 @@ const OrderAdjustment = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Bulk add selected products within families
+  const addSelectedProducts = async () => {
+    if (selectedProducts.size === 0) return;
+
+    const orderId = inventory[0]?.order_id;
+    if (!orderId) {
+      setError('No order found for this location');
+      return;
+    }
+
+    setSaving(true);
+    const addedProductIds = [];
+    const newItems = [];
+
+    try {
+      // Get all products to add
+      const productsToAdd = availableProducts.flatMap(family =>
+        family.products.filter(p => selectedProducts.has(p.id))
+      );
+
+      for (const product of productsToAdd) {
+        const qty = addQuantities[product.id] || bulkAddQty;
+        try {
+          const response = await orderAPI.addItem(orderId, {
+            product_id: product.id,
+            quantity: qty,
+            unit_price: product.wholesale_cost,
+            is_addition: true
+          });
+
+          addedProductIds.push(product.id);
+
+          const newItem = response.data.item;
+          if (newItem) {
+            newItems.push({
+              item_id: newItem.id,
+              order_id: newItem.order_id,
+              product_id: newItem.product_id,
+              original_quantity: 0,
+              adjusted_quantity: qty,
+              unit_cost: newItem.unit_cost,
+              line_total: newItem.line_total,
+              product_name: product.name,
+              base_name: product.base_name,
+              upc: product.upc,
+              size: product.size,
+              color: product.color,
+              inseam: product.inseam,
+              stock_on_hand: 0
+            });
+          }
+        } catch (err) {
+          console.error(`Error adding product ${product.id}:`, err);
+        }
+      }
+
+      // Remove added products from available list
+      if (addedProductIds.length > 0) {
+        setAvailableProducts(prev =>
+          prev.map(family => ({
+            ...family,
+            products: family.products.filter(p => !addedProductIds.includes(p.id))
+          })).filter(family => family.products.length > 0)
+        );
+
+        // Clear quantities for added products
+        setAddQuantities(prev => {
+          const newQtys = { ...prev };
+          addedProductIds.forEach(id => delete newQtys[id]);
+          return newQtys;
+        });
+
+        // Clear selection
+        setSelectedProducts(new Set());
+
+        // Add new items to inventory
+        if (newItems.length > 0) {
+          setInventory(prev => [...prev, ...newItems]);
+          recalculateSummary();
+        }
+      }
+    } catch (err) {
+      console.error('Error in bulk add:', err);
+      setError('Failed to add some items');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Toggle product selection within family
+  const toggleProductSelection = (productId) => {
+    setSelectedProducts(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(productId)) {
+        newSet.delete(productId);
+      } else {
+        newSet.add(productId);
+      }
+      return newSet;
+    });
+  };
+
+  // Select/deselect all products in a family
+  const toggleSelectAllInFamily = (family) => {
+    const familyProductIds = family.products.map(p => p.id);
+    const allSelected = familyProductIds.every(id => selectedProducts.has(id));
+
+    setSelectedProducts(prev => {
+      const newSet = new Set(prev);
+      if (allSelected) {
+        familyProductIds.forEach(id => newSet.delete(id));
+      } else {
+        familyProductIds.forEach(id => newSet.add(id));
+      }
+      return newSet;
+    });
   };
 
   // Get flat list of all products for navigation
@@ -1613,9 +1733,43 @@ const OrderAdjustment = () => {
 
                         {expandedFamilies.has(family.base_name) && (
                           <div className="border-t">
+                            {/* Bulk add controls for this family */}
+                            {family.products.some(p => selectedProducts.has(p.id)) && (
+                              <div className="bg-green-50 px-3 py-2 flex items-center gap-3 border-b">
+                                <span className="text-sm text-green-800">
+                                  {family.products.filter(p => selectedProducts.has(p.id)).length} selected
+                                </span>
+                                <label className="flex items-center gap-1 text-sm">
+                                  <span className="text-gray-600">Qty:</span>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    value={bulkAddQty}
+                                    onChange={(e) => setBulkAddQty(parseInt(e.target.value) || 1)}
+                                    className="w-14 px-1 py-0.5 border rounded text-center text-sm"
+                                  />
+                                </label>
+                                <button
+                                  onClick={addSelectedProducts}
+                                  disabled={saving}
+                                  className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50"
+                                >
+                                  Add Selected
+                                </button>
+                              </div>
+                            )}
                             <table className="w-full text-sm">
                               <thead className="bg-gray-50">
                                 <tr>
+                                  <th className="px-2 py-1 text-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={family.products.length > 0 && family.products.every(p => selectedProducts.has(p.id))}
+                                      onChange={() => toggleSelectAllInFamily(family)}
+                                      className="rounded"
+                                      title="Select all sizes"
+                                    />
+                                  </th>
                                   <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Color</th>
                                   <th className="px-2 py-1 text-left text-xs font-medium text-gray-500">Size</th>
                                   <th className="px-2 py-1 text-right text-xs font-medium text-gray-500">Cost</th>
@@ -1626,7 +1780,15 @@ const OrderAdjustment = () => {
                               </thead>
                               <tbody>
                                 {family.products.map(product => (
-                                  <tr key={product.id} className={`border-t hover:bg-gray-50 ${product.future_orders?.length > 0 ? 'bg-yellow-50' : ''}`}>
+                                  <tr key={product.id} className={`border-t hover:bg-gray-50 ${product.future_orders?.length > 0 ? 'bg-yellow-50' : ''} ${selectedProducts.has(product.id) ? 'bg-green-50' : ''}`}>
+                                    <td className="px-2 py-1.5 text-center">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedProducts.has(product.id)}
+                                        onChange={() => toggleProductSelection(product.id)}
+                                        className="rounded"
+                                      />
+                                    </td>
                                     <td className="px-2 py-1.5">{product.color || '-'}</td>
                                     <td className="px-2 py-1.5">{product.size || '-'}{product.inseam && `/${product.inseam}`}</td>
                                     <td className="px-2 py-1.5 text-right">

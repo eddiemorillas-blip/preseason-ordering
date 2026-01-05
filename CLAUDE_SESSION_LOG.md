@@ -1,6 +1,6 @@
 # Claude Session Log - Preseason Ordering App
 
-## Last Updated: 2025-12-24
+## Last Updated: 2026-01-05
 
 ---
 
@@ -29,6 +29,7 @@
 ## Recent Commits (Latest First)
 
 ```
+506c7b9 - Fix product family grouping - use full name to preserve colors
 bb6fdc9 - Fix array serialization for categories and sizes filters
 b030551 - Add Select All button to category and size dropdowns
 79c7974 - Fix sizes query - wrap DISTINCT in subquery for ORDER BY
@@ -59,6 +60,9 @@ d75fcd9 - Fix SELECT DISTINCT error in available-products endpoint
 1. **Deployment**: Frontend on Vercel, Backend on Railway - both auto-deploy from git push
 2. **Browser caching**: Sometimes need to clear cache or use incognito after deploys
 3. **PostgreSQL quirk**: `SELECT DISTINCT` with complex `ORDER BY` requires subquery wrapper
+
+### Bug Fixes
+- **Product family grouping (2026-01-05)**: Fixed issue where different shoe models were merged together (e.g., Scarpa "Instinct VS" and "Instinct"). The `extractFamilyName` function now uses `product.name` instead of `product.base_name` to preserve color information, since `base_name` strips both size AND color.
 
 ---
 
