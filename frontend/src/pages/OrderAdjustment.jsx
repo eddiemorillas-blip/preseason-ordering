@@ -1370,7 +1370,14 @@ const OrderAdjustment = () => {
                         </button>
                         {showCategoryDropdown && (
                           <div className="absolute z-10 mt-1 bg-white border rounded shadow-lg max-h-60 overflow-y-auto min-w-[180px]">
-                            <div className="p-2 border-b">
+                            <div className="p-2 border-b flex gap-3">
+                              <button
+                                type="button"
+                                onClick={() => setAddItemsFilters(prev => ({ ...prev, categories: [...availableFilters.categories] }))}
+                                className="text-xs text-blue-600 hover:underline"
+                              >
+                                Select all
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => setAddItemsFilters(prev => ({ ...prev, categories: [] }))}
@@ -1416,7 +1423,14 @@ const OrderAdjustment = () => {
                         </button>
                         {showSizeDropdown && (
                           <div className="absolute z-10 mt-1 bg-white border rounded shadow-lg max-h-60 overflow-y-auto min-w-[140px]">
-                            <div className="p-2 border-b">
+                            <div className="p-2 border-b flex gap-3">
+                              <button
+                                type="button"
+                                onClick={() => setAddItemsFilters(prev => ({ ...prev, sizes: [...availableFilters.sizes] }))}
+                                className="text-xs text-blue-600 hover:underline"
+                              >
+                                Select all
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => setAddItemsFilters(prev => ({ ...prev, sizes: [] }))}
