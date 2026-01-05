@@ -352,8 +352,8 @@ router.get('/available-products/filters', authenticateToken, async (req, res) =>
       return res.status(400).json({ error: 'seasonId and brandId are required' });
     }
 
-    // Get distinct categories and genders for products in this brand's pricelist for the season
-    const [categoriesResult, gendersResult] = await Promise.all([
+    // Get distinct categories, genders, and sizes for products in this brand's pricelist for the season
+    const [categoriesResult, gendersResult, sizesResult] = await Promise.all([
       pool.query(`
         SELECT DISTINCT p.category
         FROM products p
@@ -373,12 +373,39 @@ router.get('/available-products/filters', authenticateToken, async (req, res) =>
           AND p.gender IS NOT NULL
           AND p.gender != ''
         ORDER BY p.gender
+      `, [brandId, seasonId]),
+      pool.query(`
+        SELECT DISTINCT p.size
+        FROM products p
+        INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
+        WHERE p.brand_id = $1
+          AND p.active = true
+          AND p.size IS NOT NULL
+          AND p.size != ''
+        ORDER BY
+          CASE
+            WHEN p.size ~ '^[0-9]+(\.[0-9]+)?$' THEN CAST(p.size AS DECIMAL)
+            ELSE 0
+          END ASC,
+          CASE p.size
+            WHEN 'XXS' THEN 1 WHEN '2XS' THEN 1
+            WHEN 'XS' THEN 2
+            WHEN 'S' THEN 3
+            WHEN 'M' THEN 4
+            WHEN 'L' THEN 5
+            WHEN 'XL' THEN 6
+            WHEN 'XXL' THEN 7 WHEN '2XL' THEN 7
+            WHEN 'XXXL' THEN 8 WHEN '3XL' THEN 8
+            ELSE 50
+          END,
+          p.size ASC
       `, [brandId, seasonId])
     ]);
 
     res.json({
       categories: categoriesResult.rows.map(r => r.category),
-      genders: gendersResult.rows.map(r => r.gender)
+      genders: gendersResult.rows.map(r => r.gender),
+      sizes: sizesResult.rows.map(r => r.size)
     });
   } catch (error) {
     console.error('Get available products filters error:', error);
@@ -389,7 +416,7 @@ router.get('/available-products/filters', authenticateToken, async (req, res) =>
 // GET /api/orders/available-products - Get products not in order with zero stock
 router.get('/available-products', authenticateToken, async (req, res) => {
   try {
-    const { seasonId, brandId, locationId, shipDate, categories, gender, hasSalesHistory, includeWithStock } = req.query;
+    const { seasonId, brandId, locationId, shipDate, categories, sizes, gender, hasSalesHistory, includeWithStock } = req.query;
 
     if (!seasonId || !brandId || !locationId) {
       return res.status(400).json({ error: 'seasonId, brandId, and locationId are required' });
@@ -399,6 +426,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     const params = [brandId, seasonId, locationId];
     let paramIndex = 4;
     let categoryFilter = '';
+    let sizeFilter = '';
     let genderFilter = '';
 
     // Handle multiple categories (can be array or single value)
@@ -408,6 +436,15 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       categoryFilter = ` AND p.category IN (${placeholders})`;
       params.push(...categoryList);
       paramIndex += categoryList.length;
+    }
+
+    // Handle multiple sizes (can be array or single value)
+    const sizeList = Array.isArray(sizes) ? sizes : (sizes ? [sizes] : []);
+    if (sizeList.length > 0) {
+      const placeholders = sizeList.map((_, i) => `$${paramIndex + i}`).join(', ');
+      sizeFilter = ` AND p.size IN (${placeholders})`;
+      params.push(...sizeList);
+      paramIndex += sizeList.length;
     }
 
     if (gender) {
@@ -457,6 +494,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
             AND (location_id = $3 OR location_id IS NULL)
         )
         ${categoryFilter}
+        ${sizeFilter}
         ${genderFilter}
         ${salesHistoryFilter}
       ORDER BY p.base_name, p.color,

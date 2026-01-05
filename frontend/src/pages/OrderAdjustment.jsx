@@ -65,12 +65,14 @@ const OrderAdjustment = () => {
   // Add Items filter state
   const [addItemsFilters, setAddItemsFilters] = useState({
     categories: [], // Changed to array for multi-select
+    sizes: [], // Array for multi-select sizes
     gender: '',
     hasSalesHistory: false,
     includeWithStock: false
   });
-  const [availableFilters, setAvailableFilters] = useState({ categories: [], genders: [] });
+  const [availableFilters, setAvailableFilters] = useState({ categories: [], genders: [], sizes: [] });
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  const [showSizeDropdown, setShowSizeDropdown] = useState(false);
   const [selectedFamilies, setSelectedFamilies] = useState(new Set());
 
   // Order finalization state
@@ -666,7 +668,8 @@ const OrderAdjustment = () => {
       });
       setAvailableFilters({
         categories: response.data.categories || [],
-        genders: response.data.genders || []
+        genders: response.data.genders || [],
+        sizes: response.data.sizes || []
       });
     } catch (err) {
       console.error('Error fetching available filters:', err);
@@ -685,6 +688,7 @@ const OrderAdjustment = () => {
         locationId: selectedLocationId,
         shipDate: selectedShipDate || undefined,
         categories: addItemsFilters.categories.length > 0 ? addItemsFilters.categories : undefined,
+        sizes: addItemsFilters.sizes.length > 0 ? addItemsFilters.sizes : undefined,
         gender: addItemsFilters.gender || undefined,
         hasSalesHistory: addItemsFilters.hasSalesHistory || undefined,
         includeWithStock: addItemsFilters.includeWithStock || undefined
@@ -1325,15 +1329,15 @@ const OrderAdjustment = () => {
             )}
 
             {activePanel === 'add' && (
-              <div className="p-4 bg-gray-50 border-b max-h-96 overflow-y-auto">
+              <div className="bg-gray-50 border-b max-h-96 overflow-y-auto">
                 {!selectedBrandId ? (
                   <div className="text-center py-4 text-orange-600">
                     Select a brand to view available items
                   </div>
                 ) : (
                   <>
-                    {/* Filter Controls */}
-                    <div className="flex flex-wrap items-center gap-3 mb-3 pb-3 border-b">
+                    {/* Filter Controls - Sticky */}
+                    <div className="sticky top-0 z-20 bg-gray-50 px-4 pt-4 pb-3 border-b flex flex-wrap items-center gap-3">
                       {/* Category multi-select dropdown */}
                       <div className="relative">
                         <button
@@ -1375,6 +1379,52 @@ const OrderAdjustment = () => {
                                   className="rounded"
                                 />
                                 <span className="text-sm">{cat}</span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      {/* Size multi-select dropdown */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setShowSizeDropdown(prev => !prev)}
+                          className="px-2 py-1 text-sm border rounded bg-white flex items-center gap-2 min-w-[120px]"
+                        >
+                          <span>
+                            {addItemsFilters.sizes.length === 0
+                              ? 'All Sizes'
+                              : `${addItemsFilters.sizes.length} selected`}
+                          </span>
+                          <span className="ml-auto">▼</span>
+                        </button>
+                        {showSizeDropdown && (
+                          <div className="absolute z-10 mt-1 bg-white border rounded shadow-lg max-h-60 overflow-y-auto min-w-[140px]">
+                            <div className="p-2 border-b">
+                              <button
+                                type="button"
+                                onClick={() => setAddItemsFilters(prev => ({ ...prev, sizes: [] }))}
+                                className="text-xs text-blue-600 hover:underline"
+                              >
+                                Clear all
+                              </button>
+                            </div>
+                            {availableFilters.sizes.map(size => (
+                              <label key={size} className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={addItemsFilters.sizes.includes(size)}
+                                  onChange={(e) => {
+                                    setAddItemsFilters(prev => ({
+                                      ...prev,
+                                      sizes: e.target.checked
+                                        ? [...prev.sizes, size]
+                                        : prev.sizes.filter(s => s !== size)
+                                    }));
+                                  }}
+                                  className="rounded"
+                                />
+                                <span className="text-sm">{size}</span>
                               </label>
                             ))}
                           </div>
@@ -1434,9 +1484,9 @@ const OrderAdjustment = () => {
                         No items match your filters
                       </div>
                     ) : (
-                      <div className="space-y-2">
-                        {/* Header with select all and bulk ignore */}
-                        <div className="flex items-center justify-between mb-3">
+                      <div className="space-y-2 px-4 pb-4">
+                        {/* Header with select all and bulk ignore - Sticky */}
+                        <div className="sticky top-[57px] z-10 bg-gray-50 py-2 -mx-4 px-4 flex items-center justify-between border-b mb-2">
                           <div className="flex items-center gap-3">
                             <label className="flex items-center gap-2 text-sm">
                               <input
