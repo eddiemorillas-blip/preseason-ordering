@@ -827,6 +827,16 @@ router.get('/inventory', authenticateToken, async (req, res) => {
       try {
         stockData = await getStockByUPCs(upcs);
         console.log(`Got stock data for ${Object.keys(stockData).length} UPCs`);
+        // Debug: check specific UPC (Crux 42)
+        const debugUpc = '8057963494218';
+        if (upcs.includes(debugUpc)) {
+          console.log(`DEBUG INVENTORY: UPC ${debugUpc} in request, stockData has it: ${!!stockData[debugUpc]}, value:`, stockData[debugUpc]);
+        }
+        // Log a few sample UPCs that have vs don't have stock
+        const withStock = Object.keys(stockData).slice(0, 3);
+        const withoutStock = upcs.filter(u => !stockData[u]).slice(0, 3);
+        console.log('Sample UPCs WITH stock data:', withStock);
+        console.log('Sample UPCs WITHOUT stock data:', withoutStock);
       } catch (bqError) {
         console.error('BigQuery stock fetch error:', bqError.message, bqError.stack);
         // Continue without stock data if BigQuery fails
