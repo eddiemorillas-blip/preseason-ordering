@@ -34,8 +34,8 @@ coverage/
 
 # Build
 build/
-# Keep frontend/dist for deployment
-!frontend/dist/
+# Let Vercel build fresh
+frontend/dist/
 
 # Temporary files
 tmp/
