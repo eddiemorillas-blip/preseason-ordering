@@ -64,7 +64,7 @@ const OrderAdjustment = () => {
 
   // Add Items filter state
   const [addItemsFilters, setAddItemsFilters] = useState({
-    category: '',
+    categories: [], // Changed to array for multi-select
     gender: '',
     hasSalesHistory: false,
     includeWithStock: false
@@ -682,7 +682,7 @@ const OrderAdjustment = () => {
         brandId: selectedBrandId,
         locationId: selectedLocationId,
         shipDate: selectedShipDate || undefined,
-        category: addItemsFilters.category || undefined,
+        categories: addItemsFilters.categories.length > 0 ? addItemsFilters.categories : undefined,
         gender: addItemsFilters.gender || undefined,
         hasSalesHistory: addItemsFilters.hasSalesHistory || undefined,
         includeWithStock: addItemsFilters.includeWithStock || undefined
@@ -1332,58 +1332,76 @@ const OrderAdjustment = () => {
                   <>
                     {/* Filter Controls */}
                     <div className="flex flex-wrap items-center gap-3 mb-3 pb-3 border-b">
-                      <select
-                        value={addItemsFilters.category}
-                        onChange={(e) => {
-                          setAddItemsFilters(prev => ({ ...prev, category: e.target.value }));
-                        }}
-                        className="px-2 py-1 text-sm border rounded"
-                      >
-                        <option value="">All Categories</option>
-                        {availableFilters.categories.map(cat => (
-                          <option key={cat} value={cat}>{cat}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={addItemsFilters.gender}
-                        onChange={(e) => {
-                          setAddItemsFilters(prev => ({ ...prev, gender: e.target.value }));
-                        }}
-                        className="px-2 py-1 text-sm border rounded"
-                      >
-                        <option value="">All Genders</option>
-                        {availableFilters.genders.map(g => (
-                          <option key={g} value={g}>{g}</option>
-                        ))}
-                      </select>
-                      <label className="flex items-center gap-1.5 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={addItemsFilters.hasSalesHistory}
+                      {/* Category multi-select */}
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-gray-600">Categories:</span>
+                        {availableFilters.categories.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {availableFilters.categories.map(cat => (
+                              <label key={cat} className="flex items-center gap-1 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={addItemsFilters.categories.includes(cat)}
+                                  onChange={(e) => {
+                                    setAddItemsFilters(prev => ({
+                                      ...prev,
+                                      categories: e.target.checked
+                                        ? [...prev.categories, cat]
+                                        : prev.categories.filter(c => c !== cat)
+                                    }));
+                                  }}
+                                  className="rounded"
+                                />
+                                {cat}
+                              </label>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-sm text-gray-400">None available</span>
+                        )}
+                      </div>
+                      <div className="border-l pl-3 flex items-center gap-3">
+                        <select
+                          value={addItemsFilters.gender}
                           onChange={(e) => {
-                            setAddItemsFilters(prev => ({ ...prev, hasSalesHistory: e.target.checked }));
+                            setAddItemsFilters(prev => ({ ...prev, gender: e.target.value }));
                           }}
-                          className="rounded"
-                        />
-                        Has sales
-                      </label>
-                      <label className="flex items-center gap-1.5 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={addItemsFilters.includeWithStock}
-                          onChange={(e) => {
-                            setAddItemsFilters(prev => ({ ...prev, includeWithStock: e.target.checked }));
-                          }}
-                          className="rounded"
-                        />
-                        Include in-stock
-                      </label>
-                      <button
-                        onClick={fetchAvailableProducts}
-                        className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-                      >
-                        Apply
-                      </button>
+                          className="px-2 py-1 text-sm border rounded"
+                        >
+                          <option value="">All Genders</option>
+                          {availableFilters.genders.map(g => (
+                            <option key={g} value={g}>{g}</option>
+                          ))}
+                        </select>
+                        <label className="flex items-center gap-1.5 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={addItemsFilters.hasSalesHistory}
+                            onChange={(e) => {
+                              setAddItemsFilters(prev => ({ ...prev, hasSalesHistory: e.target.checked }));
+                            }}
+                            className="rounded"
+                          />
+                          Has sales
+                        </label>
+                        <label className="flex items-center gap-1.5 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={addItemsFilters.includeWithStock}
+                            onChange={(e) => {
+                              setAddItemsFilters(prev => ({ ...prev, includeWithStock: e.target.checked }));
+                            }}
+                            className="rounded"
+                          />
+                          Include in-stock
+                        </label>
+                        <button
+                          onClick={fetchAvailableProducts}
+                          className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                        >
+                          Apply
+                        </button>
+                      </div>
                     </div>
 
                     {availableLoading ? (

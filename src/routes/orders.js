@@ -389,7 +389,7 @@ router.get('/available-products/filters', authenticateToken, async (req, res) =>
 // GET /api/orders/available-products - Get products not in order with zero stock
 router.get('/available-products', authenticateToken, async (req, res) => {
   try {
-    const { seasonId, brandId, locationId, shipDate, category, gender, hasSalesHistory, includeWithStock } = req.query;
+    const { seasonId, brandId, locationId, shipDate, categories, gender, hasSalesHistory, includeWithStock } = req.query;
 
     if (!seasonId || !brandId || !locationId) {
       return res.status(400).json({ error: 'seasonId, brandId, and locationId are required' });
@@ -401,10 +401,13 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     let categoryFilter = '';
     let genderFilter = '';
 
-    if (category) {
-      categoryFilter = ` AND p.category = $${paramIndex}`;
-      params.push(category);
-      paramIndex++;
+    // Handle multiple categories (can be array or single value)
+    const categoryList = Array.isArray(categories) ? categories : (categories ? [categories] : []);
+    if (categoryList.length > 0) {
+      const placeholders = categoryList.map((_, i) => `$${paramIndex + i}`).join(', ');
+      categoryFilter = ` AND p.category IN (${placeholders})`;
+      params.push(...categoryList);
+      paramIndex += categoryList.length;
     }
 
     if (gender) {
@@ -476,7 +479,7 @@ router.get('/available-products', authenticateToken, async (req, res) => {
     `, params);
 
     const products = productsResult.rows;
-    console.log(`Found ${products.length} products not in order for brand ${brandId}, season ${seasonId}, location ${locationId} (filters: category=${category || 'all'}, gender=${gender || 'all'}, hasSalesHistory=${hasSalesHistory || 'false'})`);
+    console.log(`Found ${products.length} products not in order for brand ${brandId}, season ${seasonId}, location ${locationId} (filters: categories=${categoryList.length > 0 ? categoryList.join(',') : 'all'}, gender=${gender || 'all'}, hasSalesHistory=${hasSalesHistory || 'false'})`);
 
     if (products.length === 0) {
       return res.json({ families: [], totalProducts: 0 });
