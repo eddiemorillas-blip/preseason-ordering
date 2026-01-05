@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import api, { orderAPI, budgetAPI } from '../services/api';
 import Layout from '../components/Layout';
@@ -74,6 +74,22 @@ const OrderAdjustment = () => {
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [showSizeDropdown, setShowSizeDropdown] = useState(false);
   const [selectedFamilies, setSelectedFamilies] = useState(new Set());
+  const categoryDropdownRef = useRef(null);
+  const sizeDropdownRef = useRef(null);
+
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (categoryDropdownRef.current && !categoryDropdownRef.current.contains(event.target)) {
+        setShowCategoryDropdown(false);
+      }
+      if (sizeDropdownRef.current && !sizeDropdownRef.current.contains(event.target)) {
+        setShowSizeDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Order finalization state
   const [currentOrder, setCurrentOrder] = useState(null);
@@ -1339,7 +1355,7 @@ const OrderAdjustment = () => {
                     {/* Filter Controls - Sticky */}
                     <div className="sticky top-0 z-20 bg-gray-50 px-4 pt-4 pb-3 border-b flex flex-wrap items-center gap-3">
                       {/* Category multi-select dropdown */}
-                      <div className="relative">
+                      <div className="relative" ref={categoryDropdownRef}>
                         <button
                           type="button"
                           onClick={() => setShowCategoryDropdown(prev => !prev)}
@@ -1385,7 +1401,7 @@ const OrderAdjustment = () => {
                         )}
                       </div>
                       {/* Size multi-select dropdown */}
-                      <div className="relative">
+                      <div className="relative" ref={sizeDropdownRef}>
                         <button
                           type="button"
                           onClick={() => setShowSizeDropdown(prev => !prev)}
