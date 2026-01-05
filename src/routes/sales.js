@@ -408,6 +408,7 @@ router.get('/debug-stock/:upc', async (req, res) => {
     res.status(500).json({
       error: error.message,
       envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64,
+      envVarsWithGoogle: Object.keys(process.env).filter(k => k.includes('GOOGLE') || k.includes('CRED')),
       timestamp: new Date().toISOString()
     });
   }
