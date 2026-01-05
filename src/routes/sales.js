@@ -369,20 +369,13 @@ router.get('/summary', authenticateToken, async (req, res) => {
 // GET /api/sales/debug-stock/:upc - Debug stock lookup for a specific UPC (no auth for debugging)
 router.get('/debug-stock/:upc', async (req, res) => {
   try {
-    const { BigQuery } = require('@google-cloud/bigquery');
-
-    // Create fresh BigQuery client
-    let bqConfig = { projectId: 'front-data-production' };
-    if (process.env.GOOGLE_CREDENTIALS_BASE64) {
-      const decoded = Buffer.from(process.env.GOOGLE_CREDENTIALS_BASE64, 'base64').toString('utf8');
-      bqConfig.credentials = JSON.parse(decoded);
-    }
-    const bq = new BigQuery(bqConfig);
+    // Use the shared bigquery instance (same as orders.js)
+    const { bigquery, getStockOnHand, FACILITY_TO_LOCATION } = require('../services/bigquery');
 
     const upc = req.params.upc;
     console.log('Debug stock lookup for UPC:', upc);
 
-    // Query directly with partial matching
+    // Query directly with partial matching to find similar UPCs
     const query = `
       SELECT
         barcode,
@@ -390,25 +383,26 @@ router.get('/debug-stock/:upc', async (req, res) => {
         facility_name,
         on_hand_qty
       FROM \`front-data-production.dataform.INVENTORY_on_hand_report\`
-      WHERE barcode LIKE '%${upc}%'
-      LIMIT 20
+      WHERE barcode LIKE '%${upc.slice(-8)}%'
+      LIMIT 30
     `;
 
-    const [rows] = await bq.query({ query });
+    const [rows] = await bigquery.query({ query });
+
+    // Also try exact match via the standard function
+    const exactMatch = await getStockOnHand([upc]);
 
     res.json({
       searchedFor: upc,
-      resultsCount: rows.length,
-      results: rows,
-      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64,
+      exactMatch: exactMatch,
+      partialMatches: rows,
+      facilityMapping: FACILITY_TO_LOCATION,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('Debug stock error:', error);
     res.status(500).json({
       error: error.message,
-      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64,
-      envVarsWithGoogle: Object.keys(process.env).filter(k => k.includes('GOOGLE') || k.includes('CRED')),
       timestamp: new Date().toISOString()
     });
   }
