@@ -369,35 +369,36 @@ router.get('/summary', authenticateToken, async (req, res) => {
 // GET /api/sales/debug-stock/:upc - Debug stock lookup for a specific UPC (no auth for debugging)
 router.get('/debug-stock/:upc', async (req, res) => {
   try {
-    if (!bigqueryService) {
-      return res.status(503).json({ error: 'BigQuery service not configured' });
-    }
+    // Import directly like orders.js does
+    const { getStockOnHand, getStockByUPCs, FACILITY_TO_LOCATION } = require('../services/bigquery');
 
     const upc = req.params.upc;
+    console.log('Debug stock lookup for UPC:', upc);
 
     // Use the existing getStockOnHand function
-    const stockData = await bigqueryService.getStockOnHand([upc]);
+    const stockData = await getStockOnHand([upc]);
 
     // Also try with leading zeros stripped
     const upcNoLeadingZeros = upc.replace(/^0+/, '');
     let altStockData = [];
     if (upcNoLeadingZeros !== upc) {
-      altStockData = await bigqueryService.getStockOnHand([upcNoLeadingZeros]);
+      altStockData = await getStockOnHand([upcNoLeadingZeros]);
     }
 
     // Also get via the grouped function
-    const groupedStock = await bigqueryService.getStockByUPCs([upc]);
+    const groupedStock = await getStockByUPCs([upc]);
 
     res.json({
       searchedFor: upc,
       exactMatch: stockData,
       withoutLeadingZeros: upcNoLeadingZeros !== upc ? altStockData : 'same as original',
       groupedByLocation: groupedStock,
-      facilityMapping: bigqueryService.FACILITY_TO_LOCATION
+      facilityMapping: FACILITY_TO_LOCATION,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('Debug stock error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, timestamp: new Date().toISOString() });
   }
 });
 
