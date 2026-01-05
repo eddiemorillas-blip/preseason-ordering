@@ -70,6 +70,7 @@ const OrderAdjustment = () => {
     includeWithStock: false
   });
   const [availableFilters, setAvailableFilters] = useState({ categories: [], genders: [] });
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
 
   // Order finalization state
   const [currentOrder, setCurrentOrder] = useState(null);
@@ -1332,13 +1333,33 @@ const OrderAdjustment = () => {
                   <>
                     {/* Filter Controls */}
                     <div className="flex flex-wrap items-center gap-3 mb-3 pb-3 border-b">
-                      {/* Category multi-select */}
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-600">Categories:</span>
-                        {availableFilters.categories.length > 0 ? (
-                          <div className="flex flex-wrap gap-2">
+                      {/* Category multi-select dropdown */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setShowCategoryDropdown(prev => !prev)}
+                          className="px-2 py-1 text-sm border rounded bg-white flex items-center gap-2 min-w-[140px]"
+                        >
+                          <span>
+                            {addItemsFilters.categories.length === 0
+                              ? 'All Categories'
+                              : `${addItemsFilters.categories.length} selected`}
+                          </span>
+                          <span className="ml-auto">▼</span>
+                        </button>
+                        {showCategoryDropdown && (
+                          <div className="absolute z-10 mt-1 bg-white border rounded shadow-lg max-h-60 overflow-y-auto min-w-[180px]">
+                            <div className="p-2 border-b">
+                              <button
+                                type="button"
+                                onClick={() => setAddItemsFilters(prev => ({ ...prev, categories: [] }))}
+                                className="text-xs text-blue-600 hover:underline"
+                              >
+                                Clear all
+                              </button>
+                            </div>
                             {availableFilters.categories.map(cat => (
-                              <label key={cat} className="flex items-center gap-1 text-sm">
+                              <label key={cat} className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer">
                                 <input
                                   type="checkbox"
                                   checked={addItemsFilters.categories.includes(cat)}
@@ -1352,12 +1373,10 @@ const OrderAdjustment = () => {
                                   }}
                                   className="rounded"
                                 />
-                                {cat}
+                                <span className="text-sm">{cat}</span>
                               </label>
                             ))}
                           </div>
-                        ) : (
-                          <span className="text-sm text-gray-400">None available</span>
                         )}
                       </div>
                       <div className="border-l pl-3 flex items-center gap-3">
