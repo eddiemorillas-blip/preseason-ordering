@@ -533,6 +533,11 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       try {
         stockData = await getStockByUPCs(upcs);
         console.log(`Got stock data for ${Object.keys(stockData).length}/${upcs.length} UPCs`);
+        // Debug: check specific UPC
+        const debugUpc = '8057963494218';
+        if (upcs.includes(debugUpc)) {
+          console.log(`DEBUG: UPC ${debugUpc} in request, stockData has it: ${!!stockData[debugUpc]}, value:`, stockData[debugUpc]);
+        }
       } catch (bqError) {
         console.error('BigQuery stock fetch error:', bqError.message);
         // Continue without stock data
