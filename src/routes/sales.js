@@ -366,8 +366,8 @@ router.get('/summary', authenticateToken, async (req, res) => {
   }
 });
 
-// GET /api/sales/debug-stock/:upc - Debug stock lookup for a specific UPC
-router.get('/debug-stock/:upc', authenticateToken, async (req, res) => {
+// GET /api/sales/debug-stock/:upc - Debug stock lookup for a specific UPC (no auth for debugging)
+router.get('/debug-stock/:upc', async (req, res) => {
   try {
     if (!bigqueryService) {
       return res.status(503).json({ error: 'BigQuery service not configured' });
