@@ -533,13 +533,6 @@ router.get('/available-products', authenticateToken, async (req, res) => {
       try {
         stockData = await getStockByUPCs(upcs);
         console.log(`Got stock data for ${Object.keys(stockData).length}/${upcs.length} UPCs`);
-        // Debug: log sample UPCs that weren't found
-        if (Object.keys(stockData).length < upcs.length) {
-          const foundUpcs = new Set(Object.keys(stockData));
-          const missingUpcs = upcs.filter(u => !foundUpcs.has(u)).slice(0, 5);
-          console.log('Sample UPCs not found in BigQuery:', missingUpcs);
-          console.log('Sample UPCs that WERE found:', Object.keys(stockData).slice(0, 5));
-        }
       } catch (bqError) {
         console.error('BigQuery stock fetch error:', bqError.message);
         // Continue without stock data
