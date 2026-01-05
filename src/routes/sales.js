@@ -369,36 +369,47 @@ router.get('/summary', authenticateToken, async (req, res) => {
 // GET /api/sales/debug-stock/:upc - Debug stock lookup for a specific UPC (no auth for debugging)
 router.get('/debug-stock/:upc', async (req, res) => {
   try {
-    // Import directly like orders.js does
-    const { getStockOnHand, getStockByUPCs, FACILITY_TO_LOCATION } = require('../services/bigquery');
+    const { BigQuery } = require('@google-cloud/bigquery');
+
+    // Create fresh BigQuery client
+    let bqConfig = { projectId: 'front-data-production' };
+    if (process.env.GOOGLE_CREDENTIALS_BASE64) {
+      const decoded = Buffer.from(process.env.GOOGLE_CREDENTIALS_BASE64, 'base64').toString('utf8');
+      bqConfig.credentials = JSON.parse(decoded);
+    }
+    const bq = new BigQuery(bqConfig);
 
     const upc = req.params.upc;
     console.log('Debug stock lookup for UPC:', upc);
 
-    // Use the existing getStockOnHand function
-    const stockData = await getStockOnHand([upc]);
+    // Query directly with partial matching
+    const query = `
+      SELECT
+        barcode,
+        CAST(facility_id AS STRING) as facility_id,
+        facility_name,
+        on_hand_qty
+      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\`
+      WHERE barcode LIKE '%${upc}%'
+      LIMIT 20
+    `;
 
-    // Also try with leading zeros stripped
-    const upcNoLeadingZeros = upc.replace(/^0+/, '');
-    let altStockData = [];
-    if (upcNoLeadingZeros !== upc) {
-      altStockData = await getStockOnHand([upcNoLeadingZeros]);
-    }
-
-    // Also get via the grouped function
-    const groupedStock = await getStockByUPCs([upc]);
+    const [rows] = await bq.query({ query });
 
     res.json({
       searchedFor: upc,
-      exactMatch: stockData,
-      withoutLeadingZeros: upcNoLeadingZeros !== upc ? altStockData : 'same as original',
-      groupedByLocation: groupedStock,
-      facilityMapping: FACILITY_TO_LOCATION,
+      resultsCount: rows.length,
+      results: rows,
+      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('Debug stock error:', error);
-    res.status(500).json({ error: error.message, timestamp: new Date().toISOString() });
+    res.status(500).json({
+      error: error.message,
+      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64,
+      timestamp: new Date().toISOString()
+    });
   }
 });
 
