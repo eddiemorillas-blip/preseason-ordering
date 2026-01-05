@@ -366,4 +366,40 @@ router.get('/summary', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/sales/debug-stock/:upc - Debug stock lookup for a specific UPC
+router.get('/debug-stock/:upc', authenticateToken, async (req, res) => {
+  try {
+    if (!bigqueryService) {
+      return res.status(503).json({ error: 'BigQuery service not configured' });
+    }
+
+    const upc = req.params.upc;
+
+    // Query BigQuery directly with wildcard matching
+    const query = `
+      SELECT
+        barcode,
+        CAST(facility_id AS STRING) as facility_id,
+        facility_name,
+        on_hand_qty
+      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\`
+      WHERE barcode LIKE '%${upc.replace(/'/g, "''")}%'
+         OR barcode LIKE '%${upc.replace(/'/g, "''").replace(/^0+/, '')}%'
+      LIMIT 20
+    `;
+
+    const [rows] = await bigqueryService.bigquery.query({ query });
+
+    res.json({
+      searchedFor: upc,
+      resultsCount: rows.length,
+      results: rows,
+      facilityMapping: bigqueryService.FACILITY_TO_LOCATION
+    });
+  } catch (error) {
+    console.error('Debug stock error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
