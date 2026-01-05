@@ -375,25 +375,24 @@ router.get('/debug-stock/:upc', async (req, res) => {
 
     const upc = req.params.upc;
 
-    // Query BigQuery directly with wildcard matching
-    const query = `
-      SELECT
-        barcode,
-        CAST(facility_id AS STRING) as facility_id,
-        facility_name,
-        on_hand_qty
-      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\`
-      WHERE barcode LIKE '%${upc.replace(/'/g, "''")}%'
-         OR barcode LIKE '%${upc.replace(/'/g, "''").replace(/^0+/, '')}%'
-      LIMIT 20
-    `;
+    // Use the existing getStockOnHand function
+    const stockData = await bigqueryService.getStockOnHand([upc]);
 
-    const [rows] = await bigqueryService.bigquery.query({ query });
+    // Also try with leading zeros stripped
+    const upcNoLeadingZeros = upc.replace(/^0+/, '');
+    let altStockData = [];
+    if (upcNoLeadingZeros !== upc) {
+      altStockData = await bigqueryService.getStockOnHand([upcNoLeadingZeros]);
+    }
+
+    // Also get via the grouped function
+    const groupedStock = await bigqueryService.getStockByUPCs([upc]);
 
     res.json({
       searchedFor: upc,
-      resultsCount: rows.length,
-      results: rows,
+      exactMatch: stockData,
+      withoutLeadingZeros: upcNoLeadingZeros !== upc ? altStockData : 'same as original',
+      groupedByLocation: groupedStock,
       facilityMapping: bigqueryService.FACILITY_TO_LOCATION
     });
   } catch (error) {
