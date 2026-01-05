@@ -2322,9 +2322,15 @@ router.get('/debug-upc/:upc', async (req, res) => {
     });
   } catch (error) {
     console.error('Debug UPC error:', error);
+    // Log all env var keys containing GOOGLE or CRED
+    const relevantEnvVars = Object.keys(process.env).filter(k =>
+      k.includes('GOOGLE') || k.includes('CRED') || k.includes('BASE64')
+    );
+    console.log('Relevant env vars at request time:', relevantEnvVars);
     res.status(500).json({
       error: error.message,
-      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64
+      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64,
+      relevantEnvVars: relevantEnvVars
     });
   }
 });
