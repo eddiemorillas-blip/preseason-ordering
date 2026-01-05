@@ -2291,6 +2291,10 @@ router.get('/debug-upc/:upc', async (req, res) => {
   try {
     const upc = req.params.upc;
 
+    // Check env var
+    const hasEnvVar = !!process.env.GOOGLE_CREDENTIALS_BASE64;
+    console.log('Debug endpoint - GOOGLE_CREDENTIALS_BASE64 set:', hasEnvVar);
+
     // Try exact match
     const exactMatch = await getStockOnHand([upc]);
 
@@ -2313,11 +2317,15 @@ router.get('/debug-upc/:upc', async (req, res) => {
       withLeadingZero: withLeadingZero,
       withoutLeadingZeros: withoutLeadingZeros,
       similarProductsInDB: similarProducts.rows,
-      facilityMapping: FACILITY_TO_LOCATION
+      facilityMapping: FACILITY_TO_LOCATION,
+      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64
     });
   } catch (error) {
     console.error('Debug UPC error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      error: error.message,
+      envVarSet: !!process.env.GOOGLE_CREDENTIALS_BASE64
+    });
   }
 });
 
