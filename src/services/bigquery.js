@@ -226,18 +226,32 @@ async function getStockByUPCs(upcs) {
   if (!upcs || upcs.length === 0) return {};
 
   const stockData = await getStockOnHand(upcs);
+  console.log(`BigQuery returned ${stockData.length} stock rows for ${upcs.length} UPCs`);
+
+  // Debug: log unique facility IDs we got back
+  const facilityIds = [...new Set(stockData.map(r => r.facility_id))];
+  console.log('Facility IDs in stock data:', facilityIds);
+  console.log('Expected facility mapping:', FACILITY_TO_LOCATION);
 
   // Group by UPC -> location_id -> stock
   const result = {};
+  let skippedFacilities = 0;
   stockData.forEach(row => {
     const locationId = FACILITY_TO_LOCATION[row.facility_id];
-    if (!locationId) return; // Skip unknown facilities
+    if (!locationId) {
+      skippedFacilities++;
+      return; // Skip unknown facilities
+    }
 
     if (!result[row.upc]) {
       result[row.upc] = {};
     }
     result[row.upc][locationId] = parseInt(row.stock_on_hand) || 0;
   });
+
+  if (skippedFacilities > 0) {
+    console.log(`Skipped ${skippedFacilities} rows with unmapped facility IDs`);
+  }
 
   return result;
 }
