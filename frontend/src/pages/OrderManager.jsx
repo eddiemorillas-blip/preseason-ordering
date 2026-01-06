@@ -1098,16 +1098,65 @@ const AddOrderModal = ({ seasonId, seasonName, preselectedBrandId, brands, locat
   });
   const [numberOfShips, setNumberOfShips] = useState(1);
   const [shipDates, setShipDates] = useState(['']);
+  const [shipDay, setShipDay] = useState(15); // Day of month for auto-generation
+  const [startMonth, setStartMonth] = useState(''); // Starting month (YYYY-MM format)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // Generate ship dates based on ship day, start month, and number of ships
+  const generateShipDates = (numShips, day, startMonthStr) => {
+    if (!startMonthStr || numShips < 1) return Array(numShips).fill('');
+
+    const [startYear, startMonthNum] = startMonthStr.split('-').map(Number);
+    const dates = [];
+
+    for (let i = 0; i < numShips; i++) {
+      let targetMonth = startMonthNum - 1 + i; // 0-indexed
+      let targetYear = startYear;
+
+      // Handle year overflow
+      while (targetMonth > 11) {
+        targetMonth -= 12;
+        targetYear++;
+      }
+
+      // Get the last day of the target month
+      const lastDayOfMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+      const actualDay = Math.min(day, lastDayOfMonth);
+
+      const date = new Date(targetYear, targetMonth, actualDay);
+      dates.push(date.toISOString().split('T')[0]);
+    }
+
+    return dates;
+  };
 
   const handleNumberOfShipsChange = (num) => {
     const newNum = Math.max(1, Math.min(12, parseInt(num) || 1));
     setNumberOfShips(newNum);
-    const newShipDates = [...shipDates];
-    while (newShipDates.length < newNum) newShipDates.push('');
-    while (newShipDates.length > newNum) newShipDates.pop();
-    setShipDates(newShipDates);
+    if (startMonth) {
+      setShipDates(generateShipDates(newNum, shipDay, startMonth));
+    } else {
+      const newShipDates = [...shipDates];
+      while (newShipDates.length < newNum) newShipDates.push('');
+      while (newShipDates.length > newNum) newShipDates.pop();
+      setShipDates(newShipDates);
+    }
+  };
+
+  const handleShipDayChange = (day) => {
+    const newDay = Math.max(1, Math.min(31, parseInt(day) || 1));
+    setShipDay(newDay);
+    if (startMonth && numberOfShips > 0) {
+      setShipDates(generateShipDates(numberOfShips, newDay, startMonth));
+    }
+  };
+
+  const handleStartMonthChange = (monthStr) => {
+    setStartMonth(monthStr);
+    if (monthStr && numberOfShips > 0) {
+      setShipDates(generateShipDates(numberOfShips, shipDay, monthStr));
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -1194,7 +1243,42 @@ const AddOrderModal = ({ seasonId, seasonName, preselectedBrandId, brands, locat
             {numberOfShips > 1 && <p className="mt-1 text-xs text-gray-500">Creates {numberOfShips} separate orders</p>}
           </div>
 
+          {/* Auto-generate ship dates */}
+          {numberOfShips > 1 && (
+            <div className="bg-gray-50 p-3 rounded-md space-y-3">
+              <p className="text-sm font-medium text-gray-700">Auto-generate ship dates</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Ship Day (of month)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="31"
+                    value={shipDay}
+                    onChange={(e) => handleShipDayChange(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Start Month</label>
+                  <input
+                    type="month"
+                    value={startMonth}
+                    onChange={(e) => handleStartMonthChange(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                  />
+                </div>
+              </div>
+              {startMonth && (
+                <p className="text-xs text-gray-500">
+                  Ships on the {shipDay}{shipDay === 1 ? 'st' : shipDay === 2 ? 'nd' : shipDay === 3 ? 'rd' : 'th'} of each month starting {startMonth}
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="space-y-2">
+            <label className="block text-sm font-medium text-gray-700">Ship Dates</label>
             {shipDates.map((date, index) => (
               <div key={index} className="flex items-center gap-2">
                 {numberOfShips > 1 && <span className="text-sm text-gray-500 w-14">Ship {index + 1}:</span>}
