@@ -69,7 +69,30 @@ async function runFullSync(syncLogId, months, userId) {
   try {
     // 1. Sync sales by UPC
     console.log('Syncing sales by UPC...');
-    const salesByUpc = await bigqueryService.getSalesByUPC(months);
+    const salesByUpcRaw = await bigqueryService.getSalesByUPC(months);
+
+    // Deduplicate by aggregating rows with same UPC + facility_id
+    const upcMap = new Map();
+    for (const row of salesByUpcRaw) {
+      const key = `${row.upc}|${row.facility_id?.toString() || 'null'}`;
+      if (upcMap.has(key)) {
+        const existing = upcMap.get(key);
+        existing.total_qty_sold += row.total_qty_sold || 0;
+        existing.total_revenue += row.total_revenue || 0;
+        existing.transaction_count += row.transaction_count || 0;
+        // Keep earliest first_sale and latest last_sale
+        if (row.first_sale?.value && (!existing.first_sale?.value || row.first_sale.value < existing.first_sale.value)) {
+          existing.first_sale = row.first_sale;
+        }
+        if (row.last_sale?.value && (!existing.last_sale?.value || row.last_sale.value > existing.last_sale.value)) {
+          existing.last_sale = row.last_sale;
+        }
+      } else {
+        upcMap.set(key, { ...row });
+      }
+    }
+    const salesByUpc = Array.from(upcMap.values());
+    console.log(`Deduplicated ${salesByUpcRaw.length} rows to ${salesByUpc.length} unique UPC/facility combinations`);
 
     // Clear old data for this period
     await client.query('DELETE FROM sales_by_upc WHERE period_months = $1', [months]);
@@ -121,7 +144,23 @@ async function runFullSync(syncLogId, months, userId) {
 
     // 2. Sync sales by brand/category
     console.log('Syncing sales by brand/category...');
-    const salesByBrand = await bigqueryService.getSalesByBrandCategory(months);
+    const salesByBrandRaw = await bigqueryService.getSalesByBrandCategory(months);
+
+    // Deduplicate by aggregating rows with same vendor_name + category + facility_id
+    const brandMap = new Map();
+    for (const row of salesByBrandRaw) {
+      const key = `${row.vendor_name || 'null'}|${row.category || 'null'}|${row.facility_id?.toString() || 'null'}`;
+      if (brandMap.has(key)) {
+        const existing = brandMap.get(key);
+        existing.unique_products += row.unique_products || 0;
+        existing.total_qty_sold += row.total_qty_sold || 0;
+        existing.total_revenue += row.total_revenue || 0;
+      } else {
+        brandMap.set(key, { ...row });
+      }
+    }
+    const salesByBrand = Array.from(brandMap.values());
+    console.log(`Deduplicated ${salesByBrandRaw.length} rows to ${salesByBrand.length} unique brand/category/facility combinations`);
 
     await client.query('DELETE FROM sales_by_brand_category WHERE period_months = $1', [months]);
 
@@ -165,7 +204,22 @@ async function runFullSync(syncLogId, months, userId) {
 
     // 3. Sync monthly trends
     console.log('Syncing monthly trends...');
-    const monthlyTrends = await bigqueryService.getMonthlySalesByBrand(months);
+    const monthlyTrendsRaw = await bigqueryService.getMonthlySalesByBrand(months);
+
+    // Deduplicate by aggregating rows with same vendor_name + month
+    const trendsMap = new Map();
+    for (const row of monthlyTrendsRaw) {
+      const key = `${row.vendor_name || 'null'}|${row.month || 'null'}`;
+      if (trendsMap.has(key)) {
+        const existing = trendsMap.get(key);
+        existing.total_qty_sold += row.total_qty_sold || 0;
+        existing.total_revenue += row.total_revenue || 0;
+      } else {
+        trendsMap.set(key, { ...row });
+      }
+    }
+    const monthlyTrends = Array.from(trendsMap.values());
+    console.log(`Deduplicated ${monthlyTrendsRaw.length} rows to ${monthlyTrends.length} unique vendor/month combinations`);
 
     await client.query('DELETE FROM sales_monthly_trends');
 
