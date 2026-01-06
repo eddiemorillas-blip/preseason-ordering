@@ -532,13 +532,13 @@ function findShipColumn(itemShipDate, shipDateColumns, dateToShipNum) {
 // POST /api/exports/finalized - Export finalized adjustments for a brand/season
 router.post('/finalized', authenticateToken, async (req, res) => {
   try {
-    const { seasonId, brandId, format = 'xlsx', template = 'standard', shipDates } = req.body;
+    const { seasonId, brandId, format = 'xlsx', template = 'standard', orderIds } = req.body;
 
     if (!seasonId || !brandId) {
       return res.status(400).json({ error: 'seasonId and brandId are required' });
     }
 
-    // Build query with optional ship date filter
+    // Build query with optional order ID filter
     let query = `
       SELECT
         fa.id,
@@ -571,11 +571,11 @@ router.post('/finalized', authenticateToken, async (req, res) => {
     `;
     const params = [seasonId, brandId];
 
-    // Filter by ship dates if provided
-    if (shipDates && shipDates.length > 0) {
-      const shipDatePlaceholders = shipDates.map((_, i) => `$${i + 3}`).join(', ');
-      query += ` AND fa.ship_date IN (${shipDatePlaceholders})`;
-      params.push(...shipDates);
+    // Filter by order IDs if provided
+    if (orderIds && orderIds.length > 0) {
+      const orderIdPlaceholders = orderIds.map((_, i) => `$${i + 3}`).join(', ');
+      query += ` AND fa.order_id IN (${orderIdPlaceholders})`;
+      params.push(...orderIds);
     }
 
     query += ` ORDER BY fa.ship_date, l.name, p.base_name, p.color, p.size`;

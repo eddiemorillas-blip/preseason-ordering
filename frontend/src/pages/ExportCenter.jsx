@@ -21,9 +21,8 @@ const ExportCenter = () => {
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
 
-  // Ship date filter state
-  const [availableShipDates, setAvailableShipDates] = useState([]);
-  const [selectedShipDates, setSelectedShipDates] = useState([]);
+  // Selected orders for export
+  const [selectedOrderIds, setSelectedOrderIds] = useState(new Set());
 
   // Upload form state
   const [uploadFile, setUploadFile] = useState(null);
@@ -70,21 +69,13 @@ const ExportCenter = () => {
       const ordersData = response.data.orders || [];
       setOrders(ordersData);
       setSummary(response.data.summary || null);
-
-      // Extract unique ship dates from orders
-      const shipDates = [...new Set(ordersData
-        .map(o => o.ship_date)
-        .filter(d => d)
-      )].sort();
-      setAvailableShipDates(shipDates);
-      setSelectedShipDates([]); // Reset selection when data changes
+      setSelectedOrderIds(new Set()); // Reset selection when data changes
     } catch (err) {
       console.error('Error fetching finalized status:', err);
       setError(err.response?.data?.error || 'Failed to load finalization status');
       setOrders([]);
       setSummary(null);
-      setAvailableShipDates([]);
-      setSelectedShipDates([]);
+      setSelectedOrderIds(new Set());
     } finally {
       setLoading(false);
     }
@@ -129,7 +120,7 @@ const ExportCenter = () => {
         brandId: selectedBrandId,
         format: 'xlsx',
         template,
-        shipDates: selectedShipDates.length > 0 ? selectedShipDates : undefined
+        orderIds: selectedOrderIds.size > 0 ? Array.from(selectedOrderIds) : undefined
       });
 
       // Check if response is an error (JSON) instead of Excel blob
@@ -358,50 +349,20 @@ const ExportCenter = () => {
                       </span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    {/* Ship Date Filter */}
-                    {availableShipDates.length > 0 && (
-                      <div className="flex items-center gap-2">
-                        <label className="text-sm text-gray-600">Ship Dates:</label>
-                        <div className="flex flex-wrap gap-1">
-                          {availableShipDates.map(date => (
-                            <button
-                              key={date}
-                              onClick={() => {
-                                setSelectedShipDates(prev =>
-                                  prev.includes(date)
-                                    ? prev.filter(d => d !== date)
-                                    : [...prev, date]
-                                );
-                              }}
-                              className={`px-2 py-1 text-xs rounded border ${
-                                selectedShipDates.includes(date)
-                                  ? 'bg-blue-600 text-white border-blue-600'
-                                  : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
-                              }`}
-                            >
-                              {formatDate(date)}
-                            </button>
-                          ))}
-                          {selectedShipDates.length > 0 && (
-                            <button
-                              onClick={() => setSelectedShipDates([])}
-                              className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700"
-                            >
-                              Clear
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                  <div className="flex items-center gap-2">
                     {summary.finalizedOrders > 0 ? (
                       <>
+                        <span className="text-sm text-gray-600">
+                          {selectedOrderIds.size > 0
+                            ? `${selectedOrderIds.size} order${selectedOrderIds.size > 1 ? 's' : ''} selected`
+                            : 'Select orders below or export all'}
+                        </span>
                         <button
                           onClick={() => handleExport('standard')}
                           disabled={exporting}
                           className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                         >
-                          {exporting ? 'Exporting...' : `Export${selectedShipDates.length > 0 ? ` (${selectedShipDates.length} months)` : ''}`}
+                          {exporting ? 'Exporting...' : `Export${selectedOrderIds.size > 0 ? ` (${selectedOrderIds.size})` : ' All'}`}
                         </button>
                         <button
                           onClick={() => handleExport('nuorder')}
@@ -574,6 +535,22 @@ const ExportCenter = () => {
                 <table className="w-full divide-y divide-gray-200 text-sm">
                   <thead className="bg-gray-50">
                     <tr>
+                      <th className="px-4 py-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={orders.filter(o => o.finalized_at).length > 0 &&
+                            orders.filter(o => o.finalized_at).every(o => selectedOrderIds.has(o.order_id))}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedOrderIds(new Set(orders.filter(o => o.finalized_at).map(o => o.order_id)));
+                            } else {
+                              setSelectedOrderIds(new Set());
+                            }
+                          }}
+                          className="rounded"
+                          title="Select all finalized orders"
+                        />
+                      </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order #</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Ship Date</th>
@@ -587,7 +564,29 @@ const ExportCenter = () => {
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
                     {orders.map((order) => (
-                      <tr key={order.order_id} className={`hover:bg-gray-50 ${order.finalized_at ? 'bg-green-50' : ''}`}>
+                      <tr key={order.order_id} className={`hover:bg-gray-50 ${selectedOrderIds.has(order.order_id) ? 'bg-blue-50' : order.finalized_at ? 'bg-green-50' : ''}`}>
+                        <td className="px-4 py-3 text-center">
+                          {order.finalized_at ? (
+                            <input
+                              type="checkbox"
+                              checked={selectedOrderIds.has(order.order_id)}
+                              onChange={(e) => {
+                                setSelectedOrderIds(prev => {
+                                  const newSet = new Set(prev);
+                                  if (e.target.checked) {
+                                    newSet.add(order.order_id);
+                                  } else {
+                                    newSet.delete(order.order_id);
+                                  }
+                                  return newSet;
+                                });
+                              }}
+                              className="rounded"
+                            />
+                          ) : (
+                            <span className="text-gray-300">-</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 font-medium text-gray-900">
                           {order.location_name || '-'}
                         </td>
