@@ -314,16 +314,16 @@ router.get('/by-brand', authenticateToken, async (req, res) => {
     const { period_months = 12 } = req.query;
     const result = await pool.query(`
       SELECT
-        rgp_vendor_name,
+        sbc.rgp_vendor_name,
         bm.brand_id,
         b.name as mapped_brand_name,
-        SUM(total_qty_sold) as total_qty_sold,
-        SUM(total_revenue) as total_revenue,
-        SUM(unique_products) as unique_products
+        SUM(sbc.total_qty_sold) as total_qty_sold,
+        SUM(sbc.total_revenue) as total_revenue,
+        SUM(sbc.unique_products) as unique_products
       FROM sales_by_brand_category sbc
       LEFT JOIN brand_mapping bm ON sbc.rgp_vendor_name = bm.rgp_vendor_name
       LEFT JOIN brands b ON bm.brand_id = b.id
-      WHERE period_months = $1
+      WHERE sbc.period_months = $1
       GROUP BY sbc.rgp_vendor_name, bm.brand_id, b.name
       ORDER BY total_revenue DESC
     `, [period_months]);
