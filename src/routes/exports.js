@@ -532,14 +532,14 @@ function findShipColumn(itemShipDate, shipDateColumns, dateToShipNum) {
 // POST /api/exports/finalized - Export finalized adjustments for a brand/season
 router.post('/finalized', authenticateToken, async (req, res) => {
   try {
-    const { seasonId, brandId, format = 'xlsx', template = 'standard' } = req.body;
+    const { seasonId, brandId, format = 'xlsx', template = 'standard', shipDates } = req.body;
 
     if (!seasonId || !brandId) {
       return res.status(400).json({ error: 'seasonId and brandId are required' });
     }
 
-    // Get finalized adjustments with product details
-    const result = await pool.query(`
+    // Build query with optional ship date filter
+    let query = `
       SELECT
         fa.id,
         fa.original_quantity,
@@ -568,8 +568,20 @@ router.post('/finalized', authenticateToken, async (req, res) => {
       LEFT JOIN brands b ON fa.brand_id = b.id
       LEFT JOIN seasons s ON fa.season_id = s.id
       WHERE fa.season_id = $1 AND fa.brand_id = $2
-      ORDER BY l.name, p.base_name, p.color, p.size
-    `, [seasonId, brandId]);
+    `;
+    const params = [seasonId, brandId];
+
+    // Filter by ship dates if provided
+    if (shipDates && shipDates.length > 0) {
+      const shipDatePlaceholders = shipDates.map((_, i) => `$${i + 3}`).join(', ');
+      query += ` AND fa.ship_date IN (${shipDatePlaceholders})`;
+      params.push(...shipDates);
+    }
+
+    query += ` ORDER BY fa.ship_date, l.name, p.base_name, p.color, p.size`;
+
+    // Get finalized adjustments with product details
+    const result = await pool.query(query, params);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'No finalized adjustments found for this brand/season' });
