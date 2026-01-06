@@ -38,7 +38,7 @@ const SalesSync = () => {
       ]);
       setSummary(summaryRes.data);
       setMappings(mappingsRes.data.mappings || []);
-      setBrands(brandsRes.data || []);
+      setBrands(brandsRes.data.brands || []);
       setSalesByBrand(salesRes.data.sales || []);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to load data');
