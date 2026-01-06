@@ -57,7 +57,7 @@ async function getSalesByUPC(months = 12) {
     JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
     JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
     LEFT JOIN rgp_cleaned_zone.vendors_all v ON p.vendor_concat = v.vendor_concat
-    WHERE i.POSTDATE >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${months} MONTH)
+    WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${months} MONTH)
       AND p.BARCODE IS NOT NULL
       AND LENGTH(p.BARCODE) > 5
       AND p.BARCODE NOT IN ('TAX', 'CREDIT', 'WRITEOFF')
@@ -89,7 +89,7 @@ async function getSalesByBrandCategory(months = 12) {
     JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
     JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
     LEFT JOIN rgp_cleaned_zone.vendors_all v ON p.vendor_concat = v.vendor_concat
-    WHERE i.POSTDATE >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${months} MONTH)
+    WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${months} MONTH)
       AND p.BARCODE IS NOT NULL
       AND LENGTH(p.BARCODE) > 5
       AND ii.QUANTITY > 0
@@ -115,7 +115,7 @@ async function getMonthlySalesByBrand(months = 24) {
     JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
     JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
     LEFT JOIN rgp_cleaned_zone.vendors_all v ON p.vendor_concat = v.vendor_concat
-    WHERE i.POSTDATE >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${months} MONTH)
+    WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${months} MONTH)
       AND p.BARCODE IS NOT NULL
       AND LENGTH(p.BARCODE) > 5
       AND ii.QUANTITY > 0
