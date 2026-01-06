@@ -531,6 +531,7 @@ router.get('/uploads', authenticateToken, async (req, res) => {
 });
 
 // GET /api/sales-data/suggestions - Get order suggestions based on prior sales
+// Uses BigQuery synced data (sales_by_upc) with fallback to Excel uploads (sales_data)
 router.get('/suggestions', authenticateToken, async (req, res) => {
   try {
     const { brandId, locationId, salesMonths, startDate, endDate } = req.query;
@@ -543,30 +544,21 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'locationId is required' });
     }
 
-    // Determine date range - custom dates take precedence over salesMonths
-    let salesStartDateStr, salesEndDateStr;
-    let periodDescription;
-    let monthsBack = null;
+    // Map location_id to BigQuery facility_id
+    const LOCATION_TO_FACILITY = {
+      1: '41185',  // SLC
+      2: '1003',   // South Main
+      3: '1000',   // Ogden
+    };
+    const facilityId = LOCATION_TO_FACILITY[locationId];
 
-    if (startDate && endDate) {
-      // Custom date range
-      salesStartDateStr = startDate;
-      salesEndDateStr = endDate;
-      periodDescription = `${startDate} to ${endDate}`;
-    } else {
-      // Default to last N months of sales data
-      monthsBack = parseInt(salesMonths) || 6;
-      const salesStartDate = new Date();
-      salesStartDate.setMonth(salesStartDate.getMonth() - monthsBack);
-      salesStartDateStr = salesStartDate.toISOString().split('T')[0];
-      salesEndDateStr = new Date().toISOString().split('T')[0];
-      periodDescription = `Last ${monthsBack} months`;
-    }
+    // Determine period months for BigQuery data
+    const monthsBack = parseInt(salesMonths) || 12;
+    let periodDescription = `Last ${monthsBack} months (BigQuery)`;
 
-    // Build the query to get suggestions based on prior sales
-    // Filter by sale date (start_date) being within the requested period
-    // Simple logic: suggested qty = units sold in the prior period
-    const query = `
+    // First, try to get data from BigQuery synced tables (sales_by_upc)
+    // Join with products on UPC to get product details for the specified brand
+    const bigqueryQuery = `
       SELECT
         p.id as product_id,
         p.name as product_name,
@@ -582,26 +574,81 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
         p.msrp,
         b.name as brand_name,
         l.name as location_name,
-        COALESCE(SUM(sd.quantity_sold), 0) as prior_sales,
-        MIN(sd.start_date) as sales_period_start,
-        MAX(sd.end_date) as sales_period_end
+        COALESCE(s.total_qty_sold, 0) as prior_sales,
+        s.first_sale_date as sales_period_start,
+        s.last_sale_date as sales_period_end
       FROM products p
       JOIN brands b ON p.brand_id = b.id
       CROSS JOIN locations l
-      LEFT JOIN sales_data sd ON sd.product_id = p.id
-        AND sd.location_id = l.id
-        AND sd.start_date >= $1
-        AND sd.start_date <= $4
-      WHERE p.brand_id = $2
-        AND l.id = $3
-      GROUP BY p.id, p.name, p.sku, p.upc, p.base_name, p.category, p.subcategory,
-               p.gender, p.size, p.color, p.wholesale_cost, p.msrp,
-               b.name, l.name
-      HAVING COALESCE(SUM(sd.quantity_sold), 0) > 0
+      LEFT JOIN sales_by_upc s ON s.upc = p.upc
+        AND s.facility_id = $3
+        AND s.period_months = $4
+      WHERE p.brand_id = $1
+        AND l.id = $2
+        AND p.upc IS NOT NULL
+        AND COALESCE(s.total_qty_sold, 0) > 0
       ORDER BY p.base_name, p.color, p.size
     `;
 
-    const result = await pool.query(query, [salesStartDateStr, brandId, locationId, salesEndDateStr]);
+    let result = await pool.query(bigqueryQuery, [brandId, locationId, facilityId, monthsBack]);
+    let dataSource = 'bigquery';
+
+    // If no BigQuery data found, fall back to Excel uploads (sales_data)
+    if (result.rows.length === 0) {
+      dataSource = 'excel';
+
+      // Determine date range for Excel data
+      let salesStartDateStr, salesEndDateStr;
+
+      if (startDate && endDate) {
+        salesStartDateStr = startDate;
+        salesEndDateStr = endDate;
+        periodDescription = `${startDate} to ${endDate}`;
+      } else {
+        const salesStartDate = new Date();
+        salesStartDate.setMonth(salesStartDate.getMonth() - monthsBack);
+        salesStartDateStr = salesStartDate.toISOString().split('T')[0];
+        salesEndDateStr = new Date().toISOString().split('T')[0];
+        periodDescription = `Last ${monthsBack} months (Excel)`;
+      }
+
+      const excelQuery = `
+        SELECT
+          p.id as product_id,
+          p.name as product_name,
+          p.sku,
+          p.upc,
+          p.base_name,
+          p.category,
+          p.subcategory,
+          p.gender,
+          p.size,
+          p.color,
+          p.wholesale_cost,
+          p.msrp,
+          b.name as brand_name,
+          l.name as location_name,
+          COALESCE(SUM(sd.quantity_sold), 0) as prior_sales,
+          MIN(sd.start_date) as sales_period_start,
+          MAX(sd.end_date) as sales_period_end
+        FROM products p
+        JOIN brands b ON p.brand_id = b.id
+        CROSS JOIN locations l
+        LEFT JOIN sales_data sd ON sd.product_id = p.id
+          AND sd.location_id = l.id
+          AND sd.start_date >= $1
+          AND sd.start_date <= $4
+        WHERE p.brand_id = $2
+          AND l.id = $3
+        GROUP BY p.id, p.name, p.sku, p.upc, p.base_name, p.category, p.subcategory,
+                 p.gender, p.size, p.color, p.wholesale_cost, p.msrp,
+                 b.name, l.name
+        HAVING COALESCE(SUM(sd.quantity_sold), 0) > 0
+        ORDER BY p.base_name, p.color, p.size
+      `;
+
+      result = await pool.query(excelQuery, [salesStartDateStr, brandId, locationId, salesEndDateStr]);
+    }
 
     // Get the actual date range from the data
     let overallStartDate = null;
@@ -680,6 +727,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
         total_suggested_cost: totalSuggestedCost,
         sales_months: monthsBack,
         period_description: periodDescription,
+        data_source: dataSource,
         sales_period_start: overallStartDate ? overallStartDate.toISOString().split('T')[0] : null,
         sales_period_end: overallEndDate ? overallEndDate.toISOString().split('T')[0] : null
       }
