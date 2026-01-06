@@ -116,6 +116,29 @@ const ExportCenter = () => {
         template
       });
 
+      // Check if response is an error (JSON) instead of Excel blob
+      // Error responses are typically small and have JSON content-type
+      const contentType = response.headers['content-type'];
+      if (contentType && contentType.includes('application/json')) {
+        // It's an error response, try to parse it
+        const text = await response.data.text();
+        const errorData = JSON.parse(text);
+        setError(errorData.error || 'Export failed');
+        return;
+      }
+
+      // Check if blob is too small (likely an error)
+      if (response.data.size < 100) {
+        const text = await response.data.text();
+        try {
+          const errorData = JSON.parse(text);
+          setError(errorData.error || 'Export failed - no data');
+          return;
+        } catch {
+          // Not JSON, proceed with download
+        }
+      }
+
       // Create download link
       const blob = new Blob([response.data], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -141,6 +164,17 @@ const ExportCenter = () => {
       document.body.removeChild(a);
     } catch (err) {
       console.error('Error exporting:', err);
+      // Try to extract error message from blob response
+      if (err.response?.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          const errorData = JSON.parse(text);
+          setError(errorData.error || 'Export failed');
+          return;
+        } catch {
+          // Couldn't parse error
+        }
+      }
       if (err.response?.status === 404) {
         setError('No finalized adjustments found to export. Finalize orders first.');
       } else {
