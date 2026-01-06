@@ -151,6 +151,7 @@ export const salesAPI = {
   getTrends: (vendorName) => api.get(`/sales/trends/${encodeURIComponent(vendorName)}`),
   getBrandMapping: () => api.get('/sales/brand-mapping'),
   updateBrandMapping: (id, data) => api.put(`/sales/brand-mapping/${id}`, data),
+  autoMapBrands: () => api.post('/sales/brand-mapping/auto-map'),
   getSummary: () => api.get('/sales/summary'),
 };
 

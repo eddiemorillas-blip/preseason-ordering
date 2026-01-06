@@ -384,6 +384,96 @@ router.put('/brand-mapping/:id', authenticateToken, authorizeRoles('admin', 'buy
   }
 });
 
+// POST /api/sales/brand-mapping/auto-map - Auto-map vendor names to brands
+router.post('/brand-mapping/auto-map', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    // Get all unmapped vendor names
+    const unmappedResult = await client.query(`
+      SELECT id, rgp_vendor_name FROM brand_mapping WHERE brand_id IS NULL
+    `);
+
+    // Get all brands
+    const brandsResult = await client.query(`SELECT id, name FROM brands`);
+    const brands = brandsResult.rows;
+
+    // Helper to normalize names for comparison
+    const normalize = (str) => {
+      if (!str) return '';
+      return str
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, '') // Remove special chars
+        .replace(/\s+(inc|llc|co|corp|corporation|company|ltd|limited|usa|north america|international)\.?\s*$/i, '') // Remove common suffixes
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    let mapped = 0;
+    const mappings = [];
+
+    for (const vendor of unmappedResult.rows) {
+      const vendorNorm = normalize(vendor.rgp_vendor_name);
+      let bestMatch = null;
+      let matchType = null;
+
+      for (const brand of brands) {
+        const brandNorm = normalize(brand.name);
+
+        // Exact match (after normalization)
+        if (vendorNorm === brandNorm) {
+          bestMatch = brand;
+          matchType = 'exact';
+          break;
+        }
+
+        // One contains the other
+        if (vendorNorm.includes(brandNorm) || brandNorm.includes(vendorNorm)) {
+          // Prefer longer matches (more specific)
+          if (!bestMatch || brand.name.length > bestMatch.name.length) {
+            bestMatch = brand;
+            matchType = 'contains';
+          }
+        }
+
+        // First word match (e.g., "Scarpa" matches "Scarpa North America")
+        const vendorFirst = vendorNorm.split(' ')[0];
+        const brandFirst = brandNorm.split(' ')[0];
+        if (vendorFirst.length >= 3 && vendorFirst === brandFirst && !bestMatch) {
+          bestMatch = brand;
+          matchType = 'first-word';
+        }
+      }
+
+      if (bestMatch) {
+        await client.query(`
+          UPDATE brand_mapping
+          SET brand_id = $1, is_verified = false, updated_at = CURRENT_TIMESTAMP
+          WHERE id = $2
+        `, [bestMatch.id, vendor.id]);
+        mapped++;
+        mappings.push({
+          rgp_vendor_name: vendor.rgp_vendor_name,
+          mapped_to: bestMatch.name,
+          match_type: matchType
+        });
+      }
+    }
+
+    res.json({
+      message: `Auto-mapped ${mapped} vendor names`,
+      mapped_count: mapped,
+      unmapped_remaining: unmappedResult.rows.length - mapped,
+      mappings
+    });
+  } catch (error) {
+    console.error('Auto-map error:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
 // GET /api/sales/summary - Get overall sales summary
 router.get('/summary', authenticateToken, async (req, res) => {
   try {

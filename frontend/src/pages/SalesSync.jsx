@@ -14,6 +14,8 @@ const SalesSync = () => {
   const [editingMapping, setEditingMapping] = useState(null);
   const [filterUnmapped, setFilterUnmapped] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [autoMapping, setAutoMapping] = useState(false);
+  const [autoMapResult, setAutoMapResult] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -82,6 +84,21 @@ const SalesSync = () => {
       loadData();
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to update mapping');
+    }
+  };
+
+  const handleAutoMap = async () => {
+    try {
+      setAutoMapping(true);
+      setError(null);
+      setAutoMapResult(null);
+      const res = await salesAPI.autoMapBrands();
+      setAutoMapResult(res.data);
+      loadData();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to auto-map brands');
+    } finally {
+      setAutoMapping(false);
     }
   };
 
@@ -194,8 +211,37 @@ const SalesSync = () => {
         {/* Brand Mapping */}
         <div className="bg-white rounded-lg shadow">
           <div className="p-4 border-b">
-            <h2 className="text-lg font-semibold">Brand Mapping</h2>
-            <p className="text-sm text-gray-500">Map RGP vendor names to pricelist brands</p>
+            <div className="flex justify-between items-start">
+              <div>
+                <h2 className="text-lg font-semibold">Brand Mapping</h2>
+                <p className="text-sm text-gray-500">Map RGP vendor names to pricelist brands</p>
+              </div>
+              <button
+                onClick={handleAutoMap}
+                disabled={autoMapping}
+                className={`px-4 py-2 rounded-md text-white font-medium ${
+                  autoMapping ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                }`}
+              >
+                {autoMapping ? 'Mapping...' : 'Auto-Map Similar Names'}
+              </button>
+            </div>
+            {autoMapResult && (
+              <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded text-sm">
+                <div className="font-medium text-green-800">
+                  Auto-mapped {autoMapResult.mapped_count} vendors ({autoMapResult.unmapped_remaining} still unmapped)
+                </div>
+                {autoMapResult.mappings?.length > 0 && (
+                  <div className="mt-2 max-h-32 overflow-y-auto text-green-700">
+                    {autoMapResult.mappings.map((m, i) => (
+                      <div key={i} className="text-xs">
+                        {m.rgp_vendor_name} → {m.mapped_to} ({m.match_type})
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="mt-3 flex gap-4">
               <input
                 type="text"
