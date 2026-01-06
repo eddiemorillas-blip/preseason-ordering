@@ -578,7 +578,8 @@ router.post('/finalized', authenticateToken, async (req, res) => {
       params.push(...orderIds);
     }
 
-    query += ` ORDER BY fa.ship_date, l.name, p.base_name, p.color, p.size`;
+    // Sort by location, then Original items before Added items, then by product
+    query += ` ORDER BY l.name, CASE WHEN fa.original_quantity > 0 THEN 0 ELSE 1 END, p.base_name, p.color, p.size`;
 
     // Get finalized adjustments with product details
     const result = await pool.query(query, params);
