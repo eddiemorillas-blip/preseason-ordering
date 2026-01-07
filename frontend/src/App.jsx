@@ -16,6 +16,7 @@ import OrderSuggestions from './pages/OrderSuggestions';
 import SeasonPriceComparison from './pages/SeasonPriceComparison';
 import PriceHistory from './pages/PriceHistory';
 import SalesSync from './pages/SalesSync';
+import SalesDebug from './pages/SalesDebug';
 import BudgetManagement from './pages/BudgetManagement';
 import OrderAdjustment from './pages/OrderAdjustment';
 import ExportCenter from './pages/ExportCenter';
@@ -135,6 +136,14 @@ function App() {
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <SalesSync />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/sales-debug"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <SalesDebug />
               </ProtectedRoute>
             }
           />
