@@ -268,10 +268,8 @@ const OrderManager = () => {
       key = order.location_id || 'no-location';
       groupName = order.location_name ? `${order.location_name}${order.location_code ? ` (${order.location_code})` : ''}` : 'No Location';
     } else {
-      // Group by brand AND location so each group is brand-specific at a location
-      key = `${order.brand_id || 'no-brand'}-${order.location_id || 'no-location'}`;
-      const locationPart = order.location_code ? ` (${order.location_code})` : '';
-      groupName = `${order.brand_name || 'No Brand'} - ${order.location_name || 'No Location'}${locationPart}`;
+      key = order.brand_id || 'no-brand';
+      groupName = order.brand_name || 'No Brand';
     }
 
     if (!acc[key]) {

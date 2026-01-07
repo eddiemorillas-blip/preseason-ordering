@@ -562,67 +562,134 @@ const AddProducts = () => {
           </div>
         </div>
 
-        {/* Order Selection for Multi-Order Mode */}
-        {isMultiOrderMode && multiOrders.length > 0 && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-medium text-blue-900">Select ship dates to add products to:</h3>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setSelectedOrderIds(new Set(multiOrders.map(o => o.id)))}
-                  className="text-xs text-blue-600 hover:text-blue-800"
-                >
-                  Select All
-                </button>
-                <span className="text-gray-300">|</span>
-                <button
-                  onClick={() => setSelectedOrderIds(new Set())}
-                  className="text-xs text-blue-600 hover:text-blue-800"
-                >
-                  Clear All
-                </button>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {multiOrders.map((o, idx) => {
-                const isSelected = selectedOrderIds.has(o.id);
-                return (
+        {/* Order Selection for Multi-Order Mode - Grouped by Location */}
+        {isMultiOrderMode && multiOrders.length > 0 && (() => {
+          // Group orders by location
+          const ordersByLocation = multiOrders.reduce((acc, order) => {
+            const key = order.location_id || 'no-location';
+            const name = order.location_name || 'No Location';
+            const code = order.location_code || '';
+            if (!acc[key]) {
+              acc[key] = { name, code, orders: [] };
+            }
+            acc[key].orders.push(order);
+            return acc;
+          }, {});
+
+          // Sort orders within each location by ship date
+          Object.values(ordersByLocation).forEach(loc => {
+            loc.orders.sort((a, b) => {
+              if (!a.ship_date) return 1;
+              if (!b.ship_date) return -1;
+              return new Date(a.ship_date) - new Date(b.ship_date);
+            });
+          });
+
+          const locationKeys = Object.keys(ordersByLocation);
+
+          // Helper to select/deselect all orders for a location
+          const toggleLocationSelection = (locationId) => {
+            const locationOrders = ordersByLocation[locationId].orders;
+            const allSelected = locationOrders.every(o => selectedOrderIds.has(o.id));
+            const newSelected = new Set(selectedOrderIds);
+            if (allSelected) {
+              locationOrders.forEach(o => newSelected.delete(o.id));
+            } else {
+              locationOrders.forEach(o => newSelected.add(o.id));
+            }
+            setSelectedOrderIds(newSelected);
+          };
+
+          return (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-medium text-blue-900">Select orders to add products to:</h3>
+                <div className="flex gap-2">
                   <button
-                    key={o.id}
-                    onClick={() => toggleOrderSelection(o.id)}
-                    className={`px-3 py-2 rounded-md border text-sm flex items-center gap-2 ${
-                      isSelected
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-white text-gray-700 border-gray-300 hover:border-blue-500'
-                    }`}
+                    onClick={() => setSelectedOrderIds(new Set(multiOrders.map(o => o.id)))}
+                    className="text-xs text-blue-600 hover:text-blue-800"
                   >
-                    <span className={`w-4 h-4 rounded border flex items-center justify-center ${
-                      isSelected ? 'bg-white border-white' : 'border-gray-400'
-                    }`}>
-                      {isSelected && (
-                        <svg className="w-3 h-3 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                    </span>
-                    <span>
-                      Ship {idx + 1}
-                      <span className="ml-1 opacity-75">
-                        ({formatShipDate(o.ship_date)})
-                      </span>
-                    </span>
+                    Select All
                   </button>
-                );
-              })}
+                  <span className="text-gray-300">|</span>
+                  <button
+                    onClick={() => setSelectedOrderIds(new Set())}
+                    className="text-xs text-blue-600 hover:text-blue-800"
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {locationKeys.map(locKey => {
+                  const location = ordersByLocation[locKey];
+                  const allSelected = location.orders.every(o => selectedOrderIds.has(o.id));
+                  const someSelected = location.orders.some(o => selectedOrderIds.has(o.id));
+
+                  return (
+                    <div key={locKey} className="bg-white rounded-md border border-blue-100 p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={allSelected}
+                            ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                            onChange={() => toggleLocationSelection(locKey)}
+                            className="h-4 w-4 text-blue-600 border-gray-300 rounded"
+                          />
+                          <span className="font-medium text-gray-900">
+                            {location.name}
+                            {location.code && <span className="text-gray-500 ml-1">({location.code})</span>}
+                          </span>
+                        </label>
+                        <span className="text-xs text-gray-500">
+                          {location.orders.filter(o => selectedOrderIds.has(o.id)).length} / {location.orders.length} selected
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {location.orders.map((o, idx) => {
+                          const isSelected = selectedOrderIds.has(o.id);
+                          return (
+                            <button
+                              key={o.id}
+                              onClick={() => toggleOrderSelection(o.id)}
+                              className={`px-2 py-1 rounded border text-xs flex items-center gap-1.5 ${
+                                isSelected
+                                  ? 'bg-blue-600 text-white border-blue-600'
+                                  : 'bg-gray-50 text-gray-700 border-gray-300 hover:border-blue-500'
+                              }`}
+                            >
+                              <span className={`w-3 h-3 rounded border flex items-center justify-center ${
+                                isSelected ? 'bg-white border-white' : 'border-gray-400'
+                              }`}>
+                                {isSelected && (
+                                  <svg className="w-2 h-2 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                )}
+                              </span>
+                              <span>
+                                Ship {idx + 1}: {formatShipDate(o.ship_date)}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <p className="text-xs text-blue-700 mt-3">
+                {selectedOrderIds.size === 0
+                  ? 'Select at least one ship date to add products'
+                  : `Products will be split evenly across ${selectedOrderIds.size} selected order${selectedOrderIds.size > 1 ? 's' : ''}`
+                }
+              </p>
             </div>
-            <p className="text-xs text-blue-700 mt-2">
-              {selectedOrderIds.size === 0
-                ? 'Select at least one ship date to add products'
-                : `Products will be split evenly across ${selectedOrderIds.size} selected order${selectedOrderIds.size > 1 ? 's' : ''}`
-              }
-            </p>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Error */}
         {error && (
