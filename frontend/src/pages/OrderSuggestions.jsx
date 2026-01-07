@@ -72,13 +72,28 @@ const OrderSuggestions = () => {
         locationId: selectedLocation
       });
 
-      // Use custom dates if selected, otherwise use months preset
-      if (salesMonths === 'custom' && customStartDate && customEndDate) {
-        params.append('startDate', customStartDate);
-        params.append('endDate', customEndDate);
-      } else if (salesMonths !== 'custom') {
-        params.append('salesMonths', salesMonths);
+      // Calculate actual dates - backend now requires startDate and endDate
+      let startDate, endDate;
+      if (salesMonths === 'custom') {
+        if (!customStartDate || !customEndDate) {
+          setError('Please select both start and end dates for custom range');
+          setLoading(false);
+          return;
+        }
+        startDate = customStartDate;
+        endDate = customEndDate;
+      } else {
+        // Calculate dates from months preset
+        const today = new Date();
+        const monthsBack = parseInt(salesMonths) || 6;
+        const startDateObj = new Date(today);
+        startDateObj.setMonth(startDateObj.getMonth() - monthsBack);
+        startDate = startDateObj.toISOString().split('T')[0];
+        endDate = today.toISOString().split('T')[0];
       }
+
+      params.append('startDate', startDate);
+      params.append('endDate', endDate);
 
       const response = await api.get(`/sales-data/suggestions?${params}`);
       setSuggestions(response.data.suggestions || []);
@@ -636,8 +651,9 @@ const OrderSuggestions = () => {
 
             {/* Sales Period Info */}
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md text-sm text-blue-800">
-              <strong>Based on:</strong> Last {summary.sales_months} months of sales
-              ({summary.sales_period_start} to {summary.sales_period_end})
+              <strong>Based on:</strong> Sales from {summary.sales_period_start} to {summary.sales_period_end}
+              {summary.data_source === 'bigquery' && <span className="ml-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Live BigQuery</span>}
+              {summary.data_source === 'excel' && <span className="ml-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Excel Upload</span>}
               <br />
               <span className="text-blue-600">
                 Suggested quantities = units sold during this period

@@ -530,11 +530,19 @@ router.get('/uploads', authenticateToken, async (req, res) => {
   }
 });
 
+// Load BigQuery service
+let bigqueryService;
+try {
+  bigqueryService = require('../services/bigquery');
+} catch (err) {
+  console.warn('BigQuery service not available for suggestions:', err.message);
+}
+
 // GET /api/sales-data/suggestions - Get order suggestions based on prior sales
-// Uses BigQuery synced data (sales_by_upc) with fallback to Excel uploads (sales_data)
+// Queries BigQuery directly for accurate date filtering
 router.get('/suggestions', authenticateToken, async (req, res) => {
   try {
-    const { brandId, locationId, salesMonths, startDate, endDate } = req.query;
+    const { brandId, locationId, startDate, endDate } = req.query;
 
     if (!brandId) {
       return res.status(400).json({ error: 'brandId is required' });
@@ -542,6 +550,10 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
 
     if (!locationId) {
       return res.status(400).json({ error: 'locationId is required' });
+    }
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate are required' });
     }
 
     // Map location_id to BigQuery facility_id
@@ -552,65 +564,105 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
     };
     const facilityId = LOCATION_TO_FACILITY[locationId];
 
-    // Determine period months for BigQuery data
-    const monthsBack = parseInt(salesMonths) || 12;
-    let periodDescription = `Last ${monthsBack} months (BigQuery)`;
+    // Get brand name for BigQuery query
+    const brandResult = await pool.query('SELECT name FROM brands WHERE id = $1', [brandId]);
+    if (brandResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Brand not found' });
+    }
+    const brandName = brandResult.rows[0].name;
 
-    // First, try to get data from BigQuery synced tables (sales_by_upc)
-    // Join with products on UPC to get product details for the specified brand
-    const bigqueryQuery = `
-      SELECT
-        p.id as product_id,
-        p.name as product_name,
-        p.sku,
-        p.upc,
-        p.base_name,
-        p.category,
-        p.subcategory,
-        p.gender,
-        p.size,
-        p.color,
-        p.wholesale_cost,
-        p.msrp,
-        b.name as brand_name,
-        l.name as location_name,
-        COALESCE(s.total_qty_sold, 0) as prior_sales,
-        s.first_sale_date as sales_period_start,
-        s.last_sale_date as sales_period_end
-      FROM products p
-      JOIN brands b ON p.brand_id = b.id
-      CROSS JOIN locations l
-      LEFT JOIN sales_by_upc s ON s.upc = p.upc
-        AND s.facility_id = $3
-        AND s.period_months = $4
-      WHERE p.brand_id = $1
-        AND l.id = $2
-        AND p.upc IS NOT NULL
-        AND COALESCE(s.total_qty_sold, 0) > 0
-      ORDER BY p.base_name, p.color, p.size
-    `;
+    // Get location name
+    const locationResult = await pool.query('SELECT name FROM locations WHERE id = $1', [locationId]);
+    const locationName = locationResult.rows[0]?.name || 'Unknown';
 
-    let result = await pool.query(bigqueryQuery, [brandId, locationId, facilityId, monthsBack]);
+    let result;
     let dataSource = 'bigquery';
+    let periodDescription = `${startDate} to ${endDate}`;
 
-    // If no BigQuery data found, fall back to Excel uploads (sales_data)
-    if (result.rows.length === 0) {
-      dataSource = 'excel';
+    // Try BigQuery first
+    if (bigqueryService) {
+      console.log(`Suggestions: Querying BigQuery for brand "${brandName}" facility ${facilityId} from ${startDate} to ${endDate}`);
 
-      // Determine date range for Excel data
-      let salesStartDateStr, salesEndDateStr;
+      const bqQuery = `
+        SELECT
+          p.BARCODE as upc,
+          p.DESCRIPTION as product_name,
+          SUM(ii.QUANTITY) as qty_sold
+        FROM rgp_cleaned_zone.invoice_items_all ii
+        JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
+        JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
+        LEFT JOIN rgp_cleaned_zone.vendors_all v ON p.vendor_concat = v.vendor_concat
+        WHERE DATE(i.POSTDATE) >= @startDate
+          AND DATE(i.POSTDATE) <= @endDate
+          AND p.facility_id_true = @facilityId
+          AND LOWER(v.VENDOR_NAME) LIKE CONCAT('%', @brandName, '%')
+          AND p.BARCODE IS NOT NULL
+          AND LENGTH(p.BARCODE) > 5
+          AND ii.QUANTITY > 0
+        GROUP BY p.BARCODE, p.DESCRIPTION
+        ORDER BY qty_sold DESC
+      `;
 
-      if (startDate && endDate) {
-        salesStartDateStr = startDate;
-        salesEndDateStr = endDate;
-        periodDescription = `${startDate} to ${endDate}`;
-      } else {
-        const salesStartDate = new Date();
-        salesStartDate.setMonth(salesStartDate.getMonth() - monthsBack);
-        salesStartDateStr = salesStartDate.toISOString().split('T')[0];
-        salesEndDateStr = new Date().toISOString().split('T')[0];
-        periodDescription = `Last ${monthsBack} months (Excel)`;
+      const options = {
+        query: bqQuery,
+        params: {
+          startDate: startDate,
+          endDate: endDate,
+          facilityId: facilityId,
+          brandName: brandName.toLowerCase()
+        }
+      };
+
+      const [bqRows] = await bigqueryService.bigquery.query(options);
+      console.log(`Suggestions: Got ${bqRows.length} rows from BigQuery`);
+
+      // Create a map of UPC -> qty_sold from BigQuery
+      const salesByUpc = new Map();
+      for (const row of bqRows) {
+        salesByUpc.set(row.upc, parseInt(row.qty_sold) || 0);
       }
+
+      // Now get products from our database that match these UPCs
+      const localQuery = `
+        SELECT
+          p.id as product_id,
+          p.name as product_name,
+          p.sku,
+          p.upc,
+          p.base_name,
+          p.category,
+          p.subcategory,
+          p.gender,
+          p.size,
+          p.color,
+          p.wholesale_cost,
+          p.msrp,
+          b.name as brand_name
+        FROM products p
+        JOIN brands b ON p.brand_id = b.id
+        WHERE p.brand_id = $1
+          AND p.upc IS NOT NULL
+        ORDER BY p.base_name, p.color, p.size
+      `;
+
+      const localResult = await pool.query(localQuery, [brandId]);
+
+      // Merge BigQuery sales data with local products
+      result = {
+        rows: localResult.rows.map(p => ({
+          ...p,
+          location_name: locationName,
+          prior_sales: salesByUpc.get(p.upc) || 0,
+          sales_period_start: startDate,
+          sales_period_end: endDate
+        })).filter(p => p.prior_sales > 0)
+      };
+    }
+
+    // Fallback to Excel data if no BigQuery results
+    if (!result || result.rows.length === 0) {
+      dataSource = 'excel';
+      periodDescription = `${startDate} to ${endDate} (Excel)`;
 
       const excelQuery = `
         SELECT
@@ -647,7 +699,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
         ORDER BY p.base_name, p.color, p.size
       `;
 
-      result = await pool.query(excelQuery, [salesStartDateStr, brandId, locationId, salesEndDateStr]);
+      result = await pool.query(excelQuery, [startDate, brandId, locationId, endDate]);
     }
 
     // Get the actual date range from the data
@@ -725,11 +777,10 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
         total_prior_sales: totalPriorSales,
         total_suggested_qty: totalSuggestedQty,
         total_suggested_cost: totalSuggestedCost,
-        sales_months: monthsBack,
         period_description: periodDescription,
         data_source: dataSource,
-        sales_period_start: overallStartDate ? overallStartDate.toISOString().split('T')[0] : null,
-        sales_period_end: overallEndDate ? overallEndDate.toISOString().split('T')[0] : null
+        sales_period_start: startDate,
+        sales_period_end: endDate
       }
     });
   } catch (error) {
