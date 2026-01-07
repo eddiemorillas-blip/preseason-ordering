@@ -317,30 +317,32 @@ router.get('/debug/vendor/:vendorName', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'start_date and end_date are required' });
     }
 
-    // Query BigQuery data directly for custom date range
-    // Since sales_by_upc only stores period_months aggregations, we need to query
-    // the raw data or use the closest period. For now, filter by first/last sale dates.
-    const query = `
+    // Query BigQuery directly for accurate date filtering
+    if (!bigqueryService) {
+      return res.status(503).json({ error: 'BigQuery service not configured' });
+    }
+
+    const bqQuery = `
       SELECT
-        product_name,
-        facility_id,
-        SUM(total_qty_sold) as qty_sold
-      FROM sales_by_upc
-      WHERE LOWER(rgp_vendor_name) LIKE $1
-        AND (
-          (first_sale_date >= $2 AND first_sale_date <= $3)
-          OR (last_sale_date >= $2 AND last_sale_date <= $3)
-          OR (first_sale_date <= $2 AND last_sale_date >= $3)
-        )
-      GROUP BY product_name, facility_id
+        p.DESCRIPTION as product_name,
+        p.facility_id_true as facility_id,
+        SUM(ii.QUANTITY) as qty_sold
+      FROM rgp_cleaned_zone.invoice_items_all ii
+      JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
+      JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
+      LEFT JOIN rgp_cleaned_zone.vendors_all v ON p.vendor_concat = v.vendor_concat
+      WHERE DATE(i.POSTDATE) >= DATE('${start_date}')
+        AND DATE(i.POSTDATE) <= DATE('${end_date}')
+        AND LOWER(v.VENDOR_NAME) LIKE '%${req.params.vendorName.toLowerCase()}%'
+        AND p.BARCODE IS NOT NULL
+        AND LENGTH(p.BARCODE) > 5
+        AND ii.QUANTITY > 0
+      GROUP BY p.DESCRIPTION, p.facility_id_true
       ORDER BY product_name, facility_id
     `;
 
-    const result = await pool.query(query, [
-      `%${req.params.vendorName.toLowerCase()}%`,
-      start_date,
-      end_date
-    ]);
+    const [rows] = await bigqueryService.bigquery.query({ query: bqQuery });
+    const result = { rows };
 
     // Pivot the data: group by product_name with columns for each facility
     const familyMap = new Map();
