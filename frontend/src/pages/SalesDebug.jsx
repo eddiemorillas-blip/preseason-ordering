@@ -3,19 +3,29 @@ import Layout from '../components/Layout';
 import { salesAPI } from '../services/api';
 
 const SalesDebug = () => {
+  // Default to last 12 months
+  const today = new Date();
+  const oneYearAgo = new Date(today);
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
   const [vendor, setVendor] = useState('');
-  const [periodMonths, setPeriodMonths] = useState(12);
+  const [startDate, setStartDate] = useState(oneYearAgo.toISOString().split('T')[0]);
+  const [endDate, setEndDate] = useState(today.toISOString().split('T')[0]);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const handleSearch = async () => {
     if (!vendor.trim()) return;
+    if (!startDate || !endDate) {
+      setError('Please select both start and end dates');
+      return;
+    }
     try {
       setLoading(true);
       setData(null);
       setError(null);
-      const res = await salesAPI.debugVendor(vendor, periodMonths);
+      const res = await salesAPI.debugVendor(vendor, startDate, endDate);
       setData(res.data);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to load data');
@@ -26,6 +36,13 @@ const SalesDebug = () => {
 
   const formatNumber = (value) => {
     return new Intl.NumberFormat('en-US').format(value || 0);
+  };
+
+  const formatDateRange = () => {
+    if (!data?.start_date || !data?.end_date) return '';
+    const start = new Date(data.start_date).toLocaleDateString();
+    const end = new Date(data.end_date).toLocaleDateString();
+    return `${start} - ${end}`;
   };
 
   return (
@@ -43,29 +60,40 @@ const SalesDebug = () => {
         )}
 
         <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex gap-4 mb-6">
-            <input
-              type="text"
-              placeholder="Vendor name (e.g., Scarpa)"
-              value={vendor}
-              onChange={(e) => setVendor(e.target.value)}
-              className="flex-1 px-4 py-2 border rounded-md text-lg"
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-            />
-            <select
-              value={periodMonths}
-              onChange={(e) => setPeriodMonths(parseInt(e.target.value))}
-              className="px-4 py-2 border rounded-md"
-            >
-              <option value={3}>Last 3 months</option>
-              <option value={6}>Last 6 months</option>
-              <option value={12}>Last 12 months</option>
-              <option value={24}>Last 24 months</option>
-            </select>
+          <div className="flex flex-wrap gap-4 mb-6 items-end">
+            <div className="flex-1 min-w-[200px]">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Vendor</label>
+              <input
+                type="text"
+                placeholder="e.g., Scarpa"
+                value={vendor}
+                onChange={(e) => setVendor(e.target.value)}
+                className="w-full px-4 py-2 border rounded-md"
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="px-4 py-2 border rounded-md"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="px-4 py-2 border rounded-md"
+              />
+            </div>
             <button
               onClick={handleSearch}
               disabled={loading || !vendor.trim()}
-              className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300 font-medium"
+              className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300 font-medium h-[42px]"
             >
               {loading ? 'Searching...' : 'Search'}
             </button>
@@ -76,7 +104,7 @@ const SalesDebug = () => {
               {/* Summary */}
               <div className="bg-blue-50 p-4 rounded-lg">
                 <div className="text-sm text-blue-600 mb-1">
-                  {data.families?.length || 0} products found ({data.period_months} month period)
+                  {data.families?.length || 0} products found ({formatDateRange()})
                 </div>
                 <div className="grid grid-cols-4 gap-4 text-center">
                   <div>
@@ -145,7 +173,7 @@ const SalesDebug = () => {
 
           {!data && !loading && (
             <div className="text-center text-gray-500 py-12">
-              Enter a vendor name and click Search to view sales data
+              Enter a vendor name and date range, then click Search
             </div>
           )}
         </div>

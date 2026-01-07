@@ -311,9 +311,15 @@ router.get('/by-upc/:upc', authenticateToken, async (req, res) => {
 // GET /api/sales/debug/vendor/:vendorName - Debug: get all sales for a vendor
 router.get('/debug/vendor/:vendorName', authenticateToken, async (req, res) => {
   try {
-    const { period_months = 12 } = req.query;
+    const { start_date, end_date } = req.query;
 
-    // Get all products for this vendor, grouped by product family with qty per facility
+    if (!start_date || !end_date) {
+      return res.status(400).json({ error: 'start_date and end_date are required' });
+    }
+
+    // Query BigQuery data directly for custom date range
+    // Since sales_by_upc only stores period_months aggregations, we need to query
+    // the raw data or use the closest period. For now, filter by first/last sale dates.
     const query = `
       SELECT
         product_name,
@@ -321,14 +327,19 @@ router.get('/debug/vendor/:vendorName', authenticateToken, async (req, res) => {
         SUM(total_qty_sold) as qty_sold
       FROM sales_by_upc
       WHERE LOWER(rgp_vendor_name) LIKE $1
-        AND period_months = $2
+        AND (
+          (first_sale_date >= $2 AND first_sale_date <= $3)
+          OR (last_sale_date >= $2 AND last_sale_date <= $3)
+          OR (first_sale_date <= $2 AND last_sale_date >= $3)
+        )
       GROUP BY product_name, facility_id
       ORDER BY product_name, facility_id
     `;
 
     const result = await pool.query(query, [
       `%${req.params.vendorName.toLowerCase()}%`,
-      parseInt(period_months)
+      start_date,
+      end_date
     ]);
 
     // Pivot the data: group by product_name with columns for each facility
@@ -369,7 +380,8 @@ router.get('/debug/vendor/:vendorName', authenticateToken, async (req, res) => {
     res.json({
       families,
       totals,
-      period_months: parseInt(period_months)
+      start_date,
+      end_date
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
