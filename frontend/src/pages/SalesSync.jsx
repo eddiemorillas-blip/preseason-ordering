@@ -16,6 +16,10 @@ const SalesSync = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [autoMapping, setAutoMapping] = useState(false);
   const [autoMapResult, setAutoMapResult] = useState(null);
+  const [debugVendor, setDebugVendor] = useState('');
+  const [debugFacility, setDebugFacility] = useState('');
+  const [debugData, setDebugData] = useState(null);
+  const [debugLoading, setDebugLoading] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -99,6 +103,20 @@ const SalesSync = () => {
       setError(err.response?.data?.error || 'Failed to auto-map brands');
     } finally {
       setAutoMapping(false);
+    }
+  };
+
+  const handleDebugSearch = async () => {
+    if (!debugVendor.trim()) return;
+    try {
+      setDebugLoading(true);
+      setDebugData(null);
+      const res = await salesAPI.debugVendor(debugVendor, debugFacility);
+      setDebugData(res.data);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to load debug data');
+    } finally {
+      setDebugLoading(false);
     }
   };
 
@@ -315,6 +333,107 @@ const SalesSync = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        {/* Debug Section */}
+        <div className="bg-white rounded-lg shadow">
+          <div className="p-4 border-b">
+            <h2 className="text-lg font-semibold">Debug Sales Data</h2>
+            <p className="text-sm text-gray-500">Look up raw sales data by vendor name</p>
+          </div>
+          <div className="p-4">
+            <div className="flex gap-4 mb-4">
+              <input
+                type="text"
+                placeholder="Vendor name (e.g., Scarpa)"
+                value={debugVendor}
+                onChange={(e) => setDebugVendor(e.target.value)}
+                className="flex-1 px-3 py-2 border rounded-md"
+                onKeyDown={(e) => e.key === 'Enter' && handleDebugSearch()}
+              />
+              <select
+                value={debugFacility}
+                onChange={(e) => setDebugFacility(e.target.value)}
+                className="px-3 py-2 border rounded-md"
+              >
+                <option value="">All Facilities</option>
+                <option value="41185">SLC (41185)</option>
+                <option value="1003">South Main (1003)</option>
+                <option value="1000">Ogden (1000)</option>
+              </select>
+              <button
+                onClick={handleDebugSearch}
+                disabled={debugLoading || !debugVendor.trim()}
+                className="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 disabled:bg-gray-300"
+              >
+                {debugLoading ? 'Loading...' : 'Search'}
+              </button>
+            </div>
+
+            {debugData && (
+              <div className="space-y-4">
+                {/* Totals by Facility */}
+                <div className="bg-gray-50 p-4 rounded">
+                  <h3 className="font-medium mb-2">Totals by Facility</h3>
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-500">
+                        <th className="pr-4">Facility</th>
+                        <th className="pr-4">Location</th>
+                        <th className="pr-4 text-right">Products</th>
+                        <th className="pr-4 text-right">Units Sold</th>
+                        <th className="text-right">Revenue</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {debugData.totals_by_facility?.map((t, i) => (
+                        <tr key={i} className="border-t">
+                          <td className="pr-4 py-1">{t.facility_id || 'NULL'}</td>
+                          <td className="pr-4 py-1">{debugData.facility_mapping?.[t.facility_id] || 'Unknown'}</td>
+                          <td className="pr-4 py-1 text-right">{formatNumber(t.product_count)}</td>
+                          <td className="pr-4 py-1 text-right font-medium">{formatNumber(t.total_units)}</td>
+                          <td className="py-1 text-right">{formatCurrency(t.total_revenue)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Product List */}
+                <div>
+                  <h3 className="font-medium mb-2">Products ({debugData.products?.length || 0})</h3>
+                  <div className="max-h-64 overflow-y-auto border rounded">
+                    <table className="min-w-full text-xs">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr className="text-left text-gray-500">
+                          <th className="px-2 py-1">UPC</th>
+                          <th className="px-2 py-1">Product</th>
+                          <th className="px-2 py-1">Facility</th>
+                          <th className="px-2 py-1 text-right">Qty</th>
+                          <th className="px-2 py-1 text-right">Revenue</th>
+                          <th className="px-2 py-1">Date Range</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {debugData.products?.map((p, i) => (
+                          <tr key={i} className="border-t hover:bg-gray-50">
+                            <td className="px-2 py-1 font-mono">{p.upc}</td>
+                            <td className="px-2 py-1 max-w-xs truncate" title={p.product_name}>{p.product_name}</td>
+                            <td className="px-2 py-1">{debugData.facility_mapping?.[p.facility_id] || p.facility_id}</td>
+                            <td className="px-2 py-1 text-right font-medium">{formatNumber(p.total_qty_sold)}</td>
+                            <td className="px-2 py-1 text-right">{formatCurrency(p.total_revenue)}</td>
+                            <td className="px-2 py-1 text-gray-500">
+                              {p.first_sale_date?.split('T')[0]} - {p.last_sale_date?.split('T')[0]}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
