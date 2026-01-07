@@ -53,6 +53,9 @@ const AddProducts = () => {
   // Debounce search for filtering (300ms delay)
   const debouncedSearch = useDebounce(filters.search, 300);
 
+  // Collapsed families state
+  const [collapsedFamilies, setCollapsedFamilies] = useState(new Set());
+
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 100;
@@ -241,12 +244,64 @@ const AddProducts = () => {
     setCurrentPage(1);
   }, [debouncedSearch, filters.family, filters.gender, filters.category, filters.subcategory, filters.color, filters.sizeMin, filters.sizeMax, filters.inseam]);
 
-  // Paginated products for display
-  const totalPages = Math.ceil(filteredProducts.length / rowsPerPage);
-  const paginatedProducts = useMemo(() => {
-    const start = (currentPage - 1) * rowsPerPage;
-    return filteredProducts.slice(start, start + rowsPerPage);
-  }, [filteredProducts, currentPage, rowsPerPage]);
+  // Group products by family
+  const groupedProducts = useMemo(() => {
+    const groups = {};
+    filteredProducts.forEach(product => {
+      const family = product.base_name || product.name || 'Unknown';
+      if (!groups[family]) {
+        groups[family] = {
+          name: family,
+          color: product.color,
+          gender: product.gender,
+          category: product.category,
+          wholesale_cost: product.wholesale_cost,
+          variants: []
+        };
+      }
+      groups[family].variants.push(product);
+    });
+
+    // Sort variants within each group by size
+    Object.values(groups).forEach(group => {
+      group.variants.sort((a, b) => {
+        // Try to sort by size numerically, fall back to alphabetical
+        const aSize = parseFloat(a.size) || 0;
+        const bSize = parseFloat(b.size) || 0;
+        if (aSize !== bSize) return aSize - bSize;
+        return (a.size || '').localeCompare(b.size || '');
+      });
+    });
+
+    // Sort families alphabetically
+    return Object.values(groups).sort((a, b) => a.name.localeCompare(b.name));
+  }, [filteredProducts]);
+
+  // Paginated families for display
+  const familiesPerPage = 20;
+  const totalPages = Math.ceil(groupedProducts.length / familiesPerPage);
+  const paginatedFamilies = useMemo(() => {
+    const start = (currentPage - 1) * familiesPerPage;
+    return groupedProducts.slice(start, start + familiesPerPage);
+  }, [groupedProducts, currentPage, familiesPerPage]);
+
+  // Toggle family collapse
+  const toggleFamilyCollapse = (familyName) => {
+    setCollapsedFamilies(prev => {
+      const next = new Set(prev);
+      if (next.has(familyName)) {
+        next.delete(familyName);
+      } else {
+        next.add(familyName);
+      }
+      return next;
+    });
+  };
+
+  // Get family quantity total
+  const getFamilyQuantity = (family) => {
+    return family.variants.reduce((sum, v) => sum + (quantities[v.id] || 0), 0);
+  };
 
   // Get dynamic filter options based on current selections
   // Uses productsWithoutSizeFilter as base (already filtered by everything except size)
@@ -886,9 +941,10 @@ const AddProducts = () => {
         {/* Bulk Actions & Pagination */}
         <div className="bg-gray-50 border rounded-lg px-4 py-3 flex items-center justify-between">
           <div className="text-sm text-gray-600">
-            Showing <span className="font-semibold">{paginatedProducts.length}</span> of <span className="font-semibold">{filteredProducts.length}</span> products
+            Showing <span className="font-semibold">{paginatedFamilies.length}</span> of <span className="font-semibold">{groupedProducts.length}</span> families
+            ({filteredProducts.length} variants)
             {filteredProducts.length !== products.length && (
-              <span> (filtered from {products.length})</span>
+              <span className="text-gray-400"> • filtered from {products.length}</span>
             )}
           </div>
           <div className="flex items-center space-x-4">
@@ -938,93 +994,103 @@ const AddProducts = () => {
           </div>
         </div>
 
-        {/* Products Table */}
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Family
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Product
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Color
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Size
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Inseam
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    SKU
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Cost
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider w-28">
-                    Quantity
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {paginatedProducts.map((product) => (
-                  <tr key={product.id} className={`hover:bg-gray-50 ${quantities[product.id] > 0 ? 'bg-blue-50' : ''}`}>
-                    <td className="px-4 py-2 text-sm text-gray-900 whitespace-nowrap">
-                      {product.base_name || product.name || 'Unknown'}
-                    </td>
-                    <td className="px-4 py-2 text-sm text-gray-900">
-                      {product.name}
-                    </td>
-                    <td className="px-4 py-2 text-sm text-gray-600 whitespace-nowrap">
-                      {product.color || '-'}
-                    </td>
-                    <td className="px-4 py-2 text-sm text-gray-600 whitespace-nowrap">
-                      {product.size || '-'}
-                    </td>
-                    <td className="px-4 py-2 text-sm text-gray-600 whitespace-nowrap">
-                      {product.inseam || '-'}
-                    </td>
-                    <td className="px-4 py-2 text-sm text-gray-500 whitespace-nowrap">
-                      {product.sku || '-'}
-                    </td>
-                    <td className="px-4 py-2 text-sm text-right text-gray-900 whitespace-nowrap">
-                      ${parseFloat(product.wholesale_cost || 0).toFixed(2)}
-                    </td>
-                    <td className="px-4 py-2 text-sm text-right">
-                      <input
-                        type="number"
-                        min="0"
-                        value={quantities[product.id] || ''}
-                        onChange={(e) => handleQuantityChange(product.id, e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            // Find and focus the next quantity input
-                            const allInputs = Array.from(document.querySelectorAll('table input[type="number"]'));
-                            const currentIndex = allInputs.findIndex(input => input === e.target);
-                            if (currentIndex !== -1 && currentIndex < allInputs.length - 1) {
-                              const nextInput = allInputs[currentIndex + 1];
-                              nextInput.focus();
-                              nextInput.select();
-                            }
-                          }
-                        }}
-                        className="w-20 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="0"
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {/* Products Grouped by Family */}
+        <div className="space-y-2">
+          {paginatedFamilies.map((family) => {
+            const isCollapsed = collapsedFamilies.has(family.name);
+            const familyQty = getFamilyQuantity(family);
+            const hasQuantity = familyQty > 0;
 
-          {filteredProducts.length === 0 && (
-            <div className="px-6 py-8 text-center text-sm text-gray-500">
+            return (
+              <div
+                key={family.name}
+                className={`bg-white shadow rounded-lg overflow-hidden ${hasQuantity ? 'ring-2 ring-blue-500' : ''}`}
+              >
+                {/* Family Header */}
+                <div
+                  className={`px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-gray-50 ${hasQuantity ? 'bg-blue-50' : 'bg-gray-50'}`}
+                  onClick={() => toggleFamilyCollapse(family.name)}
+                >
+                  <div className="flex items-center gap-3">
+                    <svg
+                      className={`w-4 h-4 text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    <div>
+                      <div className="font-medium text-gray-900">{family.name}</div>
+                      <div className="text-xs text-gray-500">
+                        {family.color && <span className="mr-2">{family.color}</span>}
+                        {family.gender && <span className="mr-2">{family.gender}</span>}
+                        {family.category && <span>{family.category}</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <span className="text-sm text-gray-500">{family.variants.length} sizes</span>
+                    <span className="text-sm text-gray-700">${parseFloat(family.wholesale_cost || 0).toFixed(2)}</span>
+                    {hasQuantity && (
+                      <span className="px-2 py-1 bg-blue-600 text-white text-xs font-medium rounded">
+                        {familyQty} units
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Variants */}
+                {!isCollapsed && (
+                  <div className="border-t">
+                    <div className="px-4 py-2 bg-gray-100 flex items-center gap-2 text-xs text-gray-600">
+                      <span className="w-24">Size</span>
+                      <span className="w-20">Inseam</span>
+                      <span className="flex-1">SKU</span>
+                      <span className="w-20 text-right">Qty</span>
+                    </div>
+                    <div className="divide-y divide-gray-100">
+                      {family.variants.map((variant) => (
+                        <div
+                          key={variant.id}
+                          className={`px-4 py-2 flex items-center gap-2 ${quantities[variant.id] > 0 ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                        >
+                          <span className="w-24 text-sm font-medium text-gray-900">{variant.size || '-'}</span>
+                          <span className="w-20 text-sm text-gray-600">{variant.inseam || '-'}</span>
+                          <span className="flex-1 text-sm text-gray-500">{variant.sku || '-'}</span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={quantities[variant.id] || ''}
+                            onChange={(e) => handleQuantityChange(variant.id, e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                const allInputs = Array.from(document.querySelectorAll('input[type="number"][data-variant]'));
+                                const currentIndex = allInputs.findIndex(input => input === e.target);
+                                if (currentIndex !== -1 && currentIndex < allInputs.length - 1) {
+                                  const nextInput = allInputs[currentIndex + 1];
+                                  nextInput.focus();
+                                  nextInput.select();
+                                }
+                              }
+                            }}
+                            data-variant="true"
+                            className="w-20 px-2 py-1 border border-gray-300 rounded text-right text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="0"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {groupedProducts.length === 0 && (
+            <div className="bg-white shadow rounded-lg px-6 py-8 text-center text-sm text-gray-500">
               No products match your filters.{' '}
               <button onClick={clearFilters} className="text-blue-600 hover:text-blue-800">
                 Clear filters
