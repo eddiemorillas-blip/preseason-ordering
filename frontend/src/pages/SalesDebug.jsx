@@ -40,9 +40,12 @@ const SalesDebug = () => {
 
   const formatDateRange = () => {
     if (!data?.start_date || !data?.end_date) return '';
-    const start = new Date(data.start_date).toLocaleDateString();
-    const end = new Date(data.end_date).toLocaleDateString();
-    return `${start} - ${end}`;
+    // Use the raw date strings to avoid timezone shifting
+    const formatDate = (dateStr) => {
+      const [year, month, day] = dateStr.split('-');
+      return `${parseInt(month)}/${parseInt(day)}/${year}`;
+    };
+    return `${formatDate(data.start_date)} - ${formatDate(data.end_date)}`;
   };
 
   return (
