@@ -902,9 +902,25 @@ const OrderManager = () => {
                           />
                           <span className="font-medium text-sm text-gray-900">{group.groupName}</span>
                         </div>
-                        <span className="text-xs text-gray-500">
-                          {group.orders.length} orders &bull; {formatCurrency(group.orders.reduce((s, o) => s + (parseFloat(o.current_total) || 0), 0))}
-                        </span>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs text-gray-500">
+                            {group.orders.length} orders &bull; {formatCurrency(group.orders.reduce((s, o) => s + (parseFloat(o.current_total) || 0), 0))}
+                          </span>
+                          {(isAdmin() || isBuyer()) && group.orders.length > 0 && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const orderIds = group.orders.map(o => o.id).join(',');
+                                const brandId = group.orders[0]?.brand_id;
+                                navigate(`/add-products?orderIds=${orderIds}&brandId=${brandId}`);
+                              }}
+                              className="px-2 py-1 bg-teal-600 text-white text-xs rounded hover:bg-teal-700"
+                              title="Add products to all orders in this group"
+                            >
+                              + Add Products
+                            </button>
+                          )}
+                        </div>
                       </div>
                       {!collapsedGroups.has(key) && (
                       <table className="min-w-full">
