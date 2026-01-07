@@ -153,8 +153,8 @@ export const salesAPI = {
   updateBrandMapping: (id, data) => api.put(`/sales/brand-mapping/${id}`, data),
   autoMapBrands: () => api.post('/sales/brand-mapping/auto-map'),
   getSummary: () => api.get('/sales/summary'),
-  debugVendor: (vendorName, facilityId) => api.get(`/sales/debug/vendor/${encodeURIComponent(vendorName)}`, {
-    params: facilityId ? { facility_id: facilityId } : {}
+  debugVendor: (vendorName, periodMonths = 12) => api.get(`/sales/debug/vendor/${encodeURIComponent(vendorName)}`, {
+    params: { period_months: periodMonths }
   }),
 };
 

@@ -311,61 +311,65 @@ router.get('/by-upc/:upc', authenticateToken, async (req, res) => {
 // GET /api/sales/debug/vendor/:vendorName - Debug: get all sales for a vendor
 router.get('/debug/vendor/:vendorName', authenticateToken, async (req, res) => {
   try {
-    const { facility_id } = req.query;
-    let query = `
+    const { period_months = 12 } = req.query;
+
+    // Get all products for this vendor, grouped by product family with qty per facility
+    const query = `
       SELECT
-        rgp_vendor_name,
-        facility_id,
-        upc,
         product_name,
-        total_qty_sold,
-        total_revenue,
-        first_sale_date,
-        last_sale_date,
-        period_months
-      FROM sales_by_upc
-      WHERE LOWER(rgp_vendor_name) LIKE $1
-    `;
-    const params = [`%${req.params.vendorName.toLowerCase()}%`];
-
-    if (facility_id) {
-      query += ` AND facility_id = $2`;
-      params.push(facility_id);
-    }
-
-    query += ` ORDER BY total_qty_sold DESC`;
-
-    const result = await pool.query(query, params);
-
-    // Also get totals
-    let totalsQuery = `
-      SELECT
         facility_id,
-        COUNT(*) as product_count,
-        SUM(total_qty_sold) as total_units,
-        SUM(total_revenue) as total_revenue
+        SUM(total_qty_sold) as qty_sold
       FROM sales_by_upc
       WHERE LOWER(rgp_vendor_name) LIKE $1
+        AND period_months = $2
+      GROUP BY product_name, facility_id
+      ORDER BY product_name, facility_id
     `;
-    const totalsParams = [`%${req.params.vendorName.toLowerCase()}%`];
 
-    if (facility_id) {
-      totalsQuery += ` AND facility_id = $2`;
-      totalsParams.push(facility_id);
+    const result = await pool.query(query, [
+      `%${req.params.vendorName.toLowerCase()}%`,
+      parseInt(period_months)
+    ]);
+
+    // Pivot the data: group by product_name with columns for each facility
+    const familyMap = new Map();
+    for (const row of result.rows) {
+      if (!familyMap.has(row.product_name)) {
+        familyMap.set(row.product_name, {
+          product_name: row.product_name,
+          slc: 0,
+          south_main: 0,
+          ogden: 0,
+          total: 0
+        });
+      }
+      const family = familyMap.get(row.product_name);
+      const qty = parseInt(row.qty_sold) || 0;
+
+      if (row.facility_id === '41185') {
+        family.slc = qty;
+      } else if (row.facility_id === '1003') {
+        family.south_main = qty;
+      } else if (row.facility_id === '1000') {
+        family.ogden = qty;
+      }
+      family.total += qty;
     }
 
-    totalsQuery += ` GROUP BY facility_id ORDER BY facility_id`;
+    const families = Array.from(familyMap.values()).sort((a, b) => b.total - a.total);
 
-    const totalsResult = await pool.query(totalsQuery, totalsParams);
+    // Calculate totals
+    const totals = {
+      slc: families.reduce((sum, f) => sum + f.slc, 0),
+      south_main: families.reduce((sum, f) => sum + f.south_main, 0),
+      ogden: families.reduce((sum, f) => sum + f.ogden, 0),
+      total: families.reduce((sum, f) => sum + f.total, 0)
+    };
 
     res.json({
-      products: result.rows,
-      totals_by_facility: totalsResult.rows,
-      facility_mapping: {
-        '41185': 'SLC',
-        '1003': 'South Main',
-        '1000': 'Ogden'
-      }
+      families,
+      totals,
+      period_months: parseInt(period_months)
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
