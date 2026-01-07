@@ -308,6 +308,70 @@ router.get('/by-upc/:upc', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/sales/debug/vendor/:vendorName - Debug: get all sales for a vendor
+router.get('/debug/vendor/:vendorName', authenticateToken, async (req, res) => {
+  try {
+    const { facility_id } = req.query;
+    let query = `
+      SELECT
+        rgp_vendor_name,
+        facility_id,
+        upc,
+        product_name,
+        total_qty_sold,
+        total_revenue,
+        first_sale_date,
+        last_sale_date,
+        period_months
+      FROM sales_by_upc
+      WHERE LOWER(rgp_vendor_name) LIKE $1
+    `;
+    const params = [`%${req.params.vendorName.toLowerCase()}%`];
+
+    if (facility_id) {
+      query += ` AND facility_id = $2`;
+      params.push(facility_id);
+    }
+
+    query += ` ORDER BY total_qty_sold DESC`;
+
+    const result = await pool.query(query, params);
+
+    // Also get totals
+    let totalsQuery = `
+      SELECT
+        facility_id,
+        COUNT(*) as product_count,
+        SUM(total_qty_sold) as total_units,
+        SUM(total_revenue) as total_revenue
+      FROM sales_by_upc
+      WHERE LOWER(rgp_vendor_name) LIKE $1
+    `;
+    const totalsParams = [`%${req.params.vendorName.toLowerCase()}%`];
+
+    if (facility_id) {
+      totalsQuery += ` AND facility_id = $2`;
+      totalsParams.push(facility_id);
+    }
+
+    totalsQuery += ` GROUP BY facility_id ORDER BY facility_id`;
+
+    const totalsResult = await pool.query(totalsQuery, totalsParams);
+
+    res.json({
+      products: result.rows,
+      totals_by_facility: totalsResult.rows,
+      facility_mapping: {
+        '41185': 'SLC',
+        '1003': 'South Main',
+        '1000': 'Ogden'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/sales/by-brand - Get sales summary by brand
 router.get('/by-brand', authenticateToken, async (req, res) => {
   try {
