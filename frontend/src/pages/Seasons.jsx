@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 
 const Seasons = () => {
   const navigate = useNavigate();
-  const { isAdmin } = useAuth();
+  const { isAdmin, isBuyer } = useAuth();
   const [seasons, setSeasons] = useState([]);
   const [brands, setBrands] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -15,6 +15,7 @@ const Seasons = () => {
   const [collapsedSeasons, setCollapsedSeasons] = useState({});
   const [seasonToDelete, setSeasonToDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [loadingOrders, setLoadingOrders] = useState(null); // Track which brand is loading orders
 
   const [newSeason, setNewSeason] = useState({
     name: '',
@@ -87,6 +88,32 @@ const Seasons = () => {
       setError(err.response?.data?.error || 'Failed to delete season');
     } finally {
       setDeleting(false);
+    }
+  };
+
+  // Navigate to add products page with all orders for this brand/season
+  const handleAddToOrders = async (seasonId, brandId) => {
+    const key = `${seasonId}-${brandId}`;
+    setLoadingOrders(key);
+    setError('');
+    try {
+      // Fetch orders for this season/brand
+      const response = await api.get(`/orders?seasonId=${seasonId}&brandId=${brandId}`);
+      const orders = response.data.orders || [];
+
+      if (orders.length === 0) {
+        setError('No orders exist for this brand yet. Use "Build Orders" to create orders first.');
+        return;
+      }
+
+      // Navigate to add-products with all order IDs
+      const orderIds = orders.map(o => o.id).join(',');
+      navigate(`/add-products?orderIds=${orderIds}&brandId=${brandId}`);
+    } catch (err) {
+      console.error('Error fetching orders:', err);
+      setError('Failed to load orders');
+    } finally {
+      setLoadingOrders(null);
     }
   };
 
@@ -243,24 +270,39 @@ const Seasons = () => {
                             No brands found. Upload a catalog to add brands and products.
                           </div>
                         ) : (
-                          activeBrands.map((brand) => (
-                            <div
-                              key={brand.id}
-                              className="px-6 py-4 flex items-center justify-between hover:bg-gray-50"
-                            >
-                              <div className="flex items-center space-x-4">
-                                <div className="text-sm font-medium text-gray-900">
-                                  {brand.name}
+                          activeBrands.map((brand) => {
+                            const isLoadingThis = loadingOrders === `${season.id}-${brand.id}`;
+                            return (
+                              <div
+                                key={brand.id}
+                                className="px-6 py-4 flex items-center justify-between hover:bg-gray-50"
+                              >
+                                <div className="flex items-center space-x-4">
+                                  <div className="text-sm font-medium text-gray-900">
+                                    {brand.name}
+                                  </div>
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                  {(isAdmin() || isBuyer()) && (
+                                    <button
+                                      onClick={() => handleAddToOrders(season.id, brand.id)}
+                                      disabled={isLoadingThis}
+                                      className="px-4 py-2 bg-teal-600 text-white text-sm rounded-md hover:bg-teal-700 disabled:bg-gray-400"
+                                      title="Add products to existing orders for this brand"
+                                    >
+                                      {isLoadingThis ? 'Loading...' : 'Add to Orders'}
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => navigate(`/seasons/${season.id}?brand=${brand.id}`)}
+                                    className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
+                                  >
+                                    Build Orders
+                                  </button>
                                 </div>
                               </div>
-                              <button
-                                onClick={() => navigate(`/seasons/${season.id}?brand=${brand.id}`)}
-                                className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
-                              >
-                                Build Orders
-                              </button>
-                            </div>
-                          ))
+                            );
+                          })
                         )}
                       </div>
                     )}
