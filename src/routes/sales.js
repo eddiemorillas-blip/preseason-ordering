@@ -322,6 +322,8 @@ router.get('/debug/vendor/:vendorName', authenticateToken, async (req, res) => {
       return res.status(503).json({ error: 'BigQuery service not configured' });
     }
 
+    console.log(`Sales Debug: Querying BigQuery for vendor "${req.params.vendorName}" from ${start_date} to ${end_date}`);
+
     const bqQuery = `
       SELECT
         p.DESCRIPTION as product_name,
@@ -331,9 +333,9 @@ router.get('/debug/vendor/:vendorName', authenticateToken, async (req, res) => {
       JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
       JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
       LEFT JOIN rgp_cleaned_zone.vendors_all v ON p.vendor_concat = v.vendor_concat
-      WHERE DATE(i.POSTDATE) >= DATE('${start_date}')
-        AND DATE(i.POSTDATE) <= DATE('${end_date}')
-        AND LOWER(v.VENDOR_NAME) LIKE '%${req.params.vendorName.toLowerCase()}%'
+      WHERE DATE(i.POSTDATE) >= @startDate
+        AND DATE(i.POSTDATE) <= @endDate
+        AND LOWER(v.VENDOR_NAME) LIKE CONCAT('%', @vendorName, '%')
         AND p.BARCODE IS NOT NULL
         AND LENGTH(p.BARCODE) > 5
         AND ii.QUANTITY > 0
@@ -341,7 +343,17 @@ router.get('/debug/vendor/:vendorName', authenticateToken, async (req, res) => {
       ORDER BY product_name, facility_id
     `;
 
-    const [rows] = await bigqueryService.bigquery.query({ query: bqQuery });
+    const options = {
+      query: bqQuery,
+      params: {
+        startDate: start_date,
+        endDate: end_date,
+        vendorName: req.params.vendorName.toLowerCase()
+      }
+    };
+
+    const [rows] = await bigqueryService.bigquery.query(options);
+    console.log(`Sales Debug: Got ${rows.length} rows from BigQuery`);
     const result = { rows };
 
     // Pivot the data: group by product_name with columns for each facility
