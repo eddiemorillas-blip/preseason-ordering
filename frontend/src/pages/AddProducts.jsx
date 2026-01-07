@@ -501,8 +501,22 @@ const AddProducts = () => {
   // Helper to format ship date
   const formatShipDate = (dateStr) => {
     if (!dateStr) return 'No date';
-    const d = new Date(dateStr + 'T12:00:00');
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    try {
+      // Handle various date formats
+      let dateOnly = dateStr;
+      if (typeof dateStr === 'string') {
+        // Extract YYYY-MM-DD if it's an ISO string or contains time
+        const match = dateStr.match(/^\d{4}-\d{2}-\d{2}/);
+        if (match) {
+          dateOnly = match[0];
+        }
+      }
+      const d = new Date(dateOnly + 'T12:00:00');
+      if (isNaN(d.getTime())) return 'No date';
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } catch {
+      return 'No date';
+    }
   };
 
   return (
@@ -551,27 +565,61 @@ const AddProducts = () => {
         {/* Order Selection for Multi-Order Mode */}
         {isMultiOrderMode && multiOrders.length > 0 && (
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <h3 className="text-sm font-medium text-blue-900 mb-2">Select orders to add products to:</h3>
-            <div className="flex flex-wrap gap-2">
-              {multiOrders.map((o, idx) => (
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-medium text-blue-900">Select ship dates to add products to:</h3>
+              <div className="flex gap-2">
                 <button
-                  key={o.id}
-                  onClick={() => toggleOrderSelection(o.id)}
-                  className={`px-3 py-2 rounded-md border text-sm ${
-                    selectedOrderIds.has(o.id)
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-gray-700 border-gray-300 hover:border-blue-500'
-                  }`}
+                  onClick={() => setSelectedOrderIds(new Set(multiOrders.map(o => o.id)))}
+                  className="text-xs text-blue-600 hover:text-blue-800"
                 >
-                  Ship {idx + 1}
-                  <span className="ml-1 opacity-75">
-                    ({formatShipDate(o.ship_date)})
-                  </span>
+                  Select All
                 </button>
-              ))}
+                <span className="text-gray-300">|</span>
+                <button
+                  onClick={() => setSelectedOrderIds(new Set())}
+                  className="text-xs text-blue-600 hover:text-blue-800"
+                >
+                  Clear All
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {multiOrders.map((o, idx) => {
+                const isSelected = selectedOrderIds.has(o.id);
+                return (
+                  <button
+                    key={o.id}
+                    onClick={() => toggleOrderSelection(o.id)}
+                    className={`px-3 py-2 rounded-md border text-sm flex items-center gap-2 ${
+                      isSelected
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:border-blue-500'
+                    }`}
+                  >
+                    <span className={`w-4 h-4 rounded border flex items-center justify-center ${
+                      isSelected ? 'bg-white border-white' : 'border-gray-400'
+                    }`}>
+                      {isSelected && (
+                        <svg className="w-3 h-3 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </span>
+                    <span>
+                      Ship {idx + 1}
+                      <span className="ml-1 opacity-75">
+                        ({formatShipDate(o.ship_date)})
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
             <p className="text-xs text-blue-700 mt-2">
-              Quantities will be split evenly across selected orders using round-robin distribution
+              {selectedOrderIds.size === 0
+                ? 'Select at least one ship date to add products'
+                : `Products will be split evenly across ${selectedOrderIds.size} selected order${selectedOrderIds.size > 1 ? 's' : ''}`
+              }
             </p>
           </div>
         )}
