@@ -53,8 +53,8 @@ const AddProducts = () => {
   // Debounce search for filtering (300ms delay)
   const debouncedSearch = useDebounce(filters.search, 300);
 
-  // Collapsed families state
-  const [collapsedFamilies, setCollapsedFamilies] = useState(new Set());
+  // Expanded families state (families start collapsed)
+  const [expandedFamilies, setExpandedFamilies] = useState(new Set());
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -285,9 +285,9 @@ const AddProducts = () => {
     return groupedProducts.slice(start, start + familiesPerPage);
   }, [groupedProducts, currentPage, familiesPerPage]);
 
-  // Toggle family collapse
-  const toggleFamilyCollapse = (familyName) => {
-    setCollapsedFamilies(prev => {
+  // Toggle family expand/collapse
+  const toggleFamilyExpand = (familyName) => {
+    setExpandedFamilies(prev => {
       const next = new Set(prev);
       if (next.has(familyName)) {
         next.delete(familyName);
@@ -997,7 +997,7 @@ const AddProducts = () => {
         {/* Products Grouped by Family */}
         <div className="space-y-2">
           {paginatedFamilies.map((family) => {
-            const isCollapsed = collapsedFamilies.has(family.name);
+            const isExpanded = expandedFamilies.has(family.name);
             const familyQty = getFamilyQuantity(family);
             const hasQuantity = familyQty > 0;
 
@@ -1009,11 +1009,11 @@ const AddProducts = () => {
                 {/* Family Header */}
                 <div
                   className={`px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-gray-50 ${hasQuantity ? 'bg-blue-50' : 'bg-gray-50'}`}
-                  onClick={() => toggleFamilyCollapse(family.name)}
+                  onClick={() => toggleFamilyExpand(family.name)}
                 >
                   <div className="flex items-center gap-3">
                     <svg
-                      className={`w-4 h-4 text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                      className={`w-4 h-4 text-gray-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
                       fill="none"
                       stroke="currentColor"
                       viewBox="0 0 24 24"
@@ -1041,7 +1041,7 @@ const AddProducts = () => {
                 </div>
 
                 {/* Variants */}
-                {!isCollapsed && (
+                {isExpanded && (
                   <div className="border-t">
                     <div className="px-4 py-2 bg-gray-100 flex items-center gap-2 text-xs text-gray-600">
                       <span className="w-24">Size</span>
