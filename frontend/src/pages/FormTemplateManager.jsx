@@ -498,11 +498,14 @@ const FormTemplateManager = () => {
                   {/* Quantity Columns */}
                   <div>
                     <div className="bg-purple-50 border border-purple-200 rounded p-3 mb-3">
-                      <p className="text-xs text-purple-800 mb-1">
-                        <strong>📊 Quantity Columns:</strong> Define which columns contain order quantities and their ship dates.
+                      <p className="text-xs text-purple-800 mb-2">
+                        <strong>📊 Quantity Columns:</strong> Specify which columns contain the <strong>ORIGINAL ORDER QUANTITIES</strong> from the brand's form.
+                      </p>
+                      <p className="text-xs text-purple-700 mb-2">
+                        ⚠️ <strong>Important:</strong> Use the column with existing quantities (e.g., "Ordered", "Qty"), NOT empty adjustment columns.
                       </p>
                       <p className="text-xs text-purple-700">
-                        Example: Column L = "Jan Ship" (date: 2026-01-15), Column M = "Feb Ship" (date: 2026-02-15)
+                        Example: Column P = "Ordered" (the brand's pending quantities). You can edit these quantities later in Order Adjustment.
                       </p>
                     </div>
                     <div className="flex justify-between items-center mb-2">
@@ -534,11 +537,11 @@ const FormTemplateManager = () => {
                                 type="text"
                                 value={col.column_letter}
                                 onChange={(e) => handleQuantityColumnChange(idx, 'column_letter', e.target.value.toUpperCase())}
-                                placeholder="L, M, N..."
+                                placeholder="P (e.g. 'Ordered' column)"
                                 className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
                                 required
                               />
-                              <p className="text-xs text-gray-400 mt-0.5">Excel column with quantity</p>
+                              <p className="text-xs text-gray-400 mt-0.5">Column with EXISTING quantities, not empty cells</p>
                             </div>
                             <div>
                               <label className="block text-xs text-gray-600 mb-1">
@@ -548,10 +551,10 @@ const FormTemplateManager = () => {
                                 type="text"
                                 value={col.column_name}
                                 onChange={(e) => handleQuantityColumnChange(idx, 'column_name', e.target.value)}
-                                placeholder="Jan Ship, Feb Ship..."
+                                placeholder="Ordered, Committed, etc."
                                 className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
                               />
-                              <p className="text-xs text-gray-400 mt-0.5">Label to show in table</p>
+                              <p className="text-xs text-gray-400 mt-0.5">Name from Excel header (optional)</p>
                             </div>
                             <div>
                               <label className="block text-xs text-gray-600 mb-1">
