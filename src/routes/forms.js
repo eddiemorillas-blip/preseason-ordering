@@ -547,7 +547,7 @@ router.get('/', authenticateToken, async (req, res) => {
         t.name as template_name,
         b.name as brand_name,
         s.name as season_name,
-        u.username as imported_by_username,
+        u.email as imported_by_username,
         (SELECT COUNT(*) FROM form_row_mappings WHERE form_id = f.id) as row_count
       FROM imported_forms f
       LEFT JOIN brand_form_templates t ON f.template_id = t.id
