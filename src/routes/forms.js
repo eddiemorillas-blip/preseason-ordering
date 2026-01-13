@@ -10,15 +10,29 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = global.UPLOADS_DIR || path.join(__dirname, '../../uploads');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+    try {
+      const uploadDir = global.UPLOADS_DIR || path.join(__dirname, '../../uploads');
+      console.log('Upload directory:', uploadDir);
+      if (!fs.existsSync(uploadDir)) {
+        console.log('Creating upload directory');
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+      cb(null, uploadDir);
+    } catch (error) {
+      console.error('Error setting upload destination:', error);
+      cb(error);
     }
-    cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
+    try {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const filename = uniqueSuffix + '-' + file.originalname;
+      console.log('Upload filename:', filename);
+      cb(null, filename);
+    } catch (error) {
+      console.error('Error generating filename:', error);
+      cb(error);
+    }
   }
 });
 
@@ -118,7 +132,18 @@ const matchProducts = async (productIds, idType, brandId, seasonId) => {
 };
 
 // POST /api/forms/upload - Upload and preview Excel file
-router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
+router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      console.error('Multer upload error:', err);
+      return res.status(400).json({
+        error: err.message || 'File upload failed',
+        details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     console.log('Upload request received:', {
       hasFile: !!req.file,
