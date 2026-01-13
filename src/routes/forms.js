@@ -117,7 +117,7 @@ const matchProducts = async (productIds, idType, brandId, seasonId) => {
 };
 
 // POST /api/forms/upload - Upload and preview Excel file
-router.post('/upload', authenticateToken, authorizeRoles(['admin', 'buyer']), upload.single('file'), async (req, res) => {
+router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -219,7 +219,7 @@ router.post('/upload', authenticateToken, authorizeRoles(['admin', 'buyer']), up
 });
 
 // POST /api/forms/import - Import form after preview confirmation
-router.post('/import', authenticateToken, authorizeRoles(['admin', 'buyer']), async (req, res) => {
+router.post('/import', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { uploadedFilePath, originalFilename, templateId, brandId, seasonId } = req.body;
@@ -581,7 +581,7 @@ router.get('/', authenticateToken, async (req, res) => {
 });
 
 // DELETE /api/forms/:id - Delete imported form
-router.delete('/:id', authenticateToken, authorizeRoles(['admin', 'buyer']), async (req, res) => {
+router.delete('/:id', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
     const { id } = req.params;
 

@@ -81,7 +81,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
 });
 
 // Create a new form template (Admin and Buyer)
-router.post('/', authenticateToken, authorizeRoles(['admin', 'buyer']), async (req, res) => {
+router.post('/', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   const client = await pool.connect();
   try {
     const {
@@ -173,7 +173,7 @@ router.post('/', authenticateToken, authorizeRoles(['admin', 'buyer']), async (r
 });
 
 // Update a template (Admin and Buyer)
-router.patch('/:id', authenticateToken, authorizeRoles(['admin', 'buyer']), async (req, res) => {
+router.patch('/:id', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -313,7 +313,7 @@ router.patch('/:id', authenticateToken, authorizeRoles(['admin', 'buyer']), asyn
 });
 
 // Delete a template (Admin and Buyer)
-router.delete('/:id', authenticateToken, authorizeRoles(['admin', 'buyer']), async (req, res) => {
+router.delete('/:id', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
     const { id } = req.params;
 
