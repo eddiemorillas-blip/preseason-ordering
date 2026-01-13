@@ -132,18 +132,7 @@ const matchProducts = async (productIds, idType, brandId, seasonId) => {
 };
 
 // POST /api/forms/upload - Upload and preview Excel file
-router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), (req, res, next) => {
-  upload.single('file')(req, res, (err) => {
-    if (err) {
-      console.error('Multer upload error:', err);
-      return res.status(400).json({
-        error: err.message || 'File upload failed',
-        details: process.env.NODE_ENV === 'development' ? err.stack : undefined
-      });
-    }
-    next();
-  });
-}, async (req, res) => {
+router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
   try {
     console.log('Upload request received:', {
       hasFile: !!req.file,

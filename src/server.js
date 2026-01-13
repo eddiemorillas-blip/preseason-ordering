@@ -12,6 +12,18 @@ const uploadsDir = process.env.NODE_ENV === 'production'
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
   console.log('Created uploads directory:', uploadsDir);
+} else {
+  console.log('Uploads directory exists:', uploadsDir);
+}
+
+// Test write permissions
+try {
+  const testFile = path.join(uploadsDir, 'test.txt');
+  fs.writeFileSync(testFile, 'test');
+  fs.unlinkSync(testFile);
+  console.log('✓ Uploads directory is writable');
+} catch (err) {
+  console.error('✗ Uploads directory is NOT writable:', err.message);
 }
 
 // Export for use in other modules
@@ -121,7 +133,12 @@ app.use((req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
+  console.error('='.repeat(80));
+  console.error('GLOBAL ERROR HANDLER');
+  console.error('Path:', req.method, req.path);
   console.error('Error:', err);
+  console.error('Stack:', err.stack);
+  console.error('='.repeat(80));
   res.status(500).json({
     error: 'Internal server error',
     message: process.env.NODE_ENV === 'development' ? err.message : undefined
