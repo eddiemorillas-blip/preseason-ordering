@@ -73,6 +73,7 @@ const columnLetterToIndex = (letter) => {
 // Helper: Match products by UPC/EAN/SKU
 const matchProducts = async (productIds, idType, brandId, seasonId) => {
   const matches = [];
+  console.log(`Matching ${productIds.length} products by ${idType} for brand ${brandId}, season ${seasonId}`);
 
   for (const productId of productIds) {
     if (!productId || productId.trim() === '') {
@@ -244,40 +245,59 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
 router.post('/import', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   const client = await pool.connect();
   try {
+    console.log('Import request received:', {
+      body: req.body,
+      user: req.user?.id
+    });
+
     const { uploadedFilePath, originalFilename, templateId, brandId, seasonId } = req.body;
 
     if (!uploadedFilePath || !templateId || !brandId || !seasonId) {
+      console.error('Missing required fields:', { uploadedFilePath, templateId, brandId, seasonId });
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    console.log('Checking file existence:', uploadedFilePath);
     if (!fs.existsSync(uploadedFilePath)) {
+      console.error('File not found:', uploadedFilePath);
       return res.status(400).json({ error: 'Uploaded file not found' });
     }
 
+    console.log('File exists, proceeding with import');
+
     // Get template
+    console.log('Fetching template:', templateId);
     const templateResult = await client.query(
       'SELECT * FROM brand_form_templates WHERE id = $1',
       [templateId]
     );
 
     if (templateResult.rows.length === 0) {
+      console.error('Template not found:', templateId);
       return res.status(404).json({ error: 'Template not found' });
     }
 
     const template = templateResult.rows[0];
+    console.log('Template found:', template.name);
 
     // Get quantity columns
+    console.log('Fetching quantity columns');
     const quantityColumnsResult = await client.query(
       'SELECT * FROM form_template_quantity_columns WHERE template_id = $1 ORDER BY column_order ASC',
       [templateId]
     );
+    console.log('Quantity columns:', quantityColumnsResult.rows.length);
 
+    console.log('Starting transaction');
     await client.query('BEGIN');
 
     // Read file and store as binary
+    console.log('Reading file data');
     const fileData = fs.readFileSync(uploadedFilePath);
+    console.log('File size:', fileData.length, 'bytes');
 
     // Create imported_forms record
+    console.log('Creating imported_forms record');
     const formResult = await client.query(`
       INSERT INTO imported_forms (
         template_id, season_id, brand_id, original_filename, file_data, imported_by
@@ -286,15 +306,20 @@ router.post('/import', authenticateToken, authorizeRoles('admin', 'buyer'), asyn
     `, [templateId, seasonId, brandId, originalFilename, fileData, req.user.id]);
 
     const formId = formResult.rows[0].id;
+    console.log('Imported form created:', formId);
 
     // Parse Excel and match products
+    console.log('Parsing Excel file');
     const { rows } = parseExcelWithTemplate(uploadedFilePath, template, quantityColumnsResult.rows);
     const productIdColIndex = columnLetterToIndex(template.product_id_column);
     const dataRows = rows.slice(template.data_start_row);
     const productIds = dataRows.map(row => row[productIdColIndex]);
+    console.log('Found', dataRows.length, 'data rows');
 
     // Match products
+    console.log('Matching products');
     const matches = await matchProducts(productIds, template.product_id_type, brandId, seasonId);
+    console.log('Matched', matches.filter(m => m !== null).length, 'of', matches.length, 'products');
 
     // Create form_row_mappings
     const mappingPromises = [];
@@ -329,10 +354,23 @@ router.post('/import', authenticateToken, authorizeRoles('admin', 'buyer'), asyn
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Import form error:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      name: error.name
+    });
     if (req.body.uploadedFilePath && fs.existsSync(req.body.uploadedFilePath)) {
-      fs.unlinkSync(req.body.uploadedFilePath);
+      try {
+        fs.unlinkSync(req.body.uploadedFilePath);
+      } catch (unlinkError) {
+        console.error('Failed to delete uploaded file:', unlinkError);
+      }
     }
-    res.status(500).json({ error: 'Failed to import form' });
+    res.status(500).json({
+      error: 'Failed to import form',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   } finally {
     client.release();
   }
