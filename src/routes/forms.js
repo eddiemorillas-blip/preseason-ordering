@@ -119,6 +119,12 @@ const matchProducts = async (productIds, idType, brandId, seasonId) => {
 // POST /api/forms/upload - Upload and preview Excel file
 router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
   try {
+    console.log('Upload request received:', {
+      hasFile: !!req.file,
+      body: req.body,
+      user: req.user?.id
+    });
+
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
@@ -129,6 +135,13 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
       fs.unlinkSync(req.file.path); // Clean up uploaded file
       return res.status(400).json({ error: 'brandId and seasonId are required' });
     }
+
+    console.log('Processing upload:', {
+      filename: req.file.originalname,
+      brandId,
+      seasonId,
+      path: req.file.path
+    });
 
     // Check for existing template for this brand
     const templateResult = await pool.query(
@@ -211,10 +224,19 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
     }
   } catch (error) {
     console.error('Upload form error:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      file: req.file?.path
+    });
     if (req.file && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
-    res.status(500).json({ error: 'Failed to process uploaded file' });
+    res.status(500).json({
+      error: 'Failed to process uploaded file',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
