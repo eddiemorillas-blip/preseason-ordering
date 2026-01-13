@@ -100,7 +100,7 @@ const matchProducts = async (productIds, idType, brandId, seasonId) => {
 
     if (idType === 'upc') {
       query = `
-        SELECT id, name, upc, sku, size, color, wholesale_price
+        SELECT id, name, upc, sku, size, color, price
         FROM products
         WHERE brand_id = $1 AND season_id = $2 AND upc = $3
         LIMIT 1
@@ -108,7 +108,7 @@ const matchProducts = async (productIds, idType, brandId, seasonId) => {
       params = [brandId, seasonId, cleanId];
     } else if (idType === 'ean') {
       query = `
-        SELECT id, name, upc as ean, sku, size, color, wholesale_price
+        SELECT id, name, upc as ean, sku, size, color, price
         FROM products
         WHERE brand_id = $1 AND season_id = $2 AND upc = $3
         LIMIT 1
@@ -116,7 +116,7 @@ const matchProducts = async (productIds, idType, brandId, seasonId) => {
       params = [brandId, seasonId, cleanId];
     } else {
       query = `
-        SELECT id, name, upc, sku, size, color, wholesale_price
+        SELECT id, name, upc, sku, size, color, price
         FROM products
         WHERE brand_id = $1 AND season_id = $2 AND sku = $3
         LIMIT 1
@@ -466,7 +466,7 @@ router.get('/:id/rows', authenticateToken, async (req, res) => {
         p.sku,
         p.size,
         p.color,
-        p.wholesale_price,
+        p.price,
         l.name as location_name
       FROM form_row_mappings m
       LEFT JOIN products p ON m.product_id = p.id
