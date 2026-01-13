@@ -345,6 +345,17 @@ const FormTemplateManager = () => {
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
+                  {/* Info Banner */}
+                  <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4">
+                    <h3 className="text-sm font-semibold text-blue-900 mb-2">📝 How Form Templates Work</h3>
+                    <ul className="text-xs text-blue-800 space-y-1 ml-4 list-disc">
+                      <li>Templates tell the system how to read Excel files from brands</li>
+                      <li>Map which columns contain product codes (UPC/EAN/SKU) and quantities</li>
+                      <li>Once created, you can import Excel files directly in Order Adjustment</li>
+                      <li>Products are automatically matched to your database</li>
+                    </ul>
+                  </div>
+
                   {/* Brand */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -393,16 +404,23 @@ const FormTemplateManager = () => {
                   </div>
 
                   {/* Row numbers */}
+                  <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4">
+                    <p className="text-xs text-blue-800 mb-2">
+                      <strong>💡 Row Numbering:</strong> Excel rows start at 0. If your column headers are in row 1, enter 0. If data starts in row 2, enter 1.
+                    </p>
+                  </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Header Row (0-indexed)
                       </label>
+                      <p className="text-xs text-gray-500 mb-1">Row containing column names like "UPC", "Product Name", "Qty", etc.</p>
                       <input
                         type="number"
                         value={formData.header_row}
                         onChange={(e) => setFormData({ ...formData, header_row: parseInt(e.target.value) })}
                         min="0"
+                        placeholder="Usually 0 (first row)"
                         className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
@@ -410,22 +428,30 @@ const FormTemplateManager = () => {
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Data Start Row (0-indexed)
                       </label>
+                      <p className="text-xs text-gray-500 mb-1">First row with actual product data (not headers)</p>
                       <input
                         type="number"
                         value={formData.data_start_row}
                         onChange={(e) => setFormData({ ...formData, data_start_row: parseInt(e.target.value) })}
                         min="0"
+                        placeholder="Usually 1 (second row)"
                         className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
                   </div>
 
                   {/* Product ID configuration */}
+                  <div className="bg-green-50 border border-green-200 rounded p-3 mb-4">
+                    <p className="text-xs text-green-800">
+                      <strong>🔍 Product Matching:</strong> Specify which Excel column contains product identifiers (UPC/EAN/SKU) used to match with your database.
+                    </p>
+                  </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Product ID Column <span className="text-red-500">*</span>
                       </label>
+                      <p className="text-xs text-gray-500 mb-1">Excel column letter containing UPC/EAN/SKU codes</p>
                       <input
                         type="text"
                         value={formData.product_id_column}
@@ -434,20 +460,22 @@ const FormTemplateManager = () => {
                         className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         required
                       />
+                      <p className="text-xs text-gray-400 mt-1">Column A is the first column, B is second, etc.</p>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Product ID Type <span className="text-red-500">*</span>
                       </label>
+                      <p className="text-xs text-gray-500 mb-1">Type of identifier in that column</p>
                       <select
                         value={formData.product_id_type}
                         onChange={(e) => setFormData({ ...formData, product_id_type: e.target.value })}
                         className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         required
                       >
-                        <option value="upc">UPC</option>
-                        <option value="ean">EAN</option>
-                        <option value="sku">SKU</option>
+                        <option value="upc">UPC (12-digit barcode)</option>
+                        <option value="ean">EAN (13-digit barcode)</option>
+                        <option value="sku">SKU (product code)</option>
                       </select>
                     </div>
                   </div>
@@ -457,17 +485,26 @@ const FormTemplateManager = () => {
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Location Column <span className="text-gray-500 text-xs">(optional)</span>
                     </label>
+                    <p className="text-xs text-gray-500 mb-1">If the Excel has a location/store column, specify it here. Leave blank if not applicable.</p>
                     <input
                       type="text"
                       value={formData.location_column}
                       onChange={(e) => setFormData({ ...formData, location_column: e.target.value.toUpperCase() })}
-                      placeholder="e.g., D"
+                      placeholder="e.g., D (leave blank if not used)"
                       className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
 
                   {/* Quantity Columns */}
                   <div>
+                    <div className="bg-purple-50 border border-purple-200 rounded p-3 mb-3">
+                      <p className="text-xs text-purple-800 mb-1">
+                        <strong>📊 Quantity Columns:</strong> Define which columns contain order quantities and their ship dates.
+                      </p>
+                      <p className="text-xs text-purple-700">
+                        Example: Column L = "Jan Ship" (date: 2026-01-15), Column M = "Feb Ship" (date: 2026-02-15)
+                      </p>
+                    </div>
                     <div className="flex justify-between items-center mb-2">
                       <label className="block text-sm font-medium text-gray-700">
                         Quantity Columns <span className="text-red-500">*</span>
@@ -490,28 +527,36 @@ const FormTemplateManager = () => {
                         <div key={idx} className="flex gap-2 items-start p-3 bg-gray-50 rounded border border-gray-200">
                           <div className="flex-1 grid grid-cols-3 gap-2">
                             <div>
-                              <label className="block text-xs text-gray-600 mb-1">Column Letter</label>
+                              <label className="block text-xs text-gray-600 mb-1">
+                                Column Letter <span className="text-red-500">*</span>
+                              </label>
                               <input
                                 type="text"
                                 value={col.column_letter}
                                 onChange={(e) => handleQuantityColumnChange(idx, 'column_letter', e.target.value.toUpperCase())}
-                                placeholder="e.g., L"
+                                placeholder="L, M, N..."
                                 className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
                                 required
                               />
+                              <p className="text-xs text-gray-400 mt-0.5">Excel column with quantity</p>
                             </div>
                             <div>
-                              <label className="block text-xs text-gray-600 mb-1">Column Name</label>
+                              <label className="block text-xs text-gray-600 mb-1">
+                                Display Name
+                              </label>
                               <input
                                 type="text"
                                 value={col.column_name}
                                 onChange={(e) => handleQuantityColumnChange(idx, 'column_name', e.target.value)}
-                                placeholder="e.g., Jan Ship"
+                                placeholder="Jan Ship, Feb Ship..."
                                 className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
                               />
+                              <p className="text-xs text-gray-400 mt-0.5">Label to show in table</p>
                             </div>
                             <div>
-                              <label className="block text-xs text-gray-600 mb-1">Ship Date</label>
+                              <label className="block text-xs text-gray-600 mb-1">
+                                Ship Date <span className="text-red-500">*</span>
+                              </label>
                               <input
                                 type="date"
                                 value={col.ship_date}
@@ -519,6 +564,7 @@ const FormTemplateManager = () => {
                                 className="w-full px-2 py-1 text-sm border border-gray-300 rounded"
                                 required
                               />
+                              <p className="text-xs text-gray-400 mt-0.5">When products ship</p>
                             </div>
                           </div>
                           <button
