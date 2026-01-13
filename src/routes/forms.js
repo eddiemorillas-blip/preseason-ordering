@@ -250,7 +250,9 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
     }
     res.status(500).json({
       error: 'Failed to process uploaded file',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: error.message,
+      code: error.code,
+      stack: error.stack?.split('\n').slice(0, 3).join('\n')
     });
   }
 });
@@ -383,7 +385,9 @@ router.post('/import', authenticateToken, authorizeRoles('admin', 'buyer'), asyn
     }
     res.status(500).json({
       error: 'Failed to import form',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: error.message,
+      code: error.code,
+      stack: error.stack?.split('\n').slice(0, 3).join('\n')
     });
   } finally {
     client.release();
