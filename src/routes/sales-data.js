@@ -637,6 +637,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
           p.color,
           p.wholesale_cost,
           p.msrp,
+          p.case_qty,
           b.name as brand_name
         FROM products p
         JOIN brands b ON p.brand_id = b.id
@@ -678,6 +679,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
           p.color,
           p.wholesale_cost,
           p.msrp,
+          p.case_qty,
           b.name as brand_name,
           l.name as location_name,
           COALESCE(SUM(sd.quantity_sold), 0) as prior_sales,
@@ -693,7 +695,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
         WHERE p.brand_id = $2
           AND l.id = $3
         GROUP BY p.id, p.name, p.sku, p.upc, p.base_name, p.category, p.subcategory,
-                 p.gender, p.size, p.color, p.wholesale_cost, p.msrp,
+                 p.gender, p.size, p.color, p.wholesale_cost, p.msrp, p.case_qty,
                  b.name, l.name
         HAVING COALESCE(SUM(sd.quantity_sold), 0) > 0
         ORDER BY p.base_name, p.color, p.size
@@ -716,6 +718,31 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
       }
     }
 
+    // Fetch case mappings for all products in the result
+    const productIds = result.rows.map(r => r.product_id);
+    const caseMappingsResult = productIds.length > 0
+      ? await pool.query(`
+          SELECT id, product_id, case_sku, case_name, units_per_case
+          FROM product_cases
+          WHERE product_id = ANY($1) AND active = true
+          ORDER BY product_id, units_per_case
+        `, [productIds])
+      : { rows: [] };
+
+    // Group case mappings by product_id
+    const caseMappingsByProduct = {};
+    for (const cm of caseMappingsResult.rows) {
+      if (!caseMappingsByProduct[cm.product_id]) {
+        caseMappingsByProduct[cm.product_id] = [];
+      }
+      caseMappingsByProduct[cm.product_id].push({
+        id: cm.id,
+        case_sku: cm.case_sku,
+        case_name: cm.case_name,
+        units_per_case: cm.units_per_case
+      });
+    }
+
     // Group by product family (base_name) for easier display
     const groupedByFamily = {};
     for (const row of result.rows) {
@@ -735,9 +762,33 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
         };
       }
 
-      // Simple logic: suggested qty = prior sales (what sold before, order again)
+      // Get case options for this product (from product_cases table)
+      const caseOptions = caseMappingsByProduct[row.product_id] || [];
+      // Also consider the legacy case_qty field on the product itself
+      const legacyCaseQty = row.case_qty ? parseInt(row.case_qty) : null;
+
+      // Calculate suggested qty based on prior sales
       const priorSales = parseInt(row.prior_sales);
-      const suggestedQty = priorSales;
+
+      let suggestedQty;
+      let suggestedCases = null;
+      let selectedCase = null;
+
+      // Prefer case options from product_cases table
+      if (caseOptions.length > 0) {
+        // Use the first (smallest) case option by default
+        selectedCase = caseOptions[0];
+        suggestedCases = Math.ceil(priorSales / selectedCase.units_per_case);
+        suggestedQty = suggestedCases * selectedCase.units_per_case;
+      } else if (legacyCaseQty && legacyCaseQty > 0) {
+        // Fallback to legacy case_qty on product
+        suggestedCases = Math.ceil(priorSales / legacyCaseQty);
+        suggestedQty = suggestedCases * legacyCaseQty;
+      } else {
+        // No case restriction - order exact amount sold
+        suggestedQty = priorSales;
+      }
+
       const lineCost = suggestedQty * parseFloat(row.wholesale_cost || 0);
 
       groupedByFamily[family].total_prior_sales += priorSales;
@@ -752,7 +803,11 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
         color: row.color,
         wholesale_cost: row.wholesale_cost,
         msrp: row.msrp,
+        case_qty: legacyCaseQty,
+        case_options: caseOptions,
+        selected_case: selectedCase,
         prior_sales: priorSales,
+        suggested_cases: suggestedCases,
         suggested_qty: suggestedQty,
         line_cost: lineCost,
         sales_period_start: row.sales_period_start,

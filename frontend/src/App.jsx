@@ -21,6 +21,7 @@ import BudgetManagement from './pages/BudgetManagement';
 import OrderAdjustment from './pages/OrderAdjustment';
 import ExportCenter from './pages/ExportCenter';
 import Help from './pages/Help';
+import FormTemplateManager from './pages/FormTemplateManager';
 
 function App() {
   return (
@@ -168,6 +169,14 @@ function App() {
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <ExportCenter />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings/form-templates"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <FormTemplateManager />
               </ProtectedRoute>
             }
           />

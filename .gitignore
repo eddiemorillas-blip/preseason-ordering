@@ -45,3 +45,4 @@ temp/
 credentials/
 *.json.key
 *-credentials.json
+.agent-cache/

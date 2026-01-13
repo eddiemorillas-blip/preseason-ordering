@@ -28,6 +28,7 @@ const OrderSuggestions = () => {
   // Selected items for adding to order
   const [selectedItems, setSelectedItems] = useState({});
   const [quantities, setQuantities] = useState({});
+  const [selectedCases, setSelectedCases] = useState({}); // Maps product_id -> selected case object
 
   // Shipment configuration
   const [numberOfShips, setNumberOfShips] = useState(1);
@@ -99,17 +100,25 @@ const OrderSuggestions = () => {
       setSuggestions(response.data.suggestions || []);
       setSummary(response.data.summary || null);
 
-      // Initialize quantities with suggested values
+      // Initialize quantities and case selections with suggested values
       const initialQuantities = {};
       const initialSelected = {};
+      const initialCases = {};
       for (const family of response.data.suggestions || []) {
         for (const variant of family.variants) {
-          initialQuantities[variant.product_id] = variant.suggested_qty;
+          // If there's a case option, quantity is in cases; otherwise in units
+          if (variant.selected_case) {
+            initialQuantities[variant.product_id] = variant.suggested_cases;
+            initialCases[variant.product_id] = variant.selected_case;
+          } else {
+            initialQuantities[variant.product_id] = variant.suggested_qty;
+          }
           initialSelected[variant.product_id] = true;
         }
       }
       setQuantities(initialQuantities);
       setSelectedItems(initialSelected);
+      setSelectedCases(initialCases);
 
       // Expand all families by default
       const expanded = {};
@@ -241,7 +250,10 @@ const OrderSuggestions = () => {
       for (const variant of family.variants) {
         if (selectedItems[variant.product_id]) {
           const qty = quantities[variant.product_id] || 0;
-          total += qty * parseFloat(variant.wholesale_cost || 0);
+          const selectedCase = selectedCases[variant.product_id];
+          // If ordering by case, qty is cases, so units = qty * units_per_case
+          const units = selectedCase ? qty * selectedCase.units_per_case : qty;
+          total += units * parseFloat(variant.wholesale_cost || 0);
         }
       }
     }
@@ -249,15 +261,19 @@ const OrderSuggestions = () => {
   };
 
   const getSelectedQty = () => {
-    let total = 0;
+    let totalUnits = 0;
     for (const family of suggestions) {
       for (const variant of family.variants) {
         if (selectedItems[variant.product_id]) {
-          total += quantities[variant.product_id] || 0;
+          const qty = quantities[variant.product_id] || 0;
+          const selectedCase = selectedCases[variant.product_id];
+          // If ordering by case, qty is cases, so units = qty * units_per_case
+          const units = selectedCase ? qty * selectedCase.units_per_case : qty;
+          totalUnits += units;
         }
       }
     }
-    return total;
+    return totalUnits;
   };
 
   const handleCreateOrder = async () => {
@@ -277,10 +293,15 @@ const OrderSuggestions = () => {
     for (const family of suggestions) {
       for (const variant of family.variants) {
         if (selectedItems[variant.product_id] && quantities[variant.product_id] > 0) {
+          const selectedCase = selectedCases[variant.product_id];
           itemsToAdd.push({
             product_id: variant.product_id,
-            quantity: quantities[variant.product_id],
+            quantity: quantities[variant.product_id],  // This is cases if selectedCase, otherwise units
             unit_price: parseFloat(variant.wholesale_cost || 0),
+            // Include case info for wholesale ordering
+            case_id: selectedCase?.id || null,
+            case_sku: selectedCase?.case_sku || null,
+            units_per_case: selectedCase?.units_per_case || null,
             // Include target ships for new products (defaults to all ships if not specified)
             targetShips: variant._targetShips || null
           });
@@ -766,43 +787,101 @@ const OrderSuggestions = () => {
                           <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">SKU</th>
                           <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Sold</th>
                           <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Cost</th>
-                          <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Order Qty</th>
+                          {family.variants.some(v => v.case_options?.length > 0 || v.case_qty) && (
+                            <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Order As</th>
+                          )}
+                          <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Qty</th>
                           <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Line Total</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-200">
-                        {family.variants.map((variant) => (
-                          <tr
-                            key={variant.product_id}
-                            className={selectedItems[variant.product_id] ? 'bg-blue-50' : 'hover:bg-gray-50'}
-                          >
-                            <td className="px-4 py-2">
-                              <input
-                                type="checkbox"
-                                checked={selectedItems[variant.product_id] || false}
-                                onChange={() => toggleSelectItem(variant.product_id)}
-                                className="rounded border-gray-300"
-                              />
-                            </td>
-                            <td className="px-4 py-2 text-sm">{variant.color || '-'}</td>
-                            <td className="px-4 py-2 text-sm">{variant.size || '-'}</td>
-                            <td className="px-4 py-2 text-sm text-gray-500">{variant.sku || '-'}</td>
-                            <td className="px-4 py-2 text-sm text-right font-medium">{variant.prior_sales}</td>
-                            <td className="px-4 py-2 text-sm text-right">{formatCurrency(variant.wholesale_cost)}</td>
-                            <td className="px-4 py-2 text-center">
-                              <input
-                                type="number"
-                                min="0"
-                                value={quantities[variant.product_id] || 0}
-                                onChange={(e) => updateQuantity(variant.product_id, e.target.value)}
-                                className="w-20 px-2 py-1 border rounded text-center"
-                              />
-                            </td>
-                            <td className="px-4 py-2 text-sm text-right font-medium text-green-600">
-                              {formatCurrency((quantities[variant.product_id] || 0) * parseFloat(variant.wholesale_cost || 0))}
-                            </td>
-                          </tr>
-                        ))}
+                        {family.variants.map((variant) => {
+                          const qty = quantities[variant.product_id] || 0;
+                          const selectedCase = selectedCases[variant.product_id];
+                          const hasCaseOptions = variant.case_options?.length > 0;
+                          const hasLegacyCase = variant.case_qty > 0;
+                          const unitsPerCase = selectedCase?.units_per_case || variant.case_qty;
+                          const totalUnits = selectedCase ? qty * selectedCase.units_per_case : qty;
+
+                          return (
+                            <tr
+                              key={variant.product_id}
+                              className={selectedItems[variant.product_id] ? 'bg-blue-50' : 'hover:bg-gray-50'}
+                            >
+                              <td className="px-4 py-2">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedItems[variant.product_id] || false}
+                                  onChange={() => toggleSelectItem(variant.product_id)}
+                                  className="rounded border-gray-300"
+                                />
+                              </td>
+                              <td className="px-4 py-2 text-sm">{variant.color || '-'}</td>
+                              <td className="px-4 py-2 text-sm">{variant.size || '-'}</td>
+                              <td className="px-4 py-2 text-sm text-gray-500">{variant.sku || '-'}</td>
+                              <td className="px-4 py-2 text-sm text-right font-medium">{variant.prior_sales}</td>
+                              <td className="px-4 py-2 text-sm text-right">{formatCurrency(variant.wholesale_cost)}</td>
+                              {family.variants.some(v => v.case_options?.length > 0 || v.case_qty) && (
+                                <td className="px-4 py-2 text-sm text-center">
+                                  {hasCaseOptions ? (
+                                    <select
+                                      value={selectedCase?.id || ''}
+                                      onChange={(e) => {
+                                        const caseId = e.target.value;
+                                        if (caseId) {
+                                          const caseOption = variant.case_options.find(c => c.id === parseInt(caseId));
+                                          setSelectedCases(prev => ({ ...prev, [variant.product_id]: caseOption }));
+                                          // Recalculate quantity as cases
+                                          const currentUnits = selectedCases[variant.product_id]
+                                            ? qty * selectedCases[variant.product_id].units_per_case
+                                            : qty;
+                                          const newCases = Math.ceil(currentUnits / caseOption.units_per_case);
+                                          setQuantities(prev => ({ ...prev, [variant.product_id]: newCases }));
+                                        } else {
+                                          // Switching to units
+                                          const currentUnits = selectedCase ? qty * selectedCase.units_per_case : qty;
+                                          setSelectedCases(prev => ({ ...prev, [variant.product_id]: null }));
+                                          setQuantities(prev => ({ ...prev, [variant.product_id]: currentUnits }));
+                                        }
+                                      }}
+                                      className="text-xs border rounded px-1 py-0.5"
+                                    >
+                                      <option value="">Units</option>
+                                      {variant.case_options.map(c => (
+                                        <option key={c.id} value={c.id}>
+                                          {c.case_name || `${c.units_per_case}/case`} ({c.case_sku})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : hasLegacyCase ? (
+                                    <span className="text-purple-600 font-medium text-xs">{variant.case_qty}/case</span>
+                                  ) : (
+                                    <span className="text-gray-300 text-xs">Units</span>
+                                  )}
+                                </td>
+                              )}
+                              <td className="px-4 py-2 text-center">
+                                <div className="flex flex-col items-center gap-1">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    value={qty}
+                                    onChange={(e) => updateQuantity(variant.product_id, parseInt(e.target.value) || 0)}
+                                    className="w-20 px-2 py-1 border rounded text-center"
+                                  />
+                                  {selectedCase && qty > 0 && (
+                                    <span className="text-xs text-purple-600">
+                                      = {totalUnits} units
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-4 py-2 text-sm text-right font-medium text-green-600">
+                                {formatCurrency(totalUnits * parseFloat(variant.wholesale_cost || 0))}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

@@ -534,4 +534,25 @@ router.post('/fix-order-numbers', authenticateToken, authorizeRoles('admin'), as
   }
 });
 
+// Add case_qty column to products for wholesale case ordering
+router.post('/add-case-qty-column', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    await pool.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS case_qty INTEGER;
+    `);
+
+    res.json({
+      success: true,
+      message: 'case_qty column added to products table successfully'
+    });
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to add case_qty column',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;

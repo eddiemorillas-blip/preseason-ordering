@@ -165,7 +165,8 @@ const HEADER_KEYWORDS = [
   'category', 'product category', 'type', 'product type', 'department', 'class',
   'wholesale', 'wholesale cost', 'wholesale price', 'cost', 'dealer price',
   'msrp', 'retail', 'retail price', 'list price', 'price', 'srp', 'rrp',
-  'subcategory', 'sub category', 'subclass', 'quantity', 'qty'
+  'subcategory', 'sub category', 'subclass', 'quantity', 'qty',
+  'case qty', 'case quantity', 'case pack', 'pack size', 'units per case', 'case size'
 ];
 
 // Auto-detect which row contains the header
@@ -330,6 +331,7 @@ const mapRowToProduct = (row, columnMapping, brandId, sheetGender = null) => {
     color: null,
     gender: null,
     inseam: null,
+    case_qty: null,
     active: true
   };
 
@@ -395,7 +397,108 @@ const validateProduct = (product, skipValidation = new Set()) => {
     }
   }
 
+  if (product.case_qty) {
+    const cleaned = cleanNumericValue(product.case_qty);
+    if (cleaned && isNaN(parseInt(cleaned))) {
+      errors.push('Case qty must be a valid integer');
+    } else {
+      product.case_qty = cleaned ? parseInt(cleaned) : null;
+    }
+  }
+
   return errors;
+};
+
+// Case detection patterns
+const CASE_NAME_PATTERNS = [
+  /case\s*of\s*(\d+)/i,           // "Case of 12"
+  /(\d+)\s*-?\s*pack/i,           // "12-pack" or "12 pack"
+  /pack\s*of\s*(\d+)/i,           // "Pack of 12"
+  /(\d+)\s*-?\s*case/i,           // "12-case"
+  /carton\s*of\s*(\d+)/i,         // "Carton of 12"
+  /box\s*of\s*(\d+)/i,            // "Box of 12"
+  /\((\d+)\s*(?:pk|pc|ct)\)/i,    // "(12pk)" or "(12pc)" or "(12ct)"
+];
+
+const CASE_SKU_PATTERNS = [
+  /-CS(\d+)$/i,                   // "-CS12"
+  /-CASE(\d+)?$/i,                // "-CASE" or "-CASE12"
+  /-(\d+)PK$/i,                   // "-12PK"
+  /-(\d+)CT$/i,                   // "-12CT"
+  /-BX(\d+)$/i,                   // "-BX12"
+];
+
+// Detect if a product row is a case (not an individual unit)
+const detectCase = (product) => {
+  let unitsPerCase = null;
+  let isCase = false;
+  let caseSku = product.sku;
+
+  // Method 1: Check case_qty field (explicit pack size column)
+  if (product.case_qty && parseInt(product.case_qty) > 1) {
+    isCase = true;
+    unitsPerCase = parseInt(product.case_qty);
+  }
+
+  // Method 2: Check product name for case patterns
+  if (!isCase && product.name) {
+    for (const pattern of CASE_NAME_PATTERNS) {
+      const match = product.name.match(pattern);
+      if (match) {
+        isCase = true;
+        unitsPerCase = parseInt(match[1]) || unitsPerCase;
+        break;
+      }
+    }
+  }
+
+  // Method 3: Check SKU for case patterns
+  if (product.sku) {
+    for (const pattern of CASE_SKU_PATTERNS) {
+      const match = product.sku.match(pattern);
+      if (match) {
+        isCase = true;
+        if (match[1]) {
+          unitsPerCase = parseInt(match[1]) || unitsPerCase;
+        }
+        break;
+      }
+    }
+  }
+
+  return { isCase, unitsPerCase, caseSku };
+};
+
+// Extract base SKU from a case SKU (remove case suffix)
+const extractBaseSku = (sku) => {
+  if (!sku) return null;
+
+  // Remove common case suffixes
+  let baseSku = sku
+    .replace(/-CS\d*$/i, '')
+    .replace(/-CASE\d*$/i, '')
+    .replace(/-\d+PK$/i, '')
+    .replace(/-\d+CT$/i, '')
+    .replace(/-BX\d*$/i, '');
+
+  return baseSku !== sku ? baseSku : null;
+};
+
+// Extract base name from a case product name (remove case designation)
+const extractBaseName = (name) => {
+  if (!name) return null;
+
+  let baseName = name
+    .replace(/\s*-?\s*case\s*of\s*\d+/i, '')
+    .replace(/\s*-?\s*\d+\s*-?\s*pack/i, '')
+    .replace(/\s*-?\s*pack\s*of\s*\d+/i, '')
+    .replace(/\s*-?\s*\d+\s*-?\s*case/i, '')
+    .replace(/\s*-?\s*carton\s*of\s*\d+/i, '')
+    .replace(/\s*-?\s*box\s*of\s*\d+/i, '')
+    .replace(/\s*\(\d+\s*(?:pk|pc|ct)\)/i, '')
+    .trim();
+
+  return baseName !== name ? baseName : null;
 };
 
 // Upload catalog endpoint
@@ -616,7 +719,7 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
 
         for (const product of batchProducts) {
           placeholders.push(
-            `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14})`
+            `($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14}, $${paramIndex + 15})`
           );
           values.push(
             product.brand_id,
@@ -633,15 +736,16 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
             product.inseam,
             product.active,
             seasonId || null,
-            product.name // base_name defaults to product name for family grouping
+            product.name, // base_name defaults to product name for family grouping
+            product.case_qty
           );
-          paramIndex += 15;
+          paramIndex += 16;
         }
 
         const batchQuery = `
           INSERT INTO products (
             brand_id, upc, sku, name, category, subcategory,
-            wholesale_cost, msrp, size, color, gender, inseam, active, season_id, base_name
+            wholesale_cost, msrp, size, color, gender, inseam, active, season_id, base_name, case_qty
           ) VALUES ${placeholders.join(', ')}
           ON CONFLICT (upc) DO UPDATE SET
             brand_id = EXCLUDED.brand_id,
@@ -658,6 +762,7 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
             active = EXCLUDED.active,
             season_id = COALESCE(EXCLUDED.season_id, products.season_id),
             base_name = COALESCE(EXCLUDED.base_name, products.base_name),
+            case_qty = COALESCE(EXCLUDED.case_qty, products.case_qty),
             updated_at = CURRENT_TIMESTAMP
         `;
 

@@ -1224,7 +1224,7 @@ router.get('/:id/family-groups', authenticateToken, async (req, res) => {
 router.post('/:id/items', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { product_id, quantity, unit_price, notes, is_addition } = req.body;
+    const { product_id, quantity, unit_price, notes, is_addition, case_id } = req.body;
 
     if (!product_id || !quantity) {
       return res.status(400).json({ error: 'Product ID and quantity are required' });
@@ -1234,6 +1234,18 @@ router.post('/:id/items', authenticateToken, authorizeRoles('admin', 'buyer'), a
 
     try {
       await client.query('BEGIN');
+
+      // Get order details to know the season
+      const orderResult = await client.query(
+        'SELECT season_id FROM orders WHERE id = $1',
+        [id]
+      );
+
+      if (orderResult.rows.length === 0) {
+        throw new Error('Order not found');
+      }
+
+      const seasonId = orderResult.rows[0].season_id;
 
       // Get product details
       const productResult = await client.query(
@@ -1246,7 +1258,28 @@ router.post('/:id/items', authenticateToken, authorizeRoles('admin', 'buyer'), a
       }
 
       const product = productResult.rows[0];
-      const price = unit_price || product.wholesale_cost || 0;
+
+      // Get season-specific price - required for season orders
+      let price = unit_price;
+
+      if (!price && seasonId) {
+        const seasonPriceResult = await client.query(
+          'SELECT wholesale_cost FROM season_prices WHERE product_id = $1 AND season_id = $2',
+          [product_id, seasonId]
+        );
+
+        if (seasonPriceResult.rows.length > 0) {
+          price = seasonPriceResult.rows[0].wholesale_cost;
+        } else {
+          // No season price found - return error
+          throw new Error(`No season pricelist found for "${product.name}" (${product.sku || 'no SKU'}). Please upload the season pricelist first.`);
+        }
+      }
+
+      // Only allow fallback for non-season orders
+      if (!price && !seasonId) {
+        price = product.wholesale_cost || 0;
+      }
       const lineTotal = parseFloat(price) * parseInt(quantity);
 
       // For items added via "Add Items" (is_addition=true):
@@ -1257,10 +1290,10 @@ router.post('/:id/items', authenticateToken, authorizeRoles('admin', 'buyer'), a
 
       // Insert order item
       const itemResult = await client.query(
-        `INSERT INTO order_items (order_id, product_id, quantity, adjusted_quantity, unit_cost, line_total, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO order_items (order_id, product_id, quantity, adjusted_quantity, unit_cost, line_total, notes, case_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
-        [id, product_id, originalQty, adjustedQty, price, lineTotal, notes || null]
+        [id, product_id, originalQty, adjustedQty, price, lineTotal, notes || null, case_id || null]
       );
 
       // Update order total
@@ -2285,6 +2318,111 @@ router.post('/:id/finalize', authenticateToken, authorizeRoles('admin', 'buyer')
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
+  }
+});
+
+// GET /api/orders/validate-prices - Check orders for pricing issues
+router.get('/validate-prices', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const { seasonId, brandId } = req.query;
+
+    if (!seasonId) {
+      return res.status(400).json({ error: 'seasonId is required' });
+    }
+
+    // Find order items where unit_cost doesn't match season_prices
+    const result = await pool.query(`
+      SELECT
+        o.id as order_id,
+        o.order_number,
+        l.name as location_name,
+        oi.id as item_id,
+        p.id as product_id,
+        p.name as product_name,
+        p.sku,
+        oi.unit_cost as order_cost,
+        sp.wholesale_cost as season_cost,
+        p.wholesale_cost as product_cost,
+        CASE
+          WHEN sp.wholesale_cost IS NULL THEN 'missing_season_price'
+          WHEN oi.unit_cost != sp.wholesale_cost THEN 'price_mismatch'
+          ELSE 'ok'
+        END as status
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      LEFT JOIN locations l ON o.location_id = l.id
+      LEFT JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = o.season_id
+      WHERE o.season_id = $1
+        AND o.status != 'cancelled'
+        ${brandId ? 'AND o.brand_id = $2' : ''}
+        AND (sp.wholesale_cost IS NULL OR oi.unit_cost != sp.wholesale_cost)
+      ORDER BY o.order_number, p.name
+    `, brandId ? [seasonId, brandId] : [seasonId]);
+
+    const issues = result.rows;
+
+    // Summary
+    const summary = {
+      totalIssues: issues.length,
+      missingSeasonPrice: issues.filter(i => i.status === 'missing_season_price').length,
+      priceMismatch: issues.filter(i => i.status === 'price_mismatch').length,
+      affectedOrders: [...new Set(issues.map(i => i.order_id))].length
+    };
+
+    res.json({ summary, issues });
+  } catch (error) {
+    console.error('Validate prices error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/orders/fix-prices - Fix pricing issues by updating to season prices
+router.post('/fix-prices', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const { seasonId, brandId } = req.body;
+
+    if (!seasonId) {
+      return res.status(400).json({ error: 'seasonId is required' });
+    }
+
+    // Update order items to use season prices where available
+    const result = await pool.query(`
+      UPDATE order_items oi
+      SET unit_cost = sp.wholesale_cost,
+          line_total = oi.quantity * sp.wholesale_cost
+      FROM orders o, season_prices sp
+      WHERE oi.order_id = o.id
+        AND sp.product_id = oi.product_id
+        AND sp.season_id = o.season_id
+        AND o.season_id = $1
+        AND o.status != 'cancelled'
+        ${brandId ? 'AND o.brand_id = $2' : ''}
+        AND oi.unit_cost IS DISTINCT FROM sp.wholesale_cost
+    `, brandId ? [seasonId, brandId] : [seasonId]);
+
+    // Also update order totals
+    await pool.query(`
+      UPDATE orders o
+      SET current_total = (
+        SELECT COALESCE(SUM(line_total), 0)
+        FROM order_items
+        WHERE order_id = o.id
+      ),
+      updated_at = CURRENT_TIMESTAMP
+      WHERE o.season_id = $1
+        AND o.status != 'cancelled'
+        ${brandId ? 'AND o.brand_id = $2' : ''}
+    `, brandId ? [seasonId, brandId] : [seasonId]);
+
+    res.json({
+      success: true,
+      updatedItems: result.rowCount,
+      message: `Updated ${result.rowCount} items to use season prices`
+    });
+  } catch (error) {
+    console.error('Fix prices error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

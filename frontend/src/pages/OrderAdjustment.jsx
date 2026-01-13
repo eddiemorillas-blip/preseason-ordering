@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import api, { orderAPI, budgetAPI } from '../services/api';
+import api, { orderAPI, budgetAPI, formAPI } from '../services/api';
 import Layout from '../components/Layout';
+import FormImportModal from '../components/FormImportModal';
 
 const OrderAdjustment = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -98,6 +99,12 @@ const OrderAdjustment = () => {
   const [currentOrder, setCurrentOrder] = useState(null);
   const [finalizing, setFinalizing] = useState(false);
 
+  // Brand form import/export state
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importedForm, setImportedForm] = useState(null);
+  const [formQuantityColumns, setFormQuantityColumns] = useState([]);
+  const [formRowData, setFormRowData] = useState(null); // Map of productId -> row data with quantities
+
   // Fetch filter options on mount
   useEffect(() => {
     const fetchFilters = async () => {
@@ -185,6 +192,50 @@ const OrderAdjustment = () => {
     setSelectedItems(new Set());
     setVelocitySettings(prev => ({ ...prev, velocityData: null }));
   }, [selectedSeasonId, selectedBrandId, selectedLocationId, selectedShipDate]);
+
+  // Fetch imported forms when brand/season changes
+  useEffect(() => {
+    if (selectedSeasonId && selectedBrandId) {
+      fetchImportedForms();
+    } else {
+      setImportedForm(null);
+    }
+  }, [selectedSeasonId, selectedBrandId]);
+
+  const fetchImportedForms = async () => {
+    try {
+      const response = await formAPI.getAll({
+        seasonId: selectedSeasonId,
+        brandId: selectedBrandId
+      });
+      const forms = response.data.forms || [];
+      // Use the most recent form if any exist
+      if (forms.length > 0) {
+        const form = forms[0];
+        setImportedForm(form);
+
+        // Fetch form rows with quantity columns
+        const rowsResponse = await formAPI.getRows(form.id);
+        setFormQuantityColumns(rowsResponse.data.quantityColumns || []);
+
+        // Build map of product_id -> row data for quick lookup
+        const rowMap = {};
+        (rowsResponse.data.rows || []).forEach(row => {
+          rowMap[row.product_id] = row;
+        });
+        setFormRowData(rowMap);
+      } else {
+        setImportedForm(null);
+        setFormQuantityColumns([]);
+        setFormRowData(null);
+      }
+    } catch (err) {
+      console.error('Error fetching imported forms:', err);
+      setImportedForm(null);
+      setFormQuantityColumns([]);
+      setFormRowData(null);
+    }
+  };
 
   const fetchInventory = async () => {
     setLoading(true);
@@ -1078,6 +1129,38 @@ const OrderAdjustment = () => {
     }
   };
 
+  // Handle form import success
+  const handleImportSuccess = async () => {
+    // Reload inventory to reflect imported data
+    fetchInventory();
+    setShowImportModal(false);
+  };
+
+  // Handle form export
+  const handleExportForm = async () => {
+    if (!importedForm) {
+      alert('No imported form available to export');
+      return;
+    }
+
+    try {
+      const response = await formAPI.export(importedForm.id);
+
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', importedForm.original_filename || 'export.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Error exporting form:', err);
+      setError('Failed to export form');
+    }
+  };
+
   // Calculate suggested totals for display
   const suggestedTotal = inventory.reduce((sum, item) => {
     const qty = suggestions[item.item_id] ?? getEffectiveQuantity(item);
@@ -1277,6 +1360,36 @@ const OrderAdjustment = () => {
               >
                 View Export Center →
               </a>
+            </div>
+          </div>
+        )}
+
+        {/* Import/Export Brand Forms */}
+        {selectedSeasonId && selectedBrandId && (
+          <div className="bg-white p-4 rounded-lg shadow flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600">Brand Order Forms:</span>
+              {importedForm && (
+                <span className="text-sm text-gray-900 font-medium">
+                  {importedForm.original_filename}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowImportModal(true)}
+                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm font-medium"
+              >
+                Import Brand Form
+              </button>
+              {inventory.length > 0 && (
+                <button
+                  onClick={handleExportForm}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium"
+                >
+                  Export to Excel
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -2046,6 +2159,11 @@ const OrderAdjustment = () => {
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Stock</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Sugg</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Adj</th>
+                  {formQuantityColumns.map(col => (
+                    <th key={col.id} className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase" title={`Ship Date: ${col.ship_date}`}>
+                      {col.column_name || col.column_letter}
+                    </th>
+                  ))}
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Δ</th>
                   <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">Cost</th>
                   <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
@@ -2130,6 +2248,17 @@ const OrderAdjustment = () => {
                         </button>
                       )}
                     </td>
+                    {formQuantityColumns.map(col => {
+                      const rowData = formRowData?.[item.product_id];
+                      const quantity = rowData?.quantities?.[col.id]?.quantity || 0;
+                      return (
+                        <td key={col.id} className="px-2 py-1.5 text-center">
+                          <span className="px-2 py-0.5 text-gray-700">
+                            {quantity}
+                          </span>
+                        </td>
+                      );
+                    })}
                     <td className="px-2 py-1.5 text-center">
                       {(() => {
                         const effective = getEffectiveQuantity(item);
@@ -2173,6 +2302,11 @@ const OrderAdjustment = () => {
                   <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Color</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase">Stock</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase">Qty</th>
+                  {formQuantityColumns.map(col => (
+                    <th key={col.id} className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase" title={`Ship Date: ${col.ship_date}`}>
+                      {col.column_name || col.column_letter}
+                    </th>
+                  ))}
                   <th className="px-2 py-2 text-right text-xs font-medium text-green-700 uppercase">Cost</th>
                   <th className="px-2 py-2 text-right text-xs font-medium text-green-700 uppercase">Total</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase"></th>
@@ -2218,6 +2352,17 @@ const OrderAdjustment = () => {
                         </button>
                       )}
                     </td>
+                    {formQuantityColumns.map(col => {
+                      const rowData = formRowData?.[item.product_id];
+                      const quantity = rowData?.quantities?.[col.id]?.quantity || 0;
+                      return (
+                        <td key={col.id} className="px-2 py-1.5 text-center">
+                          <span className="px-2 py-0.5 text-gray-700">
+                            {quantity}
+                          </span>
+                        </td>
+                      );
+                    })}
                     <td className="px-2 py-1.5 text-right text-gray-900">
                       {formatPrice(item.unit_cost)}
                     </td>
@@ -2248,6 +2393,16 @@ const OrderAdjustment = () => {
               </tbody>
             </table>
           </div>
+        )}
+
+        {/* Form Import Modal */}
+        {showImportModal && selectedSeasonId && selectedBrandId && (
+          <FormImportModal
+            brandId={parseInt(selectedBrandId)}
+            seasonId={parseInt(selectedSeasonId)}
+            onClose={() => setShowImportModal(false)}
+            onSuccess={handleImportSuccess}
+          />
         )}
       </div>
     </Layout>

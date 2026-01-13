@@ -156,13 +156,21 @@ const OrderManager = () => {
         api.get('/brands'),
         api.get('/locations')
       ]);
-      setSeasons(seasonsRes.data.seasons || []);
+
+      // Sort seasons by start_date descending (newest first)
+      const sortedSeasons = (seasonsRes.data.seasons || []).sort((a, b) => {
+        const dateA = a.start_date ? new Date(a.start_date) : new Date(0);
+        const dateB = b.start_date ? new Date(b.start_date) : new Date(0);
+        return dateB - dateA; // Descending order
+      });
+
+      setSeasons(sortedSeasons);
       setBrands(brandsRes.data.brands || []);
       setLocations(locationsRes.data.locations || []);
 
-      // Auto-select first season if none selected
-      if (!selectedSeasonId && seasonsRes.data.seasons?.length > 0) {
-        setSearchParams({ season: seasonsRes.data.seasons[0].id.toString() });
+      // Auto-select first season (most recent) if none selected
+      if (!selectedSeasonId && sortedSeasons.length > 0) {
+        setSearchParams({ season: sortedSeasons[0].id.toString() });
       }
     } catch (err) {
       console.error('Error fetching data:', err);

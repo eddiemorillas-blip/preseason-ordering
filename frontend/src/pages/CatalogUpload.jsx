@@ -96,6 +96,12 @@ const CatalogUpload = () => {
       required: false,
       variations: ['inseam', 'inseam length', 'leg length', 'pant length', 'length']
     },
+    {
+      key: 'case_qty',
+      label: 'Case Qty',
+      required: false,
+      variations: ['case qty', 'case quantity', 'case pack', 'pack size', 'units per case', 'case size', 'pack qty', 'carton qty']
+    },
   ];
 
   useEffect(() => {

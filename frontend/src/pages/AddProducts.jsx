@@ -56,6 +56,10 @@ const AddProducts = () => {
   // Expanded families state (families start collapsed)
   const [expandedFamilies, setExpandedFamilies] = useState(new Set());
 
+  // Bulk selection state
+  const [selectedProducts, setSelectedProducts] = useState(new Set());
+  const [bulkQty, setBulkQty] = useState(1);
+
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 100;
@@ -301,6 +305,67 @@ const AddProducts = () => {
   // Get family quantity total
   const getFamilyQuantity = (family) => {
     return family.variants.reduce((sum, v) => sum + (quantities[v.id] || 0), 0);
+  };
+
+  // Toggle product selection
+  const toggleProductSelection = (productId) => {
+    setSelectedProducts(prev => {
+      const next = new Set(prev);
+      if (next.has(productId)) {
+        next.delete(productId);
+      } else {
+        next.add(productId);
+      }
+      return next;
+    });
+  };
+
+  // Select/deselect all products in a family
+  const toggleSelectAllInFamily = (family) => {
+    const familyIds = family.variants.map(v => v.id);
+    const allSelected = familyIds.every(id => selectedProducts.has(id));
+
+    setSelectedProducts(prev => {
+      const next = new Set(prev);
+      if (allSelected) {
+        familyIds.forEach(id => next.delete(id));
+      } else {
+        familyIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  // Check if all products in family are selected
+  const isFamilyFullySelected = (family) => {
+    return family.variants.every(v => selectedProducts.has(v.id));
+  };
+
+  // Check if some products in family are selected
+  const isFamilyPartiallySelected = (family) => {
+    const selected = family.variants.filter(v => selectedProducts.has(v.id)).length;
+    return selected > 0 && selected < family.variants.length;
+  };
+
+  // Apply bulk quantity to selected products
+  const applyBulkQuantity = () => {
+    if (selectedProducts.size === 0) return;
+    const newQuantities = { ...quantities };
+    selectedProducts.forEach(id => {
+      newQuantities[id] = bulkQty;
+    });
+    setQuantities(newQuantities);
+  };
+
+  // Clear selection
+  const clearSelection = () => {
+    setSelectedProducts(new Set());
+  };
+
+  // Select all visible products
+  const selectAllVisible = () => {
+    const allIds = paginatedFamilies.flatMap(f => f.variants.map(v => v.id));
+    setSelectedProducts(new Set(allIds));
   };
 
   // Get dynamic filter options based on current selections
@@ -939,58 +1004,104 @@ const AddProducts = () => {
         </div>
 
         {/* Bulk Actions & Pagination */}
-        <div className="bg-gray-50 border rounded-lg px-4 py-3 flex items-center justify-between">
-          <div className="text-sm text-gray-600">
-            Showing <span className="font-semibold">{paginatedFamilies.length}</span> of <span className="font-semibold">{groupedProducts.length}</span> families
-            ({filteredProducts.length} variants)
-            {filteredProducts.length !== products.length && (
-              <span className="text-gray-400"> • filtered from {products.length}</span>
-            )}
+        <div className="bg-gray-50 border rounded-lg px-4 py-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-gray-600">
+              Showing <span className="font-semibold">{paginatedFamilies.length}</span> of <span className="font-semibold">{groupedProducts.length}</span> families
+              ({filteredProducts.length} variants)
+              {filteredProducts.length !== products.length && (
+                <span className="text-gray-400"> • filtered from {products.length}</span>
+              )}
+            </div>
+            <div className="flex items-center space-x-4">
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="px-2 py-1 border rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
+                  >
+                    Prev
+                  </button>
+                  <span className="text-sm text-gray-600">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="px-2 py-1 border rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="flex items-center space-x-4">
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                  disabled={currentPage === 1}
-                  className="px-2 py-1 border rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
-                >
-                  Prev
-                </button>
+
+          {/* Bulk Selection Controls */}
+          <div className="flex items-center justify-between mt-3 pt-3 border-t">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={selectAllVisible}
+                className="text-sm text-blue-600 hover:text-blue-800"
+              >
+                Select All Visible
+              </button>
+              <span className="text-gray-300">|</span>
+              <button
+                onClick={clearSelection}
+                className="text-sm text-blue-600 hover:text-blue-800"
+              >
+                Clear Selection
+              </button>
+              {selectedProducts.size > 0 && (
                 <span className="text-sm text-gray-600">
-                  Page {currentPage} of {totalPages}
+                  ({selectedProducts.size} selected)
                 </span>
-                <button
-                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                  disabled={currentPage === totalPages}
-                  className="px-2 py-1 border rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
-                >
-                  Next
-                </button>
-              </div>
-            )}
-            {/* Set all */}
-            <div className="flex items-center space-x-2">
-              <label className="text-sm text-gray-700">Set all to:</label>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-gray-700">Set selected to:</label>
               <input
                 type="number"
                 min="0"
-                placeholder="0"
-                className="w-16 px-2 py-1 border border-gray-300 rounded text-sm"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleSetAllQuantities(e.target.value);
-                  }
-                }}
-                onBlur={(e) => {
-                  if (e.target.value) {
-                    handleSetAllQuantities(e.target.value);
-                    e.target.value = '';
-                  }
-                }}
+                value={bulkQty}
+                onChange={(e) => setBulkQty(parseInt(e.target.value) || 0)}
+                className="w-16 px-2 py-1 border border-gray-300 rounded text-sm text-right"
               />
+              <button
+                onClick={applyBulkQuantity}
+                disabled={selectedProducts.size === 0}
+                className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                Apply
+              </button>
             </div>
+          </div>
+        </div>
+
+        {/* Legacy Set All - hidden but kept for backwards compatibility */}
+        <div className="hidden">
+          <div className="flex items-center space-x-2">
+            <label className="text-sm text-gray-700">Set all to:</label>
+            <input
+              type="number"
+              min="0"
+              placeholder="0"
+              className="w-16 px-2 py-1 border border-gray-300 rounded text-sm"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleSetAllQuantities(e.target.value);
+                }
+              }}
+              onBlur={(e) => {
+                if (e.target.value) {
+                  handleSetAllQuantities(e.target.value);
+                  e.target.value = '';
+                }
+              }}
+            />
           </div>
         </div>
 
@@ -1012,6 +1123,18 @@ const AddProducts = () => {
                   onClick={() => toggleFamilyExpand(family.name)}
                 >
                   <div className="flex items-center gap-3">
+                    {/* Family selection checkbox */}
+                    <input
+                      type="checkbox"
+                      checked={isFamilyFullySelected(family)}
+                      ref={(el) => { if (el) el.indeterminate = isFamilyPartiallySelected(family); }}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        toggleSelectAllInFamily(family);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="h-4 w-4 text-blue-600 border-gray-300 rounded cursor-pointer"
+                    />
                     <svg
                       className={`w-4 h-4 text-gray-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
                       fill="none"
@@ -1044,20 +1167,34 @@ const AddProducts = () => {
                 {isExpanded && (
                   <div className="border-t">
                     <div className="px-4 py-2 bg-gray-100 flex items-center gap-2 text-xs text-gray-600">
-                      <span className="w-24">Size</span>
-                      <span className="w-20">Inseam</span>
+                      <span className="w-6"></span>
+                      <span className="w-20">Size</span>
+                      <span className="w-16">Inseam</span>
                       <span className="flex-1">SKU</span>
+                      <span className="w-20 text-right">Cost</span>
                       <span className="w-20 text-right">Qty</span>
                     </div>
                     <div className="divide-y divide-gray-100">
                       {family.variants.map((variant) => (
                         <div
                           key={variant.id}
-                          className={`px-4 py-2 flex items-center gap-2 ${quantities[variant.id] > 0 ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                          className={`px-4 py-2 flex items-center gap-2 ${
+                            quantities[variant.id] > 0 ? 'bg-blue-50' :
+                            selectedProducts.has(variant.id) ? 'bg-yellow-50' : 'hover:bg-gray-50'
+                          }`}
                         >
-                          <span className="w-24 text-sm font-medium text-gray-900">{variant.size || '-'}</span>
-                          <span className="w-20 text-sm text-gray-600">{variant.inseam || '-'}</span>
+                          <input
+                            type="checkbox"
+                            checked={selectedProducts.has(variant.id)}
+                            onChange={() => toggleProductSelection(variant.id)}
+                            className="h-4 w-4 text-blue-600 border-gray-300 rounded cursor-pointer"
+                          />
+                          <span className="w-20 text-sm font-medium text-gray-900">{variant.size || '-'}</span>
+                          <span className="w-16 text-sm text-gray-600">{variant.inseam || '-'}</span>
                           <span className="flex-1 text-sm text-gray-500">{variant.sku || '-'}</span>
+                          <span className="w-20 text-sm text-gray-600 text-right">
+                            ${parseFloat(variant.wholesale_cost || 0).toFixed(2)}
+                          </span>
                           <input
                             type="number"
                             min="0"

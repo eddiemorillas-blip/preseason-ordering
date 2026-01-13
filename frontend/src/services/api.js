@@ -191,4 +191,37 @@ export const brandTemplateAPI = {
   ),
 };
 
+// Form Template API calls (brand form import templates)
+export const formTemplateAPI = {
+  getAll: () => api.get('/form-templates'),
+  getByBrand: (brandId) => api.get(`/form-templates/brand/${brandId}`),
+  getById: (id) => api.get(`/form-templates/${id}`),
+  create: (data) => api.post('/form-templates', data),
+  update: (id, data) => api.patch(`/form-templates/${id}`, data),
+  delete: (id) => api.delete(`/form-templates/${id}`),
+};
+
+// Form API calls (brand form import/export)
+export const formAPI = {
+  getAll: (params) => api.get('/forms', { params }),
+  getById: (id) => api.get(`/forms/${id}`),
+  getRows: (id) => api.get(`/forms/${id}/rows`),
+  upload: (formData) => api.post('/forms/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
+  import: (data) => api.post('/forms/import', data),
+  export: (id) => api.post(`/forms/${id}/export`, {}, { responseType: 'blob' }),
+  delete: (id) => api.delete(`/forms/${id}`),
+};
+
+// Product Cases API (case SKU mappings for wholesale ordering)
+export const productCasesAPI = {
+  getAll: (params) => api.get('/product-cases', { params }),
+  getByUpc: (upc) => api.get(`/product-cases/by-upc/${upc}`),
+  create: (data) => api.post('/product-cases', data),
+  bulkCreate: (cases) => api.post('/product-cases/bulk', { cases }),
+  update: (id, data) => api.patch(`/product-cases/${id}`, data),
+  delete: (id) => api.delete(`/product-cases/${id}`),
+};
+
 export default api;

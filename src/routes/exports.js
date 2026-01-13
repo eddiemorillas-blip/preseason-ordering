@@ -70,7 +70,7 @@ async function getOrderItemsForExport(orderIds) {
     LEFT JOIN brands b ON o.brand_id = b.id
     LEFT JOIN locations l ON o.location_id = l.id
     WHERE o.id IN (${placeholders})
-    ORDER BY o.order_number, p.base_name, p.color, p.size
+    ORDER BY o.ship_date, l.name, p.base_name, p.color, p.size
   `, orderIds);
 
   return result.rows;
