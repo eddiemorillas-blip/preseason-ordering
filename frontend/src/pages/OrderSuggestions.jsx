@@ -400,17 +400,20 @@ const OrderSuggestions = () => {
         console.log(`Order ${shipIndex + 1} complete: ${itemsAddedToThisOrder} items added`);
       }
 
+      // Clear selections and suggestions to allow creating another order
+      setSuggestions([]);
+      setSelectedItems({});
+      setQuantities({});
+      setSelectedCases({});
+
       if (numShips === 1) {
-        setSuccess(`Order created successfully with ${itemsToAdd.length} items!`);
-        setTimeout(() => {
-          navigate(`/orders/${createdOrderIds[0]}`);
-        }, 1500);
+        setSuccess(`Order created successfully with ${itemsToAdd.length} items! Change location and click "Get Suggestions" to create another order.`);
       } else {
-        setSuccess(`${numShips} orders created successfully! Quantities split evenly across ship dates.`);
-        setTimeout(() => {
-          navigate(`/seasons/${selectedSeason}`);
-        }, 2000);
+        setSuccess(`${numShips} orders created successfully! Quantities split evenly across ship dates. Change location and click "Get Suggestions" to create another order.`);
       }
+
+      // Scroll to top to show success message
+      window.scrollTo({ top: 0, behavior: 'smooth' });
 
     } catch (err) {
       console.error('Error creating order:', err);
