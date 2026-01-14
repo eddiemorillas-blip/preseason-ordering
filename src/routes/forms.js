@@ -100,28 +100,31 @@ const matchProducts = async (productIds, idType, brandId, seasonId) => {
 
     if (idType === 'upc') {
       query = `
-        SELECT id, name, upc, sku, size, color, price
+        SELECT id, name, upc, sku, size, color, price, season_id
         FROM products
-        WHERE brand_id = $1 AND season_id = $2 AND upc = $3
+        WHERE brand_id = $1 AND upc = $2
+        ORDER BY season_id DESC
         LIMIT 1
       `;
-      params = [brandId, seasonId, cleanId];
+      params = [brandId, cleanId];
     } else if (idType === 'ean') {
       query = `
-        SELECT id, name, upc as ean, sku, size, color, price
+        SELECT id, name, upc as ean, sku, size, color, price, season_id
         FROM products
-        WHERE brand_id = $1 AND season_id = $2 AND upc = $3
+        WHERE brand_id = $1 AND upc = $2
+        ORDER BY season_id DESC
         LIMIT 1
       `;
-      params = [brandId, seasonId, cleanId];
+      params = [brandId, cleanId];
     } else {
       query = `
-        SELECT id, name, upc, sku, size, color, price
+        SELECT id, name, upc, sku, size, color, price, season_id
         FROM products
-        WHERE brand_id = $1 AND season_id = $2 AND sku = $3
+        WHERE brand_id = $1 AND sku = $2
+        ORDER BY season_id DESC
         LIMIT 1
       `;
-      params = [brandId, seasonId, cleanId];
+      params = [brandId, cleanId];
     }
 
     const result = await pool.query(query, params);
