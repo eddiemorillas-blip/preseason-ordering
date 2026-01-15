@@ -224,4 +224,28 @@ export const productCasesAPI = {
   delete: (id) => api.delete(`/product-cases/${id}`),
 };
 
+// Agent API calls (AI Assistant)
+export const agentAPI = {
+  // Conversations
+  createConversation: (data) => api.post('/agent/conversations', data),
+  getConversations: (params) => api.get('/agent/conversations', { params }),
+  getConversation: (id) => api.get(`/agent/conversations/${id}`),
+  deleteConversation: (id) => api.delete(`/agent/conversations/${id}`),
+
+  // Messages
+  sendMessage: (conversationId, message) =>
+    api.post(`/agent/conversations/${conversationId}/messages`, { message }),
+  getMessages: (conversationId, params) =>
+    api.get(`/agent/conversations/${conversationId}/messages`, { params }),
+
+  // Suggestions
+  getSuggestions: (params) => api.get('/agent/suggestions', { params }),
+  getSuggestion: (id) => api.get(`/agent/suggestions/${id}`),
+  approveSuggestion: (id) => api.post(`/agent/suggestions/${id}/approve`),
+  rejectSuggestion: (id) => api.post(`/agent/suggestions/${id}/reject`),
+
+  // Usage
+  getUsage: () => api.get('/agent/usage'),
+};
+
 export default api;

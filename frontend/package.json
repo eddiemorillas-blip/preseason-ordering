@@ -14,6 +14,7 @@
     "autoprefixer": "^10.4.17",
     "axios": "^1.13.2",
     "postcss": "^8.4.35",
+    "prop-types": "^15.8.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^6.26.2",

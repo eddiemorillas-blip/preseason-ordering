@@ -40,6 +40,7 @@ const Layout = ({ children }) => {
         { path: '/order-adjustment', label: 'Adjust Orders', buyerOnly: true },
         { path: '/order-suggestions', label: 'Suggestions', buyerOnly: true },
         { path: '/export-center', label: 'Export', buyerOnly: true },
+        { path: '/ai-assistant', label: 'AI Assistant', buyerOnly: true },
       ]
     },
     {

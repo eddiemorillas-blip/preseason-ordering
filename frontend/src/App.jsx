@@ -22,6 +22,7 @@ import OrderAdjustment from './pages/OrderAdjustment';
 import ExportCenter from './pages/ExportCenter';
 import Help from './pages/Help';
 import FormTemplateManager from './pages/FormTemplateManager';
+import AIAssistant from './pages/AIAssistant';
 
 function App() {
   return (
@@ -177,6 +178,14 @@ function App() {
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <FormTemplateManager />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/ai-assistant"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <AIAssistant />
               </ProtectedRoute>
             }
           />
