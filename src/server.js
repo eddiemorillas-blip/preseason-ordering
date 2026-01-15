@@ -73,6 +73,21 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Debug endpoint to check AI Agent environment variables
+app.get('/api/debug/ai-config', (req, res) => {
+  res.json({
+    AI_AGENT_ENABLED: process.env.AI_AGENT_ENABLED,
+    AI_PROVIDER: process.env.AI_PROVIDER,
+    AI_MODEL: process.env.AI_MODEL,
+    AI_MAX_MONTHLY_COST: process.env.AI_MAX_MONTHLY_COST,
+    AI_MAX_TOKENS_PER_REQUEST: process.env.AI_MAX_TOKENS_PER_REQUEST,
+    ANTHROPIC_API_KEY_SET: !!process.env.ANTHROPIC_API_KEY,
+    ANTHROPIC_API_KEY_LENGTH: process.env.ANTHROPIC_API_KEY?.length || 0,
+    OPENAI_API_KEY_SET: !!process.env.OPENAI_API_KEY,
+    NODE_ENV: process.env.NODE_ENV
+  });
+});
+
 // Debug endpoint to check database tables
 app.get('/api/debug/tables', async (req, res) => {
   const pool = require('./config/database');
