@@ -747,8 +747,7 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
             brand_id, upc, sku, name, category, subcategory,
             wholesale_cost, msrp, size, color, gender, inseam, active, season_id, base_name, case_qty
           ) VALUES ${placeholders.join(', ')}
-          ON CONFLICT (upc) DO UPDATE SET
-            brand_id = EXCLUDED.brand_id,
+          ON CONFLICT (brand_id, season_id, upc) DO UPDATE SET
             sku = EXCLUDED.sku,
             name = EXCLUDED.name,
             category = EXCLUDED.category,
@@ -760,7 +759,6 @@ router.post('/upload', authenticateToken, authorizeRoles('admin', 'buyer'), uplo
             gender = EXCLUDED.gender,
             inseam = EXCLUDED.inseam,
             active = EXCLUDED.active,
-            season_id = COALESCE(EXCLUDED.season_id, products.season_id),
             base_name = COALESCE(EXCLUDED.base_name, products.base_name),
             case_qty = COALESCE(EXCLUDED.case_qty, products.case_qty),
             updated_at = CURRENT_TIMESTAMP
