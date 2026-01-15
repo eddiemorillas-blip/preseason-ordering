@@ -162,6 +162,60 @@ const AVAILABLE_TOOLS = [
       },
       required: ['query']
     }
+  },
+  {
+    name: 'find_orders',
+    description: 'Find and list existing orders with detailed filtering. Use this to identify specific preseason orders that need to be modified.',
+    parameters: {
+      type: 'object',
+      properties: {
+        seasonId: { type: 'integer', description: 'Filter by season (optional)' },
+        brandId: { type: 'integer', description: 'Filter by brand (optional)' },
+        locationId: { type: 'integer', description: 'Filter by location (optional)' },
+        status: { type: 'string', description: 'Filter by status: draft, submitted, approved, ordered (optional)' },
+        orderNumber: { type: 'string', description: 'Search by order number (partial match, optional)' }
+      }
+    }
+  },
+  {
+    name: 'suggest_bulk_quantity_change',
+    description: 'Suggest bulk quantity changes for multiple items in an order at once (e.g., increase all items by 20%, decrease footwear by 10%). Use this instead of individual adjustments when modifying entire categories.',
+    parameters: {
+      type: 'object',
+      properties: {
+        conversationId: { type: 'integer', description: 'Current conversation ID' },
+        messageId: { type: 'integer', description: 'Current message ID' },
+        orderId: { type: 'integer', description: 'Order ID to modify' },
+        changeType: { type: 'string', description: 'Type of change: "percentage" (e.g., 20 for +20%, -15 for -15%) or "fixed" (e.g., 5 for +5, -3 for -3)' },
+        changeValue: { type: 'number', description: 'The amount to change. For percentage: 20 means +20%. For fixed: 5 means +5 units per item.' },
+        reasoning: { type: 'string', description: 'Clear explanation with data supporting this bulk change' },
+        confidence: { type: 'number', description: 'Confidence score 0.0-1.0' },
+        filters: {
+          type: 'object',
+          description: 'Optional filters to apply bulk change to specific items only',
+          properties: {
+            category: { type: 'string', description: 'Only change items in this category' },
+            subcategory: { type: 'string', description: 'Only change items in this subcategory' },
+            minQuantity: { type: 'integer', description: 'Only change items with quantity >= this value' },
+            maxQuantity: { type: 'integer', description: 'Only change items with quantity <= this value' }
+          }
+        }
+      },
+      required: ['conversationId', 'messageId', 'orderId', 'changeType', 'changeValue', 'reasoning']
+    }
+  },
+  {
+    name: 'get_order_summary',
+    description: 'Get aggregated statistics across multiple orders. Use this to understand the big picture of ordering activity.',
+    parameters: {
+      type: 'object',
+      properties: {
+        seasonId: { type: 'integer', description: 'Filter by season (optional)' },
+        brandId: { type: 'integer', description: 'Filter by brand (optional)' },
+        locationId: { type: 'integer', description: 'Filter by location (optional)' },
+        status: { type: 'string', description: 'Filter by status (optional)' }
+      }
+    }
   }
 ];
 

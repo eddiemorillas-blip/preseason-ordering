@@ -823,6 +823,301 @@ async function search_products(args, context) {
   }
 }
 
+/**
+ * Tool 12: Find and list orders with detailed filtering
+ * @param {Object} args - { seasonId?, brandId?, locationId?, status?, shipDate?, orderNumber? }
+ * @param {Object} context - { userId }
+ * @returns {Object} List of matching orders with summary
+ */
+async function find_orders(args, context) {
+  const { seasonId, brandId, locationId, status, shipDate, orderNumber } = args;
+
+  try {
+    let query = `
+      SELECT
+        o.id,
+        o.order_number,
+        o.status,
+        o.created_at,
+        o.updated_at,
+        b.name as brand_name,
+        l.name as location_name,
+        l.code as location_code,
+        s.name as season_name,
+        COUNT(DISTINCT oi.id) as item_count,
+        SUM(oi.quantity) as total_quantity,
+        SUM(oi.quantity * oi.unit_cost) as total_cost,
+        COUNT(DISTINCT oi.ship_date) as ship_date_count,
+        MIN(oi.ship_date) as earliest_ship_date,
+        MAX(oi.ship_date) as latest_ship_date
+      FROM orders o
+      LEFT JOIN order_items oi ON oi.order_id = o.id
+      JOIN brands b ON o.brand_id = b.id
+      JOIN locations l ON o.location_id = l.id
+      JOIN seasons s ON o.season_id = s.id
+      WHERE 1=1
+    `;
+
+    const params = [];
+    let paramIndex = 1;
+
+    if (seasonId) {
+      query += ` AND o.season_id = $${paramIndex}`;
+      params.push(seasonId);
+      paramIndex++;
+    }
+    if (brandId) {
+      query += ` AND o.brand_id = $${paramIndex}`;
+      params.push(brandId);
+      paramIndex++;
+    }
+    if (locationId) {
+      query += ` AND o.location_id = $${paramIndex}`;
+      params.push(locationId);
+      paramIndex++;
+    }
+    if (status) {
+      query += ` AND o.status = $${paramIndex}`;
+      params.push(status);
+      paramIndex++;
+    }
+    if (orderNumber) {
+      query += ` AND o.order_number ILIKE $${paramIndex}`;
+      params.push(`%${orderNumber}%`);
+      paramIndex++;
+    }
+
+    query += `
+      GROUP BY o.id, o.order_number, o.status, o.created_at, o.updated_at, b.name, l.name, l.code, s.name
+      ORDER BY o.created_at DESC
+      LIMIT 50
+    `;
+
+    const result = await pool.query(query, params);
+
+    const orders = result.rows.map(row => ({
+      order_id: row.id,
+      order_number: row.order_number,
+      brand: row.brand_name,
+      location: `${row.location_name} (${row.location_code})`,
+      season: row.season_name,
+      status: row.status,
+      item_count: parseInt(row.item_count || 0),
+      total_quantity: parseInt(row.total_quantity || 0),
+      total_cost: parseFloat(row.total_cost || 0).toFixed(2),
+      ship_dates: row.ship_date_count > 1
+        ? `${row.ship_date_count} dates (${row.earliest_ship_date} to ${row.latest_ship_date})`
+        : row.earliest_ship_date,
+      created_at: row.created_at
+    }));
+
+    return {
+      success: true,
+      orders_found: orders.length,
+      orders
+    };
+  } catch (error) {
+    console.error('find_orders error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+/**
+ * Tool 13: Suggest bulk quantity changes for multiple items in an order
+ * @param {Object} args - { conversationId, messageId, orderId, changeType, changeValue, reasoning, confidence, filters? }
+ * @param {Object} context - { userId }
+ * @returns {Object} Multiple suggestions created
+ */
+async function suggest_bulk_quantity_change(args, context) {
+  const { conversationId, messageId, orderId, changeType, changeValue, reasoning, confidence, filters } = args;
+
+  // changeType: 'percentage' (e.g., +20%, -15%) or 'fixed' (e.g., +5, -3)
+  // filters: optional { category?, subcategory?, minQuantity?, maxQuantity? }
+
+  try {
+    // Get order items
+    let query = `
+      SELECT oi.id, oi.quantity, oi.unit_cost, p.name, p.category, p.subcategory
+      FROM order_items oi
+      JOIN products p ON oi.product_id = p.id
+      WHERE oi.order_id = $1
+    `;
+
+    const params = [orderId];
+    let paramIndex = 2;
+
+    // Apply filters if provided
+    if (filters?.category) {
+      query += ` AND p.category = $${paramIndex}`;
+      params.push(filters.category);
+      paramIndex++;
+    }
+    if (filters?.subcategory) {
+      query += ` AND p.subcategory = $${paramIndex}`;
+      params.push(filters.subcategory);
+      paramIndex++;
+    }
+    if (filters?.minQuantity) {
+      query += ` AND oi.quantity >= $${paramIndex}`;
+      params.push(filters.minQuantity);
+      paramIndex++;
+    }
+    if (filters?.maxQuantity) {
+      query += ` AND oi.quantity <= $${paramIndex}`;
+      params.push(filters.maxQuantity);
+      paramIndex++;
+    }
+
+    const itemsResult = await pool.query(query, params);
+
+    if (itemsResult.rows.length === 0) {
+      return { error: true, message: 'No items found matching criteria' };
+    }
+
+    const suggestions = [];
+    let totalCostImpact = 0;
+
+    for (const item of itemsResult.rows) {
+      const currentQty = item.quantity;
+      let newQty;
+
+      if (changeType === 'percentage') {
+        // changeValue is a percentage (e.g., 20 for +20%, -15 for -15%)
+        newQty = Math.max(0, Math.round(currentQty * (1 + changeValue / 100)));
+      } else if (changeType === 'fixed') {
+        // changeValue is a fixed number (e.g., 5 for +5, -3 for -3)
+        newQty = Math.max(0, currentQty + changeValue);
+      } else {
+        return { error: true, message: 'Invalid changeType. Must be "percentage" or "fixed"' };
+      }
+
+      // Skip if quantity doesn't change
+      if (newQty === currentQty) continue;
+
+      const costImpact = (newQty - currentQty) * parseFloat(item.unit_cost);
+      totalCostImpact += costImpact;
+
+      // Create suggestion
+      const suggResult = await pool.query(
+        `INSERT INTO agent_suggestions
+         (conversation_id, message_id, suggestion_type, order_id, order_item_id, action_data, reasoning, confidence_score)
+         VALUES ($1, $2, 'adjust_quantity', $3, $4, $5, $6, $7)
+         RETURNING id`,
+        [
+          conversationId,
+          messageId,
+          orderId,
+          item.id,
+          JSON.stringify({
+            from: currentQty,
+            to: newQty,
+            unit: 'units',
+            unit_cost: item.unit_cost,
+            cost_impact: costImpact
+          }),
+          `${reasoning} (${item.name})`,
+          confidence || 0.8
+        ]
+      );
+
+      suggestions.push({
+        suggestion_id: suggResult.rows[0].id,
+        product_name: item.name,
+        from_quantity: currentQty,
+        to_quantity: newQty,
+        cost_impact: costImpact.toFixed(2)
+      });
+    }
+
+    return {
+      success: true,
+      suggestions_created: suggestions.length,
+      total_cost_impact: totalCostImpact.toFixed(2),
+      suggestions
+    };
+  } catch (error) {
+    console.error('suggest_bulk_quantity_change error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+/**
+ * Tool 14: Get order summary across multiple orders
+ * @param {Object} args - { seasonId?, brandId?, locationId?, status? }
+ * @param {Object} context - { userId }
+ * @returns {Object} Aggregated order statistics
+ */
+async function get_order_summary(args, context) {
+  const { seasonId, brandId, locationId, status } = args;
+
+  try {
+    let query = `
+      SELECT
+        COUNT(DISTINCT o.id) as total_orders,
+        COUNT(DISTINCT CASE WHEN o.status = 'draft' THEN o.id END) as draft_orders,
+        COUNT(DISTINCT CASE WHEN o.status = 'submitted' THEN o.id END) as submitted_orders,
+        COUNT(DISTINCT CASE WHEN o.status = 'approved' THEN o.id END) as approved_orders,
+        COUNT(DISTINCT oi.id) as total_items,
+        SUM(oi.quantity) as total_units,
+        SUM(oi.quantity * oi.unit_cost) as total_value,
+        AVG(oi.quantity * oi.unit_cost) as avg_item_value,
+        COUNT(DISTINCT o.brand_id) as unique_brands,
+        COUNT(DISTINCT o.location_id) as unique_locations
+      FROM orders o
+      LEFT JOIN order_items oi ON oi.order_id = o.id
+      WHERE o.status != 'cancelled'
+    `;
+
+    const params = [];
+    let paramIndex = 1;
+
+    if (seasonId) {
+      query += ` AND o.season_id = $${paramIndex}`;
+      params.push(seasonId);
+      paramIndex++;
+    }
+    if (brandId) {
+      query += ` AND o.brand_id = $${paramIndex}`;
+      params.push(brandId);
+      paramIndex++;
+    }
+    if (locationId) {
+      query += ` AND o.location_id = $${paramIndex}`;
+      params.push(locationId);
+      paramIndex++;
+    }
+    if (status) {
+      query += ` AND o.status = $${paramIndex}`;
+      params.push(status);
+      paramIndex++;
+    }
+
+    const result = await pool.query(query, params);
+    const summary = result.rows[0];
+
+    return {
+      success: true,
+      summary: {
+        total_orders: parseInt(summary.total_orders || 0),
+        orders_by_status: {
+          draft: parseInt(summary.draft_orders || 0),
+          submitted: parseInt(summary.submitted_orders || 0),
+          approved: parseInt(summary.approved_orders || 0)
+        },
+        total_items: parseInt(summary.total_items || 0),
+        total_units: parseInt(summary.total_units || 0),
+        total_value: parseFloat(summary.total_value || 0).toFixed(2),
+        avg_item_value: parseFloat(summary.avg_item_value || 0).toFixed(2),
+        unique_brands: parseInt(summary.unique_brands || 0),
+        unique_locations: parseInt(summary.unique_locations || 0)
+      }
+    };
+  } catch (error) {
+    console.error('get_order_summary error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
 module.exports = {
   query_sales_data,
   get_order_inventory,
@@ -834,5 +1129,8 @@ module.exports = {
   get_order_budget,
   get_product_info,
   get_order_details,
-  search_products
+  search_products,
+  find_orders,
+  suggest_bulk_quantity_change,
+  get_order_summary
 };
