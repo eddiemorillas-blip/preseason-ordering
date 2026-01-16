@@ -192,12 +192,10 @@ const AVAILABLE_TOOLS = [
   },
   {
     name: 'suggest_bulk_quantity_change',
-    description: 'Suggest bulk quantity changes for multiple items in an order at once (e.g., increase all items by 20%, decrease footwear by 10%). Use this instead of individual adjustments when modifying entire categories.',
+    description: 'Suggest bulk quantity changes for multiple items in an order at once (e.g., increase all items by 20%, decrease footwear by 10%). Use this instead of individual adjustments when modifying entire categories. conversationId and messageId are automatically provided - do not specify them.',
     parameters: {
       type: 'object',
       properties: {
-        conversationId: { type: 'integer', description: 'Current conversation ID' },
-        messageId: { type: 'integer', description: 'Current message ID' },
         orderId: { type: 'integer', description: 'Order ID to modify' },
         changeType: { type: 'string', description: 'Type of change: "percentage" (e.g., 20 for +20%, -15 for -15%) or "fixed" (e.g., 5 for +5, -3 for -3)' },
         changeValue: { type: 'number', description: 'The amount to change. For percentage: 20 means +20%. For fixed: 5 means +5 units per item.' },
@@ -214,7 +212,7 @@ const AVAILABLE_TOOLS = [
           }
         }
       },
-      required: ['conversationId', 'messageId', 'orderId', 'changeType', 'changeValue', 'reasoning']
+      required: ['orderId', 'changeType', 'changeValue', 'reasoning']
     }
   },
   {
@@ -457,6 +455,7 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
 
     const context = {
       userId: req.user.id,
+      conversationId: parseInt(id),
       seasonId: convResult.rows[0].season_id,
       brandId: convResult.rows[0].brand_id,
       locationId: convResult.rows[0].location_id
@@ -468,27 +467,43 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
     let totalTokens = (response.usage.prompt_tokens || response.usage.input_tokens) +
                       (response.usage.completion_tokens || response.usage.output_tokens);
 
-    // Process tool calls if any
-    let toolResults = [];
-    if (response.toolCalls && response.toolCalls.length > 0) {
-      toolResults = await aiAgent.processToolCalls(response.toolCalls, context);
+    // Process tool calls with max 3 iterations
+    const MAX_ITERATIONS = 3;
+    let iteration = 0;
+    let allToolResults = [];
+
+    while (response.toolCalls && response.toolCalls.length > 0 && iteration < MAX_ITERATIONS) {
+      iteration++;
+
+      // Add messageId to context for suggestion tools
+      context.messageId = response.messageId;
+
+      const toolResults = await aiAgent.processToolCalls(response.toolCalls, context);
+      allToolResults.push(...toolResults);
 
       // Format tool results for AI to process
       const toolSummary = toolResults.map(tr =>
         `Tool: ${tr.toolName}\nResult: ${JSON.stringify(tr.result)}`
       ).join('\n\n');
 
-      // Send tool results back to AI as a user message (Anthropic expects user response after assistant tool use)
-      const followUpMessage = `Here are the tool results:\n\n${toolSummary}\n\nNow provide a clear, formatted summary of these results to answer my original question. Do not call any more tools - just summarize what you found.`;
+      // Send tool results back to AI as a user message
+      let followUpMessage;
+      if (iteration === 1) {
+        // First iteration: encourage AI to take action if needed
+        followUpMessage = `Here are the tool results:\n\n${toolSummary}\n\nNow complete the user's request. If they asked you to modify orders, create suggestions using the appropriate tools (suggest_bulk_quantity_change, suggest_quantity_adjustment, etc.). If they just asked for information, provide a clear summary.`;
+      } else {
+        // Subsequent iterations: just provide results and ask for summary
+        followUpMessage = `Here are the tool results:\n\n${toolSummary}\n\nProvide a clear summary of what was accomplished.`;
+      }
 
       const followUp = await aiAgent.sendMessage(
         id,
         followUpMessage,
         context,
-        [] // No tools on follow-up to prevent loops
+        iteration < MAX_ITERATIONS - 1 ? AVAILABLE_TOOLS : [] // Only allow tools until last iteration
       );
 
-      response = followUp; // Use the summary as the final response
+      response = followUp;
       totalCost += followUp.cost;
       totalTokens += (followUp.usage.prompt_tokens || followUp.usage.input_tokens) +
                      (followUp.usage.completion_tokens || followUp.usage.output_tokens);
@@ -499,7 +514,8 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
       message_id: response.messageId,
       content: response.content,
       tool_calls: response.toolCalls,
-      tool_results: toolResults,
+      tool_results: allToolResults,
+      iterations: iteration,
       usage: {
         cost: parseFloat(totalCost).toFixed(4),
         tokens: totalTokens,

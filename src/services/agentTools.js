@@ -925,7 +925,10 @@ async function find_orders(args, context) {
  * @returns {Object} Multiple suggestions created
  */
 async function suggest_bulk_quantity_change(args, context) {
-  const { conversationId, messageId, orderId, changeType, changeValue, reasoning, confidence, filters } = args;
+  // Use context values if not provided in args
+  const conversationId = args.conversationId || context.conversationId;
+  const messageId = args.messageId || context.messageId;
+  const { orderId, changeType, changeValue, reasoning, confidence, filters } = args;
 
   // changeType: 'percentage' (e.g., +20%, -15%) or 'fixed' (e.g., +5, -3)
   // filters: optional { category?, subcategory?, minQuantity?, maxQuantity? }
