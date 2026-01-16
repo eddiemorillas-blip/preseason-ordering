@@ -1115,7 +1115,99 @@ async function get_order_summary(args, context) {
 }
 
 /**
- * Tool 15: Get brands list or search by name
+ * Tool 15: Find orders by natural language (brand name, season name)
+ * @param {Object} args - { brandName?, seasonName?, locationName?, status? }
+ * @param {Object} context - { userId }
+ * @returns {Object} List of matching orders
+ */
+async function find_orders_by_name(args, context) {
+  const { brandName, seasonName, locationName, status } = args;
+
+  try {
+    // Build query with JOIN to allow name-based filtering
+    let query = `
+      SELECT
+        o.id,
+        o.order_number,
+        o.status,
+        o.ship_date,
+        o.created_at,
+        o.updated_at,
+        b.name as brand_name,
+        l.name as location_name,
+        l.code as location_code,
+        s.name as season_name,
+        COUNT(DISTINCT oi.id) as item_count,
+        SUM(oi.quantity) as total_quantity,
+        SUM(oi.quantity * oi.unit_cost) as total_cost
+      FROM orders o
+      LEFT JOIN order_items oi ON oi.order_id = o.id
+      JOIN brands b ON o.brand_id = b.id
+      JOIN locations l ON o.location_id = l.id
+      JOIN seasons s ON o.season_id = s.id
+      WHERE 1=1
+    `;
+
+    const params = [];
+    let paramIndex = 1;
+
+    if (brandName) {
+      query += ` AND b.name ILIKE $${paramIndex}`;
+      params.push(`%${brandName}%`);
+      paramIndex++;
+    }
+    if (seasonName) {
+      query += ` AND s.name ILIKE $${paramIndex}`;
+      params.push(`%${seasonName}%`);
+      paramIndex++;
+    }
+    if (locationName) {
+      query += ` AND l.name ILIKE $${paramIndex}`;
+      params.push(`%${locationName}%`);
+      paramIndex++;
+    }
+    if (status) {
+      query += ` AND o.status = $${paramIndex}`;
+      params.push(status);
+      paramIndex++;
+    }
+
+    query += `
+      GROUP BY o.id, o.order_number, o.status, o.ship_date, o.created_at, o.updated_at, b.name, l.name, l.code, s.name
+      ORDER BY o.created_at DESC
+      LIMIT 50
+    `;
+
+    const result = await pool.query(query, params);
+
+    const orders = result.rows.map(row => ({
+      order_id: row.id,
+      order_number: row.order_number,
+      brand: row.brand_name,
+      location: `${row.location_name} (${row.location_code})`,
+      season: row.season_name,
+      status: row.status,
+      ship_date: row.ship_date,
+      item_count: parseInt(row.item_count || 0),
+      total_quantity: parseInt(row.total_quantity || 0),
+      total_cost: parseFloat(row.total_cost || 0).toFixed(2),
+      created_at: row.created_at
+    }));
+
+    return {
+      success: true,
+      orders_found: orders.length,
+      filters_used: { brandName, seasonName, locationName, status },
+      orders
+    };
+  } catch (error) {
+    console.error('find_orders_by_name error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+/**
+ * Tool 16: Get brands list or search by name
  * @param {Object} args - { searchTerm? }
  * @param {Object} context - { userId }
  * @returns {Object} List of brands
@@ -1213,6 +1305,7 @@ module.exports = {
   find_orders,
   suggest_bulk_quantity_change,
   get_order_summary,
+  find_orders_by_name,
   get_brands,
   get_seasons
 };
