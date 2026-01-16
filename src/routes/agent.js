@@ -473,21 +473,17 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
     if (response.toolCalls && response.toolCalls.length > 0) {
       toolResults = await aiAgent.processToolCalls(response.toolCalls, context);
 
-      // Save tool results as a system message for context
+      // Format tool results for AI to process
       const toolSummary = toolResults.map(tr =>
         `Tool: ${tr.toolName}\nResult: ${JSON.stringify(tr.result)}`
       ).join('\n\n');
 
-      await pool.query(
-        `INSERT INTO agent_messages (conversation_id, role, content)
-         VALUES ($1, 'system', $2)`,
-        [id, `Tool execution results:\n${toolSummary}`]
-      );
+      // Send tool results back to AI as a user message (Anthropic expects user response after assistant tool use)
+      const followUpMessage = `Here are the tool results:\n\n${toolSummary}\n\nNow provide a clear, formatted summary of these results to answer my original question. Do not call any more tools - just summarize what you found.`;
 
-      // Let AI summarize the tool results in one follow-up call
       const followUp = await aiAgent.sendMessage(
         id,
-        `The tool execution is complete. You called ${toolResults.map(tr => tr.toolName).join(', ')} and received the results above. Now provide a clear, formatted summary of these results to answer the user's question. Do not call any more tools - just summarize what you found.`,
+        followUpMessage,
         context,
         [] // No tools on follow-up to prevent loops
       );
