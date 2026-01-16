@@ -702,25 +702,31 @@ router.post('/suggestions/:id/approve', authenticateToken, authorizeRoles('admin
       switch (suggestion.suggestion_type) {
         case 'adjust_quantity':
           // Update order item quantity
-          await client.query(
-            'UPDATE order_items SET quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          console.log(`Applying adjust_quantity: item_id=${suggestion.order_item_id}, from=${actionData.from}, to=${actionData.to}`);
+          const updateResult = await client.query(
+            'UPDATE order_items SET quantity = $1 WHERE id = $2 RETURNING id',
             [actionData.to, suggestion.order_item_id]
           );
+          if (updateResult.rowCount === 0) {
+            throw new Error(`Order item ${suggestion.order_item_id} not found`);
+          }
           applied = true;
           break;
 
         case 'add_product':
           // Add new order item
+          console.log(`Applying add_product: order_id=${suggestion.order_id}, product_id=${actionData.product_id}`);
           await client.query(
-            `INSERT INTO order_items (order_id, product_id, quantity, unit_cost, ship_date)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [suggestion.order_id, actionData.product_id, actionData.quantity, actionData.unit_cost, actionData.ship_date]
+            `INSERT INTO order_items (order_id, product_id, quantity, unit_cost)
+             VALUES ($1, $2, $3, $4)`,
+            [suggestion.order_id, actionData.product_id, actionData.quantity, actionData.unit_cost]
           );
           applied = true;
           break;
 
         case 'remove_product':
           // Delete order item
+          console.log(`Applying remove_product: item_id=${suggestion.order_item_id}`);
           await client.query(
             'DELETE FROM order_items WHERE id = $1',
             [suggestion.order_item_id]
@@ -732,6 +738,7 @@ router.post('/suggestions/:id/approve', authenticateToken, authorizeRoles('admin
           errorMessage = `Unknown suggestion type: ${suggestion.suggestion_type}`;
       }
     } catch (applyError) {
+      console.error('Error applying suggestion:', applyError);
       errorMessage = applyError.message;
     }
 

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import Layout from '../components/Layout';
 import AgentChat from '../components/AgentChat';
 import SuggestionCard from '../components/SuggestionCard';
+import SuggestionsTable from '../components/SuggestionsTable';
 import { agentAPI } from '../services/api';
 import api from '../services/api';
 
@@ -33,6 +34,7 @@ const AIAssistant = () => {
   // UI state
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'suggestions' | 'history'
+  const [viewMode, setViewMode] = useState('table'); // 'table' | 'cards'
 
   // Load filter options
   useEffect(() => {
@@ -316,11 +318,33 @@ const AIAssistant = () => {
                   </svg>
                   <span>Pending Suggestions</span>
                 </h2>
-                <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded-full font-medium">
-                  {suggestions.length}
-                </span>
+                <div className="flex items-center space-x-3">
+                  <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded-full font-medium">
+                    {suggestions.length}
+                  </span>
+                  {suggestions.length > 0 && (
+                    <div className="flex bg-gray-100 rounded-lg p-1">
+                      <button
+                        onClick={() => setViewMode('table')}
+                        className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                          viewMode === 'table' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800'
+                        }`}
+                      >
+                        Table
+                      </button>
+                      <button
+                        onClick={() => setViewMode('cards')}
+                        className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                          viewMode === 'cards' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800'
+                        }`}
+                      >
+                        Cards
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="p-4 space-y-4 max-h-[600px] overflow-y-auto">
+              <div className="max-h-[600px] overflow-y-auto">
                 {suggestionsLoading ? (
                   <div className="text-center py-8 text-gray-500">
                     <svg className="animate-spin h-8 w-8 mx-auto mb-2 text-blue-600" fill="none" viewBox="0 0 24 24">
@@ -330,21 +354,28 @@ const AIAssistant = () => {
                     <p>Loading suggestions...</p>
                   </div>
                 ) : suggestions.length === 0 ? (
-                  <div className="text-center py-8 text-gray-500">
+                  <div className="text-center py-8 text-gray-500 p-4">
                     <svg className="w-12 h-12 mx-auto mb-3 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
                     <p>No pending suggestions</p>
                     <p className="text-xs mt-1">Ask the AI for order optimization suggestions</p>
                   </div>
+                ) : viewMode === 'table' ? (
+                  <SuggestionsTable
+                    suggestions={suggestions}
+                    onUpdate={handleSuggestionUpdate}
+                  />
                 ) : (
-                  suggestions.map(suggestion => (
-                    <SuggestionCard
-                      key={suggestion.id}
-                      suggestion={suggestion}
-                      onUpdate={handleSuggestionUpdate}
-                    />
-                  ))
+                  <div className="p-4 space-y-4">
+                    {suggestions.map(suggestion => (
+                      <SuggestionCard
+                        key={suggestion.id}
+                        suggestion={suggestion}
+                        onUpdate={handleSuggestionUpdate}
+                      />
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
