@@ -216,6 +216,26 @@ const AVAILABLE_TOOLS = [
         status: { type: 'string', description: 'Filter by status (optional)' }
       }
     }
+  },
+  {
+    name: 'get_brands',
+    description: 'List all brands or search for a brand by name. Use this FIRST when you need to find a brand ID from a brand name (e.g., "Petzl", "Arcteryx").',
+    parameters: {
+      type: 'object',
+      properties: {
+        searchTerm: { type: 'string', description: 'Brand name to search for (optional, case-insensitive partial match)' }
+      }
+    }
+  },
+  {
+    name: 'get_seasons',
+    description: 'List all seasons or search for a season by name. Use this FIRST when you need to find a season ID from a season name (e.g., "Fall 2026", "Spring 2025").',
+    parameters: {
+      type: 'object',
+      properties: {
+        searchTerm: { type: 'string', description: 'Season name to search for (optional, case-insensitive partial match)' }
+      }
+    }
   }
 ];
 

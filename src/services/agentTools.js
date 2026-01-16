@@ -1114,6 +1114,90 @@ async function get_order_summary(args, context) {
   }
 }
 
+/**
+ * Tool 15: Get brands list or search by name
+ * @param {Object} args - { searchTerm? }
+ * @param {Object} context - { userId }
+ * @returns {Object} List of brands
+ */
+async function get_brands(args, context) {
+  const { searchTerm } = args;
+
+  try {
+    let query = `
+      SELECT id, name, code, vendor_code, active
+      FROM brands
+      WHERE active = true
+    `;
+
+    const params = [];
+    if (searchTerm) {
+      query += ` AND name ILIKE $1`;
+      params.push(`%${searchTerm}%`);
+    }
+
+    query += ` ORDER BY name ASC`;
+
+    const result = await pool.query(query, params);
+
+    return {
+      success: true,
+      brands_found: result.rows.length,
+      brands: result.rows.map(row => ({
+        brand_id: row.id,
+        name: row.name,
+        code: row.code,
+        vendor_code: row.vendor_code
+      }))
+    };
+  } catch (error) {
+    console.error('get_brands error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+/**
+ * Tool 16: Get seasons list or search by name
+ * @param {Object} args - { searchTerm? }
+ * @param {Object} context - { userId }
+ * @returns {Object} List of seasons
+ */
+async function get_seasons(args, context) {
+  const { searchTerm } = args;
+
+  try {
+    let query = `
+      SELECT id, name, start_date, end_date, status
+      FROM seasons
+    `;
+
+    const params = [];
+    if (searchTerm) {
+      query += ` WHERE name ILIKE $1`;
+      params.push(`%${searchTerm}%`);
+    }
+
+    query += ` ORDER BY start_date DESC`;
+
+    const result = await pool.query(query, params);
+
+    return {
+      success: true,
+      seasons_found: result.rows.length,
+      seasons: result.rows.map(row => ({
+        season_id: row.id,
+        name: row.name,
+        start_date: row.start_date,
+        end_date: row.end_date,
+        status: row.status
+      }))
+    };
+  } catch (error) {
+    console.error('get_seasons error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
 module.exports = {
   query_sales_data,
   get_order_inventory,
@@ -1128,5 +1212,7 @@ module.exports = {
   search_products,
   find_orders,
   suggest_bulk_quantity_change,
-  get_order_summary
+  get_order_summary,
+  get_brands,
+  get_seasons
 };
