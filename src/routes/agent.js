@@ -463,7 +463,10 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
     };
 
     // Send message to AI agent
-    const response = await aiAgent.sendMessage(id, message, context, AVAILABLE_TOOLS);
+    let response = await aiAgent.sendMessage(id, message, context, AVAILABLE_TOOLS);
+    let totalCost = response.cost;
+    let totalTokens = (response.usage.prompt_tokens || response.usage.input_tokens) +
+                      (response.usage.completion_tokens || response.usage.output_tokens);
 
     // Process tool calls if any
     let toolResults = [];
@@ -480,6 +483,19 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
          VALUES ($1, 'system', $2)`,
         [id, `Tool execution results:\n${toolSummary}`]
       );
+
+      // Let AI summarize the tool results in one follow-up call
+      const followUp = await aiAgent.sendMessage(
+        id,
+        'Based on the tool results above, provide a clear summary for the user.',
+        context,
+        [] // No tools on follow-up to prevent loops
+      );
+
+      response = followUp; // Use the summary as the final response
+      totalCost += followUp.cost;
+      totalTokens += (followUp.usage.prompt_tokens || followUp.usage.input_tokens) +
+                     (followUp.usage.completion_tokens || followUp.usage.output_tokens);
     }
 
     res.json({
@@ -489,9 +505,8 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
       tool_calls: response.toolCalls,
       tool_results: toolResults,
       usage: {
-        cost: parseFloat(response.cost).toFixed(4),
-        tokens: (response.usage.prompt_tokens || response.usage.input_tokens) +
-                (response.usage.completion_tokens || response.usage.output_tokens),
+        cost: parseFloat(totalCost).toFixed(4),
+        tokens: totalTokens,
         response_time_ms: response.responseTime
       }
     });
