@@ -487,7 +487,7 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
       // Let AI summarize the tool results in one follow-up call
       const followUp = await aiAgent.sendMessage(
         id,
-        'Based on the tool results above, provide a clear summary for the user.',
+        `The tool execution is complete. You called ${toolResults.map(tr => tr.toolName).join(', ')} and received the results above. Now provide a clear, formatted summary of these results to answer the user's question. Do not call any more tools - just summarize what you found.`,
         context,
         [] // No tools on follow-up to prevent loops
       );
