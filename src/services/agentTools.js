@@ -838,6 +838,7 @@ async function find_orders(args, context) {
         o.id,
         o.order_number,
         o.status,
+        o.ship_date,
         o.created_at,
         o.updated_at,
         b.name as brand_name,
@@ -846,10 +847,7 @@ async function find_orders(args, context) {
         s.name as season_name,
         COUNT(DISTINCT oi.id) as item_count,
         SUM(oi.quantity) as total_quantity,
-        SUM(oi.quantity * oi.unit_cost) as total_cost,
-        COUNT(DISTINCT oi.ship_date) as ship_date_count,
-        MIN(oi.ship_date) as earliest_ship_date,
-        MAX(oi.ship_date) as latest_ship_date
+        SUM(oi.quantity * oi.unit_cost) as total_cost
       FROM orders o
       LEFT JOIN order_items oi ON oi.order_id = o.id
       JOIN brands b ON o.brand_id = b.id
@@ -888,7 +886,7 @@ async function find_orders(args, context) {
     }
 
     query += `
-      GROUP BY o.id, o.order_number, o.status, o.created_at, o.updated_at, b.name, l.name, l.code, s.name
+      GROUP BY o.id, o.order_number, o.status, o.ship_date, o.created_at, o.updated_at, b.name, l.name, l.code, s.name
       ORDER BY o.created_at DESC
       LIMIT 50
     `;
@@ -902,12 +900,10 @@ async function find_orders(args, context) {
       location: `${row.location_name} (${row.location_code})`,
       season: row.season_name,
       status: row.status,
+      ship_date: row.ship_date,
       item_count: parseInt(row.item_count || 0),
       total_quantity: parseInt(row.total_quantity || 0),
       total_cost: parseFloat(row.total_cost || 0).toFixed(2),
-      ship_dates: row.ship_date_count > 1
-        ? `${row.ship_date_count} dates (${row.earliest_ship_date} to ${row.latest_ship_date})`
-        : row.earliest_ship_date,
       created_at: row.created_at
     }));
 
