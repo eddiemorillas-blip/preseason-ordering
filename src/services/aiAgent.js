@@ -105,11 +105,14 @@ async function sendMessage(conversationId, userMessage, context = {}, tools = []
     }
 
     // Add conversation history (last 10 messages)
+    // Filter out messages with empty content to avoid Anthropic API errors
     historyResult.rows.forEach(msg => {
-      messages.push({
-        role: msg.role,
-        content: msg.content
-      });
+      if (msg.content && msg.content.trim().length > 0) {
+        messages.push({
+          role: msg.role,
+          content: msg.content
+        });
+      }
     });
 
     // Add current user message
@@ -144,6 +147,10 @@ async function sendMessage(conversationId, userMessage, context = {}, tools = []
     );
 
     // Save assistant response to database
+    // If content is empty but there are tool calls, use a placeholder
+    const contentToSave = response.content ||
+      (response.toolCalls && response.toolCalls.length > 0 ? '[Tool execution]' : '');
+
     const messageResult = await client.query(
       `INSERT INTO agent_messages (conversation_id, role, content, metadata)
        VALUES ($1, $2, $3, $4)
@@ -151,7 +158,7 @@ async function sendMessage(conversationId, userMessage, context = {}, tools = []
       [
         conversationId,
         'assistant',
-        response.content,
+        contentToSave,
         JSON.stringify({ tool_calls: response.toolCalls || [] })
       ]
     );
