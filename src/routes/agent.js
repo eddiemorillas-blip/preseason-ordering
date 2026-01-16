@@ -449,13 +449,28 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
       locationId: convResult.rows[0].location_id
     };
 
-    // Send message to AI agent
-    const response = await aiAgent.sendMessage(id, message, context, AVAILABLE_TOOLS);
+    // Agent loop: continue until AI stops making tool calls
+    const MAX_ITERATIONS = 10;
+    let iteration = 0;
+    let finalResponse = null;
+    let allToolResults = [];
+    let totalCost = 0;
+    let totalTokens = 0;
 
-    // Process tool calls if any
-    let toolResults = [];
-    if (response.toolCalls && response.toolCalls.length > 0) {
-      toolResults = await aiAgent.processToolCalls(response.toolCalls, context);
+    // First message from user
+    let response = await aiAgent.sendMessage(id, message, context, AVAILABLE_TOOLS);
+    finalResponse = response;
+    totalCost += response.cost;
+    totalTokens += (response.usage.prompt_tokens || response.usage.input_tokens) +
+                   (response.usage.completion_tokens || response.usage.output_tokens);
+
+    // Loop while AI is making tool calls
+    while (response.toolCalls && response.toolCalls.length > 0 && iteration < MAX_ITERATIONS) {
+      iteration++;
+
+      // Execute tool calls
+      const toolResults = await aiAgent.processToolCalls(response.toolCalls, context);
+      allToolResults.push(...toolResults);
 
       // Save tool results as a system message for context
       const toolSummary = toolResults.map(tr =>
@@ -467,18 +482,32 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
          VALUES ($1, 'system', $2)`,
         [id, `Tool execution results:\n${toolSummary}`]
       );
+
+      // Send tool results back to AI to continue reasoning
+      response = await aiAgent.sendMessage(
+        id,
+        `Continue based on the tool results above.`,
+        context,
+        AVAILABLE_TOOLS
+      );
+
+      finalResponse = response;
+      totalCost += response.cost;
+      totalTokens += (response.usage.prompt_tokens || response.usage.input_tokens) +
+                     (response.usage.completion_tokens || response.usage.output_tokens);
     }
 
     res.json({
       success: true,
-      message_id: response.messageId,
-      content: response.content,
-      tool_calls: response.toolCalls,
-      tool_results: toolResults,
+      message_id: finalResponse.messageId,
+      content: finalResponse.content,
+      tool_calls: finalResponse.toolCalls,
+      tool_results: allToolResults,
+      iterations: iteration,
       usage: {
-        cost: parseFloat(response.cost).toFixed(4),
-        tokens: response.usage.prompt_tokens + response.usage.completion_tokens,
-        response_time_ms: response.responseTime
+        cost: parseFloat(totalCost).toFixed(4),
+        tokens: totalTokens,
+        response_time_ms: finalResponse.responseTime
       }
     });
   } catch (error) {
