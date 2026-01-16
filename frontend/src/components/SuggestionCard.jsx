@@ -1,4 +1,4 @@
-import { useState } from 'prop-types';
+import { useState } from 'react';
 import PropTypes from 'prop-types';
 
 const SuggestionCard = ({ suggestion, onApprove, onReject, onUpdate }) => {
