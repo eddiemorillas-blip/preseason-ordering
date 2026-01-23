@@ -98,7 +98,7 @@ async function query_sales_data(args, context) {
  * Tool 2: Get current order inventory (order items)
  * @param {Object} args - { orderId?, seasonId?, brandId?, locationId? }
  * @param {Object} context - { userId }
- * @returns {Object} Order items with details
+ * @returns {Object} Order items with details including adjusted quantities
  */
 async function get_order_inventory(args, context) {
   const { orderId, seasonId, brandId, locationId } = args;
@@ -109,8 +109,11 @@ async function get_order_inventory(args, context) {
         o.id as order_id,
         o.order_number,
         o.status as order_status,
+        o.finalized_at,
         oi.id as item_id,
-        oi.quantity,
+        oi.quantity as original_quantity,
+        oi.adjusted_quantity,
+        COALESCE(oi.adjusted_quantity, oi.quantity) as effective_quantity,
         oi.unit_cost,
         oi.ship_date,
         p.id as product_id,
@@ -120,6 +123,8 @@ async function get_order_inventory(args, context) {
         p.size,
         p.color,
         p.base_name,
+        p.category,
+        p.msrp,
         b.name as brand_name,
         l.name as location_name,
         s.name as season_name
@@ -168,17 +173,26 @@ async function get_order_inventory(args, context) {
           order_id: row.order_id,
           order_number: row.order_number,
           order_status: row.order_status,
+          finalized_at: row.finalized_at,
           brand_name: row.brand_name,
           location_name: row.location_name,
           season_name: row.season_name,
           items: [],
-          total_quantity: 0,
-          total_cost: 0
+          total_original_quantity: 0,
+          total_effective_quantity: 0,
+          total_original_cost: 0,
+          total_effective_cost: 0
         };
       }
 
       if (row.item_id) {
-        const itemCost = row.quantity * parseFloat(row.unit_cost || 0);
+        const originalQty = row.original_quantity || 0;
+        const effectiveQty = row.effective_quantity || 0;
+        const unitCost = parseFloat(row.unit_cost || 0);
+        const originalCost = originalQty * unitCost;
+        const effectiveCost = effectiveQty * unitCost;
+        const isAdjusted = row.adjusted_quantity !== null && row.adjusted_quantity !== row.original_quantity;
+
         ordersMap[row.order_id].items.push({
           item_id: row.item_id,
           product_id: row.product_id,
@@ -187,13 +201,22 @@ async function get_order_inventory(args, context) {
           upc: row.upc,
           size: row.size,
           color: row.color,
-          quantity: row.quantity,
+          category: row.category,
+          base_name: row.base_name,
+          original_quantity: originalQty,
+          adjusted_quantity: row.adjusted_quantity,
+          effective_quantity: effectiveQty,
+          is_adjusted: isAdjusted,
           unit_cost: row.unit_cost,
-          line_cost: itemCost.toFixed(2),
+          msrp: row.msrp,
+          original_cost: originalCost.toFixed(2),
+          effective_cost: effectiveCost.toFixed(2),
           ship_date: row.ship_date
         });
-        ordersMap[row.order_id].total_quantity += row.quantity;
-        ordersMap[row.order_id].total_cost += itemCost;
+        ordersMap[row.order_id].total_original_quantity += originalQty;
+        ordersMap[row.order_id].total_effective_quantity += effectiveQty;
+        ordersMap[row.order_id].total_original_cost += originalCost;
+        ordersMap[row.order_id].total_effective_cost += effectiveCost;
       }
     }
 
@@ -204,7 +227,10 @@ async function get_order_inventory(args, context) {
       orders_count: orders.length,
       orders: orders.map(o => ({
         ...o,
-        total_cost: o.total_cost.toFixed(2)
+        total_original_cost: o.total_original_cost.toFixed(2),
+        total_effective_cost: o.total_effective_cost.toFixed(2),
+        adjustment_delta: (o.total_effective_cost - o.total_original_cost).toFixed(2),
+        items_adjusted: o.items.filter(i => i.is_adjusted).length
       }))
     };
   } catch (error) {
@@ -680,7 +706,7 @@ async function get_product_info(args, context) {
  * Tool 10: Get full order details
  * @param {Object} args - { orderId }
  * @param {Object} context - { userId }
- * @returns {Object} Complete order details with items
+ * @returns {Object} Complete order details with items including adjustments
  */
 async function get_order_details(args, context) {
   const { orderId } = args;
@@ -695,8 +721,11 @@ async function get_order_details(args, context) {
       SELECT
         o.*,
         b.name as brand_name,
+        b.id as brand_id,
         l.name as location_name,
+        l.id as location_id,
         s.name as season_name,
+        s.id as season_id,
         sb.budget_amount
       FROM orders o
       JOIN brands b ON o.brand_id = b.id
@@ -712,39 +741,99 @@ async function get_order_details(args, context) {
 
     const order = orderResult.rows[0];
 
-    // Get order items
+    // Get order items with adjustment info
     const itemsResult = await pool.query(`
       SELECT
-        oi.*,
+        oi.id,
+        oi.product_id,
+        oi.quantity as original_quantity,
+        oi.adjusted_quantity,
+        COALESCE(oi.adjusted_quantity, oi.quantity) as effective_quantity,
+        oi.unit_cost,
+        oi.ship_date,
         p.name as product_name,
         p.sku,
         p.upc,
         p.size,
         p.color,
-        p.base_name
+        p.base_name,
+        p.category,
+        p.subcategory,
+        p.gender,
+        p.msrp
       FROM order_items oi
       JOIN products p ON oi.product_id = p.id
       WHERE oi.order_id = $1
-      ORDER BY oi.ship_date, p.base_name
+      ORDER BY oi.ship_date, p.base_name, p.size
     `, [orderId]);
 
-    const items = itemsResult.rows.map(item => ({
-      ...item,
-      line_cost: (item.quantity * parseFloat(item.unit_cost)).toFixed(2)
-    }));
+    const items = itemsResult.rows.map(item => {
+      const originalQty = item.original_quantity || 0;
+      const effectiveQty = item.effective_quantity || 0;
+      const unitCost = parseFloat(item.unit_cost || 0);
+      const isAdjusted = item.adjusted_quantity !== null && item.adjusted_quantity !== item.original_quantity;
 
-    const totalCost = items.reduce((sum, i) => sum + parseFloat(i.line_cost), 0);
-    const totalQuantity = items.reduce((sum, i) => sum + i.quantity, 0);
+      return {
+        item_id: item.id,
+        product_id: item.product_id,
+        product_name: item.product_name,
+        sku: item.sku,
+        upc: item.upc,
+        size: item.size,
+        color: item.color,
+        base_name: item.base_name,
+        category: item.category,
+        subcategory: item.subcategory,
+        gender: item.gender,
+        original_quantity: originalQty,
+        adjusted_quantity: item.adjusted_quantity,
+        effective_quantity: effectiveQty,
+        is_adjusted: isAdjusted,
+        quantity_change: isAdjusted ? effectiveQty - originalQty : 0,
+        unit_cost: unitCost.toFixed(2),
+        msrp: item.msrp ? parseFloat(item.msrp).toFixed(2) : null,
+        original_cost: (originalQty * unitCost).toFixed(2),
+        effective_cost: (effectiveQty * unitCost).toFixed(2),
+        ship_date: item.ship_date
+      };
+    });
+
+    const totalOriginalCost = items.reduce((sum, i) => sum + parseFloat(i.original_cost), 0);
+    const totalEffectiveCost = items.reduce((sum, i) => sum + parseFloat(i.effective_cost), 0);
+    const totalOriginalQty = items.reduce((sum, i) => sum + i.original_quantity, 0);
+    const totalEffectiveQty = items.reduce((sum, i) => sum + i.effective_quantity, 0);
+    const adjustedItemsCount = items.filter(i => i.is_adjusted).length;
 
     return {
       success: true,
       order: {
-        ...order,
+        order_id: order.id,
+        order_number: order.order_number,
+        status: order.status,
+        brand_id: order.brand_id,
+        brand_name: order.brand_name,
+        location_id: order.location_id,
+        location_name: order.location_name,
+        season_id: order.season_id,
+        season_name: order.season_name,
+        ship_date: order.ship_date,
+        finalized_at: order.finalized_at,
+        created_at: order.created_at,
+        updated_at: order.updated_at,
         items,
-        total_cost: totalCost.toFixed(2),
-        total_quantity: totalQuantity,
-        budget_amount: order.budget_amount ? parseFloat(order.budget_amount).toFixed(2) : null,
-        budget_remaining: order.budget_amount ? (parseFloat(order.budget_amount) - totalCost).toFixed(2) : null
+        summary: {
+          total_items: items.length,
+          adjusted_items: adjustedItemsCount,
+          total_original_quantity: totalOriginalQty,
+          total_effective_quantity: totalEffectiveQty,
+          quantity_change: totalEffectiveQty - totalOriginalQty,
+          total_original_cost: totalOriginalCost.toFixed(2),
+          total_effective_cost: totalEffectiveCost.toFixed(2),
+          cost_change: (totalEffectiveCost - totalOriginalCost).toFixed(2),
+          budget_amount: order.budget_amount ? parseFloat(order.budget_amount).toFixed(2) : null,
+          budget_remaining: order.budget_amount ? (parseFloat(order.budget_amount) - totalEffectiveCost).toFixed(2) : null,
+          budget_utilization_pct: order.budget_amount ? ((totalEffectiveCost / parseFloat(order.budget_amount)) * 100).toFixed(1) : null
+        }
       }
     };
   } catch (error) {
@@ -1293,6 +1382,550 @@ async function get_seasons(args, context) {
   }
 }
 
+/**
+ * Tool 17: Get locations list or search by name
+ * @param {Object} args - { searchTerm? }
+ * @param {Object} context - { userId }
+ * @returns {Object} List of locations
+ */
+async function get_locations(args, context) {
+  const { searchTerm } = args;
+
+  try {
+    let query = `
+      SELECT id, name, code, active
+      FROM locations
+      WHERE active = true
+    `;
+
+    const params = [];
+    if (searchTerm) {
+      query += ` AND (name ILIKE $1 OR code ILIKE $1)`;
+      params.push(`%${searchTerm}%`);
+    }
+
+    query += ` ORDER BY name ASC`;
+
+    const result = await pool.query(query, params);
+
+    return {
+      success: true,
+      locations_found: result.rows.length,
+      locations: result.rows.map(row => ({
+        location_id: row.id,
+        name: row.name,
+        code: row.code
+      }))
+    };
+  } catch (error) {
+    console.error('get_locations error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+/**
+ * Tool 18: Get suggested items (products with low stock coverage that should be added to orders)
+ * @param {Object} args - { seasonId, brandId, locationId, targetMonths? }
+ * @param {Object} context - { userId }
+ * @returns {Object} Products with low stock that need replenishment
+ */
+async function get_suggested_items(args, context) {
+  const { seasonId, brandId, locationId, targetMonths = 3 } = args;
+
+  if (!seasonId || !brandId || !locationId) {
+    return { error: true, message: 'seasonId, brandId, and locationId are required' };
+  }
+
+  try {
+    const target = parseInt(targetMonths);
+
+    // Get products for this brand/season NOT currently in any order for this location
+    const productsResult = await pool.query(`
+      SELECT
+        p.id,
+        p.name,
+        p.base_name,
+        p.sku,
+        p.upc,
+        p.size,
+        p.color,
+        p.category,
+        p.gender,
+        COALESCE(sp.wholesale_cost, p.wholesale_cost) as wholesale_cost,
+        COALESCE(sp.msrp, p.msrp) as msrp
+      FROM products p
+      INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
+      WHERE
+        p.brand_id = $1
+        AND p.active = true
+        AND p.id NOT IN (
+          SELECT DISTINCT oi.product_id
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          WHERE o.season_id = $2
+            AND o.location_id = $3
+            AND o.status != 'cancelled'
+            AND COALESCE(oi.adjusted_quantity, oi.quantity) > 0
+        )
+        AND p.id NOT IN (
+          SELECT product_id FROM ignored_products
+          WHERE brand_id = $1
+            AND (location_id = $3 OR location_id IS NULL)
+        )
+      ORDER BY p.base_name, p.size, p.color
+    `, [brandId, seasonId, locationId]);
+
+    const products = productsResult.rows;
+    if (products.length === 0) {
+      return { success: true, message: 'All products are already in orders or no products found', suggested_items: [], families: [] };
+    }
+
+    // Get UPCs for BigQuery lookup
+    const upcs = products.filter(p => p.upc).map(p => p.upc);
+
+    // Fetch stock and velocity data from BigQuery
+    let stockByUpc = {};
+    let velocityByUpc = {};
+
+    if (upcs.length > 0) {
+      const { LOCATION_TO_FACILITY, getStockByUPCs } = require('./bigquery');
+      const facilityId = LOCATION_TO_FACILITY[locationId];
+
+      if (facilityId) {
+        // Get stock on hand
+        try {
+          stockByUpc = await getStockByUPCs(upcs, facilityId);
+        } catch (e) {
+          console.error('Error fetching stock:', e.message);
+        }
+
+        // Get velocity (average monthly sales)
+        try {
+          const { bigquery } = require('./bigquery');
+          const upcList = upcs.map(u => `'${u}'`).join(',');
+
+          const velocityQuery = `
+            SELECT
+              p.BARCODE as upc,
+              SUM(ii.QUANTITY) as total_qty_sold,
+              COUNT(DISTINCT FORMAT_DATE('%Y-%m', DATE(i.POSTDATE))) as months_of_data
+            FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+            JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+            JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+            WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
+              AND p.BARCODE IN (${upcList})
+              AND ii.QUANTITY > 0
+              AND p.facility_id_true = '${facilityId}'
+            GROUP BY p.BARCODE
+          `;
+
+          const [rows] = await bigquery.query({ query: velocityQuery });
+          rows.forEach(row => {
+            const monthsOfData = Math.max(1, parseInt(row.months_of_data) || 1);
+            const totalSold = parseInt(row.total_qty_sold) || 0;
+            velocityByUpc[row.upc] = totalSold / monthsOfData;
+          });
+        } catch (e) {
+          console.error('Error fetching velocity:', e.message);
+        }
+      }
+    }
+
+    // Calculate suggested items (where months_supply < 1)
+    const suggestedItems = [];
+    products.forEach(product => {
+      if (!product.upc) return;
+
+      const stock = stockByUpc[product.upc] ?? 0;
+      const velocity = velocityByUpc[product.upc] ?? 0;
+
+      // Skip if no sales history
+      if (velocity <= 0) return;
+
+      const monthsSupply = stock / velocity;
+
+      // Suggest if less than 1 month of supply
+      if (monthsSupply < 1) {
+        const targetStock = velocity * target;
+        const suggestedQty = Math.max(1, Math.round(targetStock - stock));
+
+        suggestedItems.push({
+          product_id: product.id,
+          product_name: product.name,
+          base_name: product.base_name,
+          sku: product.sku,
+          upc: product.upc,
+          size: product.size,
+          color: product.color,
+          category: product.category,
+          wholesale_cost: parseFloat(product.wholesale_cost).toFixed(2),
+          stock_on_hand: stock,
+          avg_monthly_sales: Math.round(velocity * 10) / 10,
+          months_supply: Math.round(monthsSupply * 10) / 10,
+          suggested_qty: suggestedQty,
+          suggested_cost: (suggestedQty * parseFloat(product.wholesale_cost)).toFixed(2)
+        });
+      }
+    });
+
+    // Group by base_name for family view
+    const familyMap = {};
+    suggestedItems.forEach(item => {
+      const baseName = item.base_name || item.product_name;
+      if (!familyMap[baseName]) {
+        familyMap[baseName] = { base_name: baseName, products: [], total_suggested_qty: 0, total_suggested_cost: 0 };
+      }
+      familyMap[baseName].products.push(item);
+      familyMap[baseName].total_suggested_qty += item.suggested_qty;
+      familyMap[baseName].total_suggested_cost += parseFloat(item.suggested_cost);
+    });
+
+    const families = Object.values(familyMap).map(f => ({
+      ...f,
+      total_suggested_cost: f.total_suggested_cost.toFixed(2)
+    })).sort((a, b) => a.base_name.localeCompare(b.base_name));
+
+    return {
+      success: true,
+      suggested_items: suggestedItems,
+      families,
+      summary: {
+        total_products: suggestedItems.length,
+        total_families: families.length,
+        total_suggested_units: suggestedItems.reduce((sum, i) => sum + i.suggested_qty, 0),
+        total_suggested_value: suggestedItems.reduce((sum, i) => sum + parseFloat(i.suggested_cost), 0).toFixed(2)
+      }
+    };
+  } catch (error) {
+    console.error('get_suggested_items error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+/**
+ * Tool 19: Get finalized order history
+ * @param {Object} args - { seasonId?, brandId?, locationId?, orderId? }
+ * @param {Object} context - { userId }
+ * @returns {Object} Finalized adjustments history
+ */
+async function get_finalized_history(args, context) {
+  const { seasonId, brandId, locationId, orderId } = args;
+
+  try {
+    let query = `
+      SELECT
+        fa.id,
+        fa.order_id,
+        fa.order_item_id,
+        fa.product_id,
+        fa.original_quantity,
+        fa.adjusted_quantity,
+        fa.unit_cost,
+        fa.finalized_at,
+        fa.finalized_by,
+        o.order_number,
+        p.name as product_name,
+        p.sku,
+        p.upc,
+        p.base_name,
+        b.name as brand_name,
+        l.name as location_name,
+        s.name as season_name,
+        u.username as finalized_by_name
+      FROM finalized_adjustments fa
+      JOIN orders o ON fa.order_id = o.id
+      JOIN products p ON fa.product_id = p.id
+      JOIN brands b ON fa.brand_id = b.id
+      JOIN locations l ON fa.location_id = l.id
+      JOIN seasons s ON fa.season_id = s.id
+      LEFT JOIN users u ON fa.finalized_by = u.id
+      WHERE 1=1
+    `;
+
+    const params = [];
+    let paramIndex = 1;
+
+    if (orderId) {
+      query += ` AND fa.order_id = $${paramIndex}`;
+      params.push(orderId);
+      paramIndex++;
+    }
+    if (seasonId) {
+      query += ` AND fa.season_id = $${paramIndex}`;
+      params.push(seasonId);
+      paramIndex++;
+    }
+    if (brandId) {
+      query += ` AND fa.brand_id = $${paramIndex}`;
+      params.push(brandId);
+      paramIndex++;
+    }
+    if (locationId) {
+      query += ` AND fa.location_id = $${paramIndex}`;
+      params.push(locationId);
+      paramIndex++;
+    }
+
+    query += ` ORDER BY fa.finalized_at DESC LIMIT 500`;
+
+    const result = await pool.query(query, params);
+
+    // Calculate summary
+    const totalOriginal = result.rows.reduce((sum, r) => sum + (r.original_quantity * parseFloat(r.unit_cost)), 0);
+    const totalAdjusted = result.rows.reduce((sum, r) => sum + (r.adjusted_quantity * parseFloat(r.unit_cost)), 0);
+    const increasedItems = result.rows.filter(r => r.adjusted_quantity > r.original_quantity).length;
+    const decreasedItems = result.rows.filter(r => r.adjusted_quantity < r.original_quantity).length;
+    const unchangedItems = result.rows.filter(r => r.adjusted_quantity === r.original_quantity).length;
+
+    return {
+      success: true,
+      finalized_count: result.rows.length,
+      summary: {
+        total_original_value: totalOriginal.toFixed(2),
+        total_adjusted_value: totalAdjusted.toFixed(2),
+        net_change: (totalAdjusted - totalOriginal).toFixed(2),
+        items_increased: increasedItems,
+        items_decreased: decreasedItems,
+        items_unchanged: unchangedItems
+      },
+      finalized_items: result.rows.map(row => ({
+        ...row,
+        quantity_change: row.adjusted_quantity - row.original_quantity,
+        cost_change: ((row.adjusted_quantity - row.original_quantity) * parseFloat(row.unit_cost)).toFixed(2)
+      }))
+    };
+  } catch (error) {
+    console.error('get_finalized_history error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+/**
+ * Tool 20: Compare current orders to last year's sales
+ * @param {Object} args - { brandId, locationId, currentSeasonId, comparisonMonths? }
+ * @param {Object} context - { userId }
+ * @returns {Object} Year-over-year comparison data
+ */
+async function compare_to_last_year(args, context) {
+  const { brandId, locationId, currentSeasonId, comparisonMonths = 12 } = args;
+
+  if (!brandId || !locationId) {
+    return { error: true, message: 'brandId and locationId are required' };
+  }
+
+  try {
+    // Get current order data
+    const orderResult = await pool.query(`
+      SELECT
+        p.upc,
+        p.name as product_name,
+        p.base_name,
+        p.category,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as ordered_qty,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity) * oi.unit_cost) as ordered_value
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE o.brand_id = $1
+        AND o.location_id = $2
+        ${currentSeasonId ? 'AND o.season_id = $3' : ''}
+        AND o.status != 'cancelled'
+        AND p.upc IS NOT NULL
+      GROUP BY p.upc, p.name, p.base_name, p.category
+    `, currentSeasonId ? [brandId, locationId, currentSeasonId] : [brandId, locationId]);
+
+    if (orderResult.rows.length === 0) {
+      return { success: true, message: 'No current orders found', comparison: [] };
+    }
+
+    const upcs = orderResult.rows.map(r => r.upc).filter(u => u);
+    if (upcs.length === 0) {
+      return { success: true, message: 'No UPCs found in orders', comparison: [] };
+    }
+
+    // Get last year's sales from BigQuery
+    const { LOCATION_TO_FACILITY, bigquery } = require('./bigquery');
+    const facilityId = LOCATION_TO_FACILITY[locationId];
+
+    if (!facilityId) {
+      return { error: true, message: 'Location not mapped to BigQuery facility' };
+    }
+
+    const upcList = upcs.map(u => `'${u}'`).join(',');
+    const salesQuery = `
+      SELECT
+        p.BARCODE as upc,
+        SUM(ii.QUANTITY) as qty_sold,
+        SUM(ii.QUANTITY * ii.PRICE) as revenue
+      FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+      JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+      JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+      WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${comparisonMonths} MONTH)
+        AND p.BARCODE IN (${upcList})
+        AND ii.QUANTITY > 0
+        AND p.facility_id_true = '${facilityId}'
+      GROUP BY p.BARCODE
+    `;
+
+    const [salesRows] = await bigquery.query({ query: salesQuery });
+    const salesByUpc = {};
+    salesRows.forEach(row => {
+      salesByUpc[row.upc] = {
+        qty_sold: parseInt(row.qty_sold) || 0,
+        revenue: parseFloat(row.revenue) || 0
+      };
+    });
+
+    // Build comparison
+    const comparison = orderResult.rows.map(order => {
+      const sales = salesByUpc[order.upc] || { qty_sold: 0, revenue: 0 };
+      const orderedQty = parseInt(order.ordered_qty) || 0;
+      const soldQty = sales.qty_sold;
+
+      const orderVsSales = soldQty > 0 ? ((orderedQty / soldQty) * 100).toFixed(0) : 'N/A';
+      const trend = soldQty === 0 ? 'no_history' :
+                    orderedQty > soldQty * 1.2 ? 'ordering_more' :
+                    orderedQty < soldQty * 0.8 ? 'ordering_less' : 'similar';
+
+      return {
+        upc: order.upc,
+        product_name: order.product_name,
+        base_name: order.base_name,
+        category: order.category,
+        ordered_qty: orderedQty,
+        ordered_value: parseFloat(order.ordered_value).toFixed(2),
+        last_year_qty_sold: soldQty,
+        last_year_revenue: sales.revenue.toFixed(2),
+        order_vs_sales_pct: orderVsSales,
+        trend
+      };
+    });
+
+    // Summary
+    const totalOrdered = comparison.reduce((sum, c) => sum + c.ordered_qty, 0);
+    const totalSold = comparison.reduce((sum, c) => sum + c.last_year_qty_sold, 0);
+    const orderingMore = comparison.filter(c => c.trend === 'ordering_more').length;
+    const orderingLess = comparison.filter(c => c.trend === 'ordering_less').length;
+    const noHistory = comparison.filter(c => c.trend === 'no_history').length;
+
+    return {
+      success: true,
+      comparison_period_months: comparisonMonths,
+      summary: {
+        total_products: comparison.length,
+        total_ordered_qty: totalOrdered,
+        total_last_year_sold: totalSold,
+        overall_order_vs_sales_pct: totalSold > 0 ? ((totalOrdered / totalSold) * 100).toFixed(0) : 'N/A',
+        products_ordering_more: orderingMore,
+        products_ordering_less: orderingLess,
+        products_no_history: noHistory
+      },
+      comparison: comparison.sort((a, b) => b.ordered_qty - a.ordered_qty).slice(0, 100)
+    };
+  } catch (error) {
+    console.error('compare_to_last_year error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+/**
+ * Tool 21: Analyze orders by category/family
+ * @param {Object} args - { seasonId?, brandId?, locationId?, groupBy? }
+ * @param {Object} context - { userId }
+ * @returns {Object} Category/family level analysis
+ */
+async function analyze_by_category(args, context) {
+  const { seasonId, brandId, locationId, groupBy = 'category' } = args;
+
+  // groupBy can be: 'category', 'subcategory', 'base_name' (family), 'gender'
+
+  try {
+    const groupColumn = groupBy === 'base_name' ? 'p.base_name' :
+                        groupBy === 'subcategory' ? 'p.subcategory' :
+                        groupBy === 'gender' ? 'p.gender' : 'p.category';
+
+    let query = `
+      SELECT
+        ${groupColumn} as group_name,
+        COUNT(DISTINCT oi.id) as item_count,
+        COUNT(DISTINCT p.id) as unique_products,
+        SUM(oi.quantity) as original_qty,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as effective_qty,
+        SUM(oi.quantity * oi.unit_cost) as original_value,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity) * oi.unit_cost) as effective_value,
+        COUNT(CASE WHEN oi.adjusted_quantity IS NOT NULL AND oi.adjusted_quantity != oi.quantity THEN 1 END) as adjusted_items
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE o.status != 'cancelled'
+    `;
+
+    const params = [];
+    let paramIndex = 1;
+
+    if (seasonId) {
+      query += ` AND o.season_id = $${paramIndex}`;
+      params.push(seasonId);
+      paramIndex++;
+    }
+    if (brandId) {
+      query += ` AND o.brand_id = $${paramIndex}`;
+      params.push(brandId);
+      paramIndex++;
+    }
+    if (locationId) {
+      query += ` AND o.location_id = $${paramIndex}`;
+      params.push(locationId);
+      paramIndex++;
+    }
+
+    query += `
+      GROUP BY ${groupColumn}
+      HAVING ${groupColumn} IS NOT NULL
+      ORDER BY SUM(COALESCE(oi.adjusted_quantity, oi.quantity) * oi.unit_cost) DESC
+    `;
+
+    const result = await pool.query(query, params);
+
+    const totalOriginalValue = result.rows.reduce((sum, r) => sum + parseFloat(r.original_value || 0), 0);
+    const totalEffectiveValue = result.rows.reduce((sum, r) => sum + parseFloat(r.effective_value || 0), 0);
+
+    const categories = result.rows.map(row => {
+      const originalValue = parseFloat(row.original_value || 0);
+      const effectiveValue = parseFloat(row.effective_value || 0);
+
+      return {
+        group_name: row.group_name,
+        item_count: parseInt(row.item_count),
+        unique_products: parseInt(row.unique_products),
+        original_qty: parseInt(row.original_qty || 0),
+        effective_qty: parseInt(row.effective_qty || 0),
+        qty_change: parseInt(row.effective_qty || 0) - parseInt(row.original_qty || 0),
+        original_value: originalValue.toFixed(2),
+        effective_value: effectiveValue.toFixed(2),
+        value_change: (effectiveValue - originalValue).toFixed(2),
+        adjusted_items: parseInt(row.adjusted_items || 0),
+        pct_of_total: totalEffectiveValue > 0 ? ((effectiveValue / totalEffectiveValue) * 100).toFixed(1) : '0'
+      };
+    });
+
+    return {
+      success: true,
+      group_by: groupBy,
+      summary: {
+        total_groups: categories.length,
+        total_original_value: totalOriginalValue.toFixed(2),
+        total_effective_value: totalEffectiveValue.toFixed(2),
+        total_value_change: (totalEffectiveValue - totalOriginalValue).toFixed(2)
+      },
+      categories
+    };
+  } catch (error) {
+    console.error('analyze_by_category error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
 module.exports = {
   query_sales_data,
   get_order_inventory,
@@ -1310,5 +1943,10 @@ module.exports = {
   get_order_summary,
   find_orders_by_name,
   get_brands,
-  get_seasons
+  get_seasons,
+  get_locations,
+  get_suggested_items,
+  get_finalized_history,
+  compare_to_last_year,
+  analyze_by_category
 };

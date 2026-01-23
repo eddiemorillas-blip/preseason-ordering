@@ -37,7 +37,7 @@ const AVAILABLE_TOOLS = [
   },
   {
     name: 'get_order_inventory',
-    description: 'Get current order items/inventory. Use this to see what products are already in orders.',
+    description: 'Get current order items/inventory with BOTH original and adjusted quantities. Shows what products are in orders and tracks all modifications. Use this to see current order state.',
     parameters: {
       type: 'object',
       properties: {
@@ -153,7 +153,7 @@ const AVAILABLE_TOOLS = [
   },
   {
     name: 'get_order_details',
-    description: 'Get complete details for a specific order including all items. Use this to understand order contents.',
+    description: 'Get COMPLETE details for a specific order including all items with original quantities, adjusted quantities, costs, categories, and budget utilization. Use this for deep analysis of a single order.',
     parameters: {
       type: 'object',
       properties: {
@@ -245,6 +245,70 @@ const AVAILABLE_TOOLS = [
       type: 'object',
       properties: {
         searchTerm: { type: 'string', description: 'Season name to search for (optional, case-insensitive partial match)' }
+      }
+    }
+  },
+  {
+    name: 'get_locations',
+    description: 'List all store locations or search by name/code. Use this to find location IDs (e.g., "Salt Lake City", "Boise", "SLC").',
+    parameters: {
+      type: 'object',
+      properties: {
+        searchTerm: { type: 'string', description: 'Location name or code to search for (optional, case-insensitive partial match)' }
+      }
+    }
+  },
+  {
+    name: 'get_suggested_items',
+    description: 'Find products with LOW STOCK COVERAGE (<1 month supply) that are NOT currently in any order. Use this to identify products that should be ADDED to orders. Returns products with their stock levels, sales velocity, and suggested quantities to reach target coverage.',
+    parameters: {
+      type: 'object',
+      properties: {
+        seasonId: { type: 'integer', description: 'Season ID (required)' },
+        brandId: { type: 'integer', description: 'Brand ID (required)' },
+        locationId: { type: 'integer', description: 'Location ID (required)' },
+        targetMonths: { type: 'integer', description: 'Target months of coverage to calculate suggested qty (default: 3)' }
+      },
+      required: ['seasonId', 'brandId', 'locationId']
+    }
+  },
+  {
+    name: 'get_finalized_history',
+    description: 'View previously finalized order adjustments. Use this to see what changes were made and approved in the past.',
+    parameters: {
+      type: 'object',
+      properties: {
+        seasonId: { type: 'integer', description: 'Filter by season (optional)' },
+        brandId: { type: 'integer', description: 'Filter by brand (optional)' },
+        locationId: { type: 'integer', description: 'Filter by location (optional)' },
+        orderId: { type: 'integer', description: 'Filter by specific order (optional)' }
+      }
+    }
+  },
+  {
+    name: 'compare_to_last_year',
+    description: 'Compare current order quantities to last year\'s actual sales. Use this to validate if order quantities are appropriate based on historical performance. Identifies products where you\'re ordering significantly more or less than last year\'s sales.',
+    parameters: {
+      type: 'object',
+      properties: {
+        brandId: { type: 'integer', description: 'Brand ID (required)' },
+        locationId: { type: 'integer', description: 'Location ID (required)' },
+        currentSeasonId: { type: 'integer', description: 'Current season ID to compare orders from (optional)' },
+        comparisonMonths: { type: 'integer', description: 'Months of sales history to compare against (default: 12)' }
+      },
+      required: ['brandId', 'locationId']
+    }
+  },
+  {
+    name: 'analyze_by_category',
+    description: 'Analyze orders grouped by category, subcategory, product family (base_name), or gender. Use this to understand order composition and identify which categories need adjustment.',
+    parameters: {
+      type: 'object',
+      properties: {
+        seasonId: { type: 'integer', description: 'Filter by season (optional)' },
+        brandId: { type: 'integer', description: 'Filter by brand (optional)' },
+        locationId: { type: 'integer', description: 'Filter by location (optional)' },
+        groupBy: { type: 'string', description: 'How to group: "category", "subcategory", "base_name" (product family), or "gender". Default: "category"' }
       }
     }
   }
