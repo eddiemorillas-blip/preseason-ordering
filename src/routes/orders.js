@@ -836,11 +836,14 @@ router.get('/inventory', authenticateToken, async (req, res) => {
     const upcs = [...new Set(items.map(item => item.upc).filter(Boolean))];
     const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
     const locationIds = [...new Set(items.map(item => item.location_id).filter(Boolean))];
+    // Get the order IDs that are currently being displayed (to exclude from on-order calculation)
+    const currentOrderIds = [...new Set(items.map(item => item.order_id).filter(Boolean))];
 
     console.log(`Fetching stock for ${upcs.length} unique UPCs`);
     console.log(`[On-Order Debug] Looking for on-order quantities:`);
     console.log(`  - Product IDs: ${productIds.length} products`);
     console.log(`  - Location IDs: ${locationIds.join(', ')}`);
+    console.log(`  - Excluding current order IDs: ${currentOrderIds.join(', ')}`);
 
     // Run BigQuery stock fetch and on-order database query in PARALLEL
     const [stockData, onOrderData] = await Promise.all([
@@ -856,7 +859,7 @@ router.get('/inventory', authenticateToken, async (req, res) => {
           return {};
         }
       })(),
-      // On-order database query
+      // On-order database query (excludes current order being viewed)
       (async () => {
         if (productIds.length === 0 || locationIds.length === 0) return {};
         try {
@@ -871,8 +874,9 @@ router.get('/inventory', authenticateToken, async (req, res) => {
               AND o.location_id = ANY($1)
               AND oi.product_id = ANY($2)
               AND o.status NOT IN ('cancelled', 'received')
+              AND o.id != ALL($3)
             GROUP BY oi.product_id, o.location_id
-          `, [locationIds, productIds]);
+          `, [locationIds, productIds, currentOrderIds]);
 
           console.log(`  - Found ${onOrderResult.rows.length} product-location combos with on-order qty`);
 
@@ -2360,18 +2364,18 @@ router.post('/batch-adjust', authenticateToken, authorizeRoles('admin', 'buyer')
 
     await client.query('BEGIN');
 
-    // Batch verify all items exist in one query
-    const itemIds = validAdjustments.map(adj => adj.itemId);
-    const orderPairs = validAdjustments.map(adj => `(${adj.itemId}, ${adj.orderId})`).join(',');
+    // Batch verify all items exist in one query using parameterized arrays
+    const itemIds = validAdjustments.map(adj => parseInt(adj.itemId, 10));
+    const orderIds = validAdjustments.map(adj => parseInt(adj.orderId, 10));
 
     const existingResult = await client.query(`
-      SELECT id, order_id FROM order_items
-      WHERE (id, order_id) IN (${orderPairs})
-    `);
+      SELECT oi.id, oi.order_id FROM order_items oi
+      WHERE oi.id = ANY($1) AND oi.order_id = ANY($2)
+    `, [itemIds, orderIds]);
 
     const existingItems = new Set(existingResult.rows.map(r => r.id));
     const failed = validAdjustments
-      .filter(adj => !existingItems.has(adj.itemId))
+      .filter(adj => !existingItems.has(parseInt(adj.itemId, 10)))
       .map(adj => ({ itemId: adj.itemId, error: 'Item not found' }));
 
     // Add invalid entries to failed list
@@ -2381,7 +2385,7 @@ router.post('/batch-adjust', authenticateToken, authorizeRoles('admin', 'buyer')
     }
 
     // Bulk update all valid items using a VALUES clause
-    const validItems = validAdjustments.filter(adj => existingItems.has(adj.itemId));
+    const validItems = validAdjustments.filter(adj => existingItems.has(parseInt(adj.itemId, 10)));
 
     if (validItems.length > 0) {
       // Build VALUES clause for bulk update

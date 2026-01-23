@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import api, { orderAPI, formAPI, agentAPI } from '../services/api';
 import Layout from '../components/Layout';
@@ -131,21 +131,27 @@ const OrderAdjustment = () => {
     fetchShipDates();
   }, [selectedSeasonId, selectedBrandId, activeLocationId]);
 
-  // Clear ship date filter when location changes
-  useEffect(() => {
-    if (selectedShipDate) {
-      updateFilter('shipDate', '');
-    }
-  }, [activeLocationId]);
+  // Track previous location to detect location changes
+  const prevLocationRef = useRef(activeLocationId);
 
-  // Fetch inventory when active location or ship date changes
+  // Handle location changes and fetch inventory
   useEffect(() => {
-    if (selectedSeasonId && selectedBrandId && activeLocationId) {
-      // Always refetch when ship date changes, or if no cached data
-      const cacheKey = `${activeLocationId}-${selectedShipDate || 'all'}`;
-      if (!inventoryByLocation[cacheKey]) {
-        fetchInventoryForLocation(activeLocationId, selectedShipDate);
-      }
+    if (!selectedSeasonId || !selectedBrandId || !activeLocationId) return;
+
+    const locationChanged = prevLocationRef.current !== activeLocationId;
+    prevLocationRef.current = activeLocationId;
+
+    // If location changed and there's a ship date filter, clear it first
+    // The URL change will trigger another effect run with empty ship date
+    if (locationChanged && selectedShipDate) {
+      updateFilter('shipDate', '');
+      return; // Exit early - the URL update will trigger this effect again with cleared ship date
+    }
+
+    // Fetch inventory if not cached
+    const cacheKey = `${activeLocationId}-${selectedShipDate || 'all'}`;
+    if (!inventoryByLocation[cacheKey]) {
+      fetchInventoryForLocation(activeLocationId, selectedShipDate);
     }
   }, [selectedSeasonId, selectedBrandId, activeLocationId, selectedShipDate]);
 
@@ -659,7 +665,7 @@ const OrderAdjustment = () => {
   // Handle form import success
   const handleImportSuccess = async () => {
     if (activeLocationId) {
-      fetchInventoryForLocation(activeLocationId);
+      fetchInventoryForLocation(activeLocationId, selectedShipDate);
     }
     setShowImportModal(false);
   };
@@ -1427,11 +1433,32 @@ const OrderAdjustment = () => {
                               setInventoryByLocation(prev => {
                                 const locationData = prev[currentCacheKey];
                                 if (!locationData) return prev;
+
+                                const updatedItems = locationData.items.filter(i => i.item_id !== item.item_id);
+
+                                // Recalculate summary after deletion
+                                const newSummary = {
+                                  totalItems: updatedItems.length,
+                                  totalOriginalUnits: updatedItems.reduce((sum, i) => sum + parseInt(i.original_quantity || 0), 0),
+                                  totalAdjustedUnits: updatedItems.reduce((sum, i) => {
+                                    const qty = i.adjusted_quantity !== null ? i.adjusted_quantity : i.original_quantity;
+                                    return sum + parseInt(qty || 0);
+                                  }, 0),
+                                  totalOriginalWholesale: updatedItems.reduce((sum, i) => {
+                                    return sum + (parseFloat(i.unit_cost || 0) * parseInt(i.original_quantity || 0));
+                                  }, 0),
+                                  totalWholesale: updatedItems.reduce((sum, i) => {
+                                    const qty = i.adjusted_quantity !== null ? i.adjusted_quantity : i.original_quantity;
+                                    return sum + (parseFloat(i.unit_cost || 0) * parseInt(qty || 0));
+                                  }, 0)
+                                };
+
                                 return {
                                   ...prev,
                                   [currentCacheKey]: {
                                     ...locationData,
-                                    items: locationData.items.filter(i => i.item_id !== item.item_id)
+                                    items: updatedItems,
+                                    summary: newSummary
                                   }
                                 };
                               });
