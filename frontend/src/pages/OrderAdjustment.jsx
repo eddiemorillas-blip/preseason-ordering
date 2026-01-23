@@ -1208,6 +1208,7 @@ const OrderAdjustment = () => {
                   <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">Color</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Orig</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Stock</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-orange-600 uppercase" title="Quantity from other finalized orders not yet received">On Order</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase">Adj</th>
                   {formQuantityColumns.map(col => (
                     <th key={col.id} className="px-2 py-2 text-center text-xs font-medium text-gray-500 uppercase" title={`Ship Date: ${col.ship_date}`}>
@@ -1241,6 +1242,13 @@ const OrderAdjustment = () => {
                     </td>
                     <td className="px-2 py-1.5 text-center text-gray-500">
                       {item.stock_on_hand !== null ? item.stock_on_hand : '-'}
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      {item.on_order > 0 ? (
+                        <span className="text-orange-600 font-medium">{item.on_order}</span>
+                      ) : (
+                        <span className="text-gray-300">-</span>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 text-center">
                       {editingItemId === item.item_id ? (
@@ -1323,6 +1331,7 @@ const OrderAdjustment = () => {
                   <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Size</th>
                   <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Color</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase">Stock</th>
+                  <th className="px-2 py-2 text-center text-xs font-medium text-orange-600 uppercase" title="Quantity from other finalized orders not yet received">On Order</th>
                   <th className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase">Qty</th>
                   {formQuantityColumns.map(col => (
                     <th key={col.id} className="px-2 py-2 text-center text-xs font-medium text-green-700 uppercase" title={`Ship Date: ${col.ship_date}`}>
@@ -1353,6 +1362,13 @@ const OrderAdjustment = () => {
                     </td>
                     <td className="px-2 py-1.5 text-center text-gray-500">
                       {item.stock_on_hand !== null ? item.stock_on_hand : '-'}
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      {item.on_order > 0 ? (
+                        <span className="text-orange-600 font-medium">{item.on_order}</span>
+                      ) : (
+                        <span className="text-gray-300">-</span>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 text-center">
                       {editingItemId === item.item_id ? (

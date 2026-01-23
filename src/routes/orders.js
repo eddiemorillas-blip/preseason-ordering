@@ -854,6 +854,51 @@ router.get('/inventory', authenticateToken, async (req, res) => {
         item.stock_on_hand = null;
       }
     });
+
+    // Get "on order" quantities from OTHER finalized orders for the same products/location
+    // These are orders that have been finalized but not yet received
+    const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
+    const locationIds = [...new Set(items.map(item => item.location_id).filter(Boolean))];
+    const orderIds = [...new Set(items.map(item => item.order_id).filter(Boolean))];
+
+    let onOrderData = {};
+    if (productIds.length > 0 && locationIds.length > 0) {
+      try {
+        // Query for quantities from finalized orders (excluding current orders being viewed)
+        const onOrderResult = await pool.query(`
+          SELECT
+            oi.product_id,
+            o.location_id,
+            SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as on_order_qty
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          WHERE o.finalized_at IS NOT NULL
+            AND o.location_id = ANY($1)
+            AND oi.product_id = ANY($2)
+            AND o.id != ALL($3)
+            AND o.status != 'cancelled'
+            AND o.status != 'received'
+          GROUP BY oi.product_id, o.location_id
+        `, [locationIds, productIds, orderIds]);
+
+        // Build lookup: { productId-locationId: qty }
+        onOrderResult.rows.forEach(row => {
+          const key = `${row.product_id}-${row.location_id}`;
+          onOrderData[key] = parseInt(row.on_order_qty) || 0;
+        });
+        console.log(`Got on-order data for ${Object.keys(onOrderData).length} product-location combinations`);
+      } catch (err) {
+        console.error('Error fetching on-order quantities:', err.message);
+        // Continue without on-order data
+      }
+    }
+
+    // Add on_order to each item
+    items.forEach(item => {
+      const key = `${item.product_id}-${item.location_id}`;
+      item.on_order = onOrderData[key] || 0;
+    });
+
     const summary = {
       totalItems: items.length,
       totalOriginalUnits: items.reduce((sum, item) => sum + parseInt(item.original_quantity || 0), 0),
