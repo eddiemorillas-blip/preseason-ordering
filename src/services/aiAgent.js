@@ -124,16 +124,51 @@ async function sendMessage(conversationId, userMessage, context = {}, tools = []
       { role: 'system', content: SYSTEM_PROMPT }
     ];
 
-    // Add context if provided
+    // Add context if provided - fetch actual names for better AI understanding
     if (context.seasonId || context.brandId || context.locationId) {
       const contextParts = [];
-      if (context.seasonId) contextParts.push(`Season ID: ${context.seasonId}`);
-      if (context.brandId) contextParts.push(`Brand ID: ${context.brandId}`);
-      if (context.locationId) contextParts.push(`Location ID: ${context.locationId}`);
+
+      // Fetch names from database for better context
+      if (context.seasonId) {
+        const seasonResult = await client.query('SELECT name FROM seasons WHERE id = $1', [context.seasonId]);
+        const seasonName = seasonResult.rows[0]?.name || `ID ${context.seasonId}`;
+        contextParts.push(`Season: ${seasonName} (ID: ${context.seasonId})`);
+      }
+      if (context.brandId) {
+        const brandResult = await client.query('SELECT name FROM brands WHERE id = $1', [context.brandId]);
+        const brandName = brandResult.rows[0]?.name || `ID ${context.brandId}`;
+        contextParts.push(`Brand: ${brandName} (ID: ${context.brandId})`);
+      }
+      if (context.locationId) {
+        const locationResult = await client.query('SELECT name FROM locations WHERE id = $1', [context.locationId]);
+        const locationName = locationResult.rows[0]?.name || `ID ${context.locationId}`;
+        contextParts.push(`Location: ${locationName} (ID: ${context.locationId})`);
+      }
+
+      // Also get current order info if we have all three context fields
+      if (context.seasonId && context.brandId && context.locationId) {
+        const orderResult = await client.query(`
+          SELECT o.id, o.order_number, o.ship_date, o.status, o.finalized_at,
+                 COUNT(oi.id) as item_count,
+                 SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as total_units
+          FROM orders o
+          LEFT JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.season_id = $1 AND o.brand_id = $2 AND o.location_id = $3 AND o.status != 'cancelled'
+          GROUP BY o.id
+          ORDER BY o.ship_date
+        `, [context.seasonId, context.brandId, context.locationId]);
+
+        if (orderResult.rows.length > 0) {
+          const orders = orderResult.rows.map(o =>
+            `Order ${o.order_number} (ID: ${o.id}, Ship: ${o.ship_date ? new Date(o.ship_date).toLocaleDateString() : 'N/A'}, ${o.item_count} items, ${o.total_units} units, ${o.finalized_at ? 'finalized' : 'draft'})`
+          ).join('; ');
+          contextParts.push(`Current orders: ${orders}`);
+        }
+      }
 
       messages.push({
         role: 'system',
-        content: `Current context: ${contextParts.join(', ')}`
+        content: `Current working context - The user is viewing the Order Adjustment page for:\n${contextParts.join('\n')}\n\nYou have access to tools to search products, check inventory, and create order adjustment suggestions. Use the IDs provided when calling tools.`
       });
     }
 
