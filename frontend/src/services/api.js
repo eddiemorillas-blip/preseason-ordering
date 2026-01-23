@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-// In production, use relative URL (frontend served from same server as API)
+// In production, use the Railway backend URL
 // In development, use localhost
 const getBaseURL = () => {
   if (import.meta.env.VITE_API_URL) {
@@ -8,7 +8,8 @@ const getBaseURL = () => {
   }
   // Check if we're on the production domain
   if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-    return '/api'; // Relative URL for production
+    // Use the Railway backend with proper env vars
+    return 'https://preseason-ordering-production.up.railway.app/api';
   }
   return 'http://localhost:5000/api'; // Development
 };
