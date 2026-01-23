@@ -213,11 +213,19 @@ const OrderAdjustment = () => {
         order = orderRes.data.order;
       }
 
+      // Add location info to each item
+      const locationName = locations.find(l => l.id === locationId)?.name || '';
+      const itemsWithLocation = inv.map(item => ({
+        ...item,
+        location_id: locationId,
+        location_name: locationName
+      }));
+
       // Cache the data with ship date in key
       const cacheKey = `${locationId}-${shipDate || 'all'}`;
       setInventoryByLocation(prev => ({
         ...prev,
-        [cacheKey]: { items: inv, summary: sum, order }
+        [cacheKey]: { items: itemsWithLocation, summary: sum, order }
       }));
 
       // Update order status
@@ -703,9 +711,20 @@ const OrderAdjustment = () => {
     }
   };
 
-  // Split inventory into original and added items
-  const originalItems = inventory.filter(item => item.original_quantity > 0);
-  const addedItems = inventory.filter(item => item.original_quantity === 0);
+  // Sort function: by location name, then by product name
+  const sortByLocationThenName = (a, b) => {
+    const locCompare = (a.location_name || '').localeCompare(b.location_name || '');
+    if (locCompare !== 0) return locCompare;
+    return (a.product_name || '').localeCompare(b.product_name || '');
+  };
+
+  // Split inventory into original and added items, sorted by location then name
+  const originalItems = inventory
+    .filter(item => item.original_quantity > 0)
+    .sort(sortByLocationThenName);
+  const addedItems = inventory
+    .filter(item => item.original_quantity === 0)
+    .sort(sortByLocationThenName);
 
   // Count finalized locations
   const finalizedCount = Object.values(orderStatusByLocation).filter(s => s?.finalized_at).length;
@@ -1183,6 +1202,7 @@ const OrderAdjustment = () => {
             <table className="w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
                   <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">Product</th>
                   <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">Size</th>
                   <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase">Color</th>
@@ -1202,6 +1222,9 @@ const OrderAdjustment = () => {
               <tbody className="bg-white divide-y divide-gray-200">
                 {originalItems.map((item) => (
                   <tr key={item.item_id} className={`hover:bg-gray-50 ${hasAdjustment(item) ? 'bg-blue-50' : ''}`}>
+                    <td className="px-2 py-1.5 text-gray-600 text-xs">
+                      {item.location_name || '-'}
+                    </td>
                     <td className="px-2 py-1.5">
                       <div className="font-medium text-gray-900 truncate max-w-[180px]" title={item.product_name}>
                         {item.product_name}
@@ -1295,6 +1318,7 @@ const OrderAdjustment = () => {
             <table className="w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-green-50">
                 <tr>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Location</th>
                   <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Product</th>
                   <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Size</th>
                   <th className="px-2 py-2 text-left text-xs font-medium text-green-700 uppercase">Color</th>
@@ -1313,6 +1337,9 @@ const OrderAdjustment = () => {
               <tbody className="bg-white divide-y divide-gray-200">
                 {addedItems.map((item) => (
                   <tr key={item.item_id} className="hover:bg-green-50">
+                    <td className="px-2 py-1.5 text-gray-600 text-xs">
+                      {item.location_name || '-'}
+                    </td>
                     <td className="px-2 py-1.5">
                       <div className="font-medium text-gray-900 truncate max-w-[180px]" title={item.product_name}>
                         {item.product_name}
