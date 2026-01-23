@@ -831,82 +831,76 @@ router.get('/inventory', authenticateToken, async (req, res) => {
     const items = inventoryResult.rows;
     const orderNumbers = [...new Set(items.map(item => item.order_number))];
     console.log(`Inventory query returned ${items.length} items from orders: ${orderNumbers.join(', ')}`);
+
+    // Extract unique values for parallel queries
     const upcs = [...new Set(items.map(item => item.upc).filter(Boolean))];
+    const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
+    const locationIds = [...new Set(items.map(item => item.location_id).filter(Boolean))];
 
-    let stockData = {};
     console.log(`Fetching stock for ${upcs.length} unique UPCs`);
-    if (upcs.length > 0) {
-      try {
-        stockData = await getStockByUPCs(upcs);
-        console.log(`Got stock data for ${Object.keys(stockData).length} UPCs`);
-      } catch (bqError) {
-        console.error('BigQuery stock fetch error:', bqError.message, bqError.stack);
-        // Continue without stock data if BigQuery fails
-      }
-    }
+    console.log(`[On-Order Debug] Looking for on-order quantities:`);
+    console.log(`  - Product IDs: ${productIds.length} products`);
+    console.log(`  - Location IDs: ${locationIds.join(', ')}`);
 
-    // Add stock_on_hand to each item based on its location
+    // Run BigQuery stock fetch and on-order database query in PARALLEL
+    const [stockData, onOrderData] = await Promise.all([
+      // BigQuery stock fetch
+      (async () => {
+        if (upcs.length === 0) return {};
+        try {
+          const data = await getStockByUPCs(upcs);
+          console.log(`Got stock data for ${Object.keys(data).length} UPCs`);
+          return data;
+        } catch (bqError) {
+          console.error('BigQuery stock fetch error:', bqError.message, bqError.stack);
+          return {};
+        }
+      })(),
+      // On-order database query
+      (async () => {
+        if (productIds.length === 0 || locationIds.length === 0) return {};
+        try {
+          const onOrderResult = await pool.query(`
+            SELECT
+              oi.product_id,
+              o.location_id,
+              SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as on_order_qty
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            WHERE o.finalized_at IS NOT NULL
+              AND o.location_id = ANY($1)
+              AND oi.product_id = ANY($2)
+              AND o.status NOT IN ('cancelled', 'received')
+            GROUP BY oi.product_id, o.location_id
+          `, [locationIds, productIds]);
+
+          console.log(`  - Found ${onOrderResult.rows.length} product-location combos with on-order qty`);
+
+          // Build lookup: { productId-locationId: qty }
+          const data = {};
+          onOrderResult.rows.forEach(row => {
+            const key = `${row.product_id}-${row.location_id}`;
+            data[key] = parseInt(row.on_order_qty) || 0;
+          });
+          console.log(`[On-Order Debug] Got on-order data for ${Object.keys(data).length} product-location combinations`);
+          return data;
+        } catch (err) {
+          console.error('Error fetching on-order quantities:', err.message);
+          return {};
+        }
+      })()
+    ]);
+
+    // Add stock_on_hand and on_order to each item
     items.forEach(item => {
+      // Stock on hand
       const upcStock = stockData[item.upc];
       if (upcStock && item.location_id) {
         item.stock_on_hand = upcStock[item.location_id] || 0;
       } else {
         item.stock_on_hand = null;
       }
-    });
-
-    // Get "on order" quantities from ALL finalized orders for the same products/location
-    // This shows total pending inventory (finalized but not yet received)
-    const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
-    const locationIds = [...new Set(items.map(item => item.location_id).filter(Boolean))];
-
-    console.log(`[On-Order Debug] Looking for on-order quantities:`);
-    console.log(`  - Product IDs: ${productIds.length} products`);
-    console.log(`  - Location IDs: ${locationIds.join(', ')}`);
-
-    let onOrderData = {};
-    if (productIds.length > 0 && locationIds.length > 0) {
-      try {
-        // Check how many finalized orders exist for this location
-        const countResult = await pool.query(`
-          SELECT COUNT(*) as count FROM orders
-          WHERE finalized_at IS NOT NULL
-            AND location_id = ANY($1)
-            AND status NOT IN ('cancelled', 'received')
-        `, [locationIds]);
-        console.log(`  - Total finalized orders for this location: ${countResult.rows[0].count}`);
-
-        // Query for quantities from ALL finalized orders (not cancelled, not received)
-        const onOrderResult = await pool.query(`
-          SELECT
-            oi.product_id,
-            o.location_id,
-            SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as on_order_qty
-          FROM order_items oi
-          JOIN orders o ON oi.order_id = o.id
-          WHERE o.finalized_at IS NOT NULL
-            AND o.location_id = ANY($1)
-            AND oi.product_id = ANY($2)
-            AND o.status NOT IN ('cancelled', 'received')
-          GROUP BY oi.product_id, o.location_id
-        `, [locationIds, productIds]);
-
-        console.log(`  - Found ${onOrderResult.rows.length} product-location combos with on-order qty`);
-
-        // Build lookup: { productId-locationId: qty }
-        onOrderResult.rows.forEach(row => {
-          const key = `${row.product_id}-${row.location_id}`;
-          onOrderData[key] = parseInt(row.on_order_qty) || 0;
-        });
-        console.log(`[On-Order Debug] Got on-order data for ${Object.keys(onOrderData).length} product-location combinations`);
-      } catch (err) {
-        console.error('Error fetching on-order quantities:', err.message);
-        // Continue without on-order data
-      }
-    }
-
-    // Add on_order to each item
-    items.forEach(item => {
+      // On order
       const key = `${item.product_id}-${item.location_id}`;
       item.on_order = onOrderData[key] || 0;
     });
@@ -1502,58 +1496,97 @@ router.post('/:id/copy', authenticateToken, authorizeRoles('admin', 'buyer'), as
         WHERE oi.order_id = $1
       `, [id]);
 
-      // Copy items with variant mapping
+      // Copy items with variant mapping - optimized to avoid N+1 queries
       const skipSet = new Set(skipFamilies || []);
 
-      for (const sourceItem of sourceItemsResult.rows) {
-        // Skip this family if it's in the skip list
-        if (skipSet.has(sourceItem.base_name)) {
-          continue;
-        }
+      // Filter items and collect variant lookups needed
+      const itemsToProcess = sourceItemsResult.rows.filter(item => !skipSet.has(item.base_name));
 
-        let targetProductId = sourceItem.product_id;
-
-        // Check if variant mapping exists for this product family
-        if (variantMapping && sourceItem.base_name in variantMapping) {
-          const familyMapping = variantMapping[sourceItem.base_name];
-          const sizeMapping = familyMapping[sourceItem.size];
-
-          if (sizeMapping) {
-            // Find product with same base_name, size, inseam but different color
-            const targetColor = sizeMapping.to;
-            const targetProductResult = await client.query(`
-              SELECT id FROM products
-              WHERE base_name = $1
-              AND brand_id = $2
-              AND size = $3
-              AND (color = $4 OR name ILIKE $5)
-              AND (inseam = $6 OR (inseam IS NULL AND $6 IS NULL))
-              AND active = true
-              LIMIT 1
-            `, [
-              sourceItem.base_name,
-              sourceOrder.brand_id,
-              sourceItem.size,
-              targetColor,
-              `%${targetColor}%`,
-              sourceItem.inseam
-            ]);
-
-            if (targetProductResult.rows.length > 0) {
-              targetProductId = targetProductResult.rows[0].id;
+      // Collect unique variant mappings needed for batch lookup
+      const variantLookups = [];
+      if (variantMapping) {
+        for (const item of itemsToProcess) {
+          if (item.base_name in variantMapping) {
+            const familyMapping = variantMapping[item.base_name];
+            const sizeMapping = familyMapping[item.size];
+            if (sizeMapping) {
+              variantLookups.push({
+                sourceProductId: item.product_id,
+                base_name: item.base_name,
+                size: item.size,
+                inseam: item.inseam,
+                targetColor: sizeMapping.to
+              });
             }
           }
         }
+      }
 
-        // Calculate line_total
-        const lineTotal = parseFloat(sourceItem.unit_cost || 0) * parseInt(sourceItem.quantity || 0);
+      // Batch lookup all variant target products in a single query
+      const variantProductMap = {};  // sourceProductId -> targetProductId
+      if (variantLookups.length > 0) {
+        // Build a query that finds all target products at once
+        const lookupConditions = variantLookups.map((_, i) => `(
+          p.base_name = v.base_name
+          AND p.size = v.size
+          AND (p.color = v.target_color OR p.name ILIKE '%' || v.target_color || '%')
+          AND (p.inseam = v.inseam OR (p.inseam IS NULL AND v.inseam IS NULL))
+        )`).join(' OR ');
 
-        // Insert item into new order with line_total
-        await client.query(
-          `INSERT INTO order_items (order_id, product_id, quantity, unit_cost, line_total, notes)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [newOrder.id, targetProductId, sourceItem.quantity, sourceItem.unit_cost, lineTotal, sourceItem.notes]
-        );
+        // Create a VALUES list for the lookups
+        const valuesClause = variantLookups.map((lookup, i) =>
+          `($${i * 5 + 1}, $${i * 5 + 2}::text, $${i * 5 + 3}::text, $${i * 5 + 4}::text, $${i * 5 + 5}::text)`
+        ).join(',');
+
+        const lookupParams = variantLookups.flatMap(l => [
+          l.sourceProductId,
+          l.base_name,
+          l.size,
+          l.targetColor,
+          l.inseam
+        ]);
+
+        const variantResult = await client.query(`
+          WITH lookups AS (
+            SELECT * FROM (VALUES ${valuesClause}) AS t(source_product_id, base_name, size, target_color, inseam)
+          )
+          SELECT DISTINCT ON (l.source_product_id)
+            l.source_product_id,
+            p.id as target_product_id
+          FROM lookups l
+          JOIN products p ON p.base_name = l.base_name
+            AND p.size = l.size
+            AND (p.color = l.target_color OR p.name ILIKE '%' || l.target_color || '%')
+            AND (p.inseam = l.inseam OR (p.inseam IS NULL AND l.inseam IS NULL))
+          WHERE p.brand_id = $${lookupParams.length + 1}
+            AND p.active = true
+        `, [...lookupParams, sourceOrder.brand_id]);
+
+        // Build lookup map
+        variantResult.rows.forEach(row => {
+          variantProductMap[row.source_product_id] = row.target_product_id;
+        });
+      }
+
+      // Prepare all items for bulk insert
+      const itemsToInsert = itemsToProcess.map(item => {
+        const targetProductId = variantProductMap[item.product_id] || item.product_id;
+        const lineTotal = parseFloat(item.unit_cost || 0) * parseInt(item.quantity || 0);
+        return [newOrder.id, targetProductId, item.quantity, item.unit_cost, lineTotal, item.notes];
+      });
+
+      // Bulk insert all items in a single query
+      if (itemsToInsert.length > 0) {
+        const insertValues = itemsToInsert.map((_, i) =>
+          `($${i * 6 + 1}, $${i * 6 + 2}, $${i * 6 + 3}, $${i * 6 + 4}, $${i * 6 + 5}, $${i * 6 + 6})`
+        ).join(',');
+
+        const insertParams = itemsToInsert.flat();
+
+        await client.query(`
+          INSERT INTO order_items (order_id, product_id, quantity, unit_cost, line_total, notes)
+          VALUES ${insertValues}
+        `, insertParams);
       }
 
       // Update new order total
@@ -1685,7 +1718,78 @@ router.post('/:id/push-updates', authenticateToken, authorizeRoles('admin', 'buy
       throw new Error('No draft copies found to update');
     }
 
+    const copyIds = copies.rows.map(c => c.id);
+
+    // Get ALL items for ALL copies in a single query
+    const allCopyItems = await client.query(`
+      SELECT
+        oi.*,
+        p.base_name,
+        p.size,
+        p.color,
+        p.inseam
+      FROM order_items oi
+      JOIN products p ON oi.product_id = p.id
+      WHERE oi.order_id = ANY($1)
+    `, [copyIds]);
+
+    // Group copy items by order_id
+    const copyItemsByOrderId = {};
+    for (const item of allCopyItems.rows) {
+      if (!copyItemsByOrderId[item.order_id]) {
+        copyItemsByOrderId[item.order_id] = [];
+      }
+      copyItemsByOrderId[item.order_id].push(item);
+    }
+
+    // Collect all unique base_name+size+inseam combos from source items that might need product lookups
+    const sourceItemKeys = sourceItems.rows.map(item =>
+      `${item.base_name}|${item.size}|${item.inseam || ''}`
+    );
+
+    // Pre-fetch all potential matching products in a single query
+    const uniqueLookups = [];
+    for (const sourceItem of sourceItems.rows) {
+      uniqueLookups.push({
+        base_name: sourceItem.base_name,
+        size: sourceItem.size,
+        inseam: sourceItem.inseam
+      });
+    }
+
+    // Batch query all potential products
+    let productLookupMap = {};
+    if (uniqueLookups.length > 0) {
+      const brandId = sourceOrder.rows[0].brand_id;
+      const productResult = await client.query(`
+        SELECT DISTINCT ON (base_name, size, inseam)
+          id, base_name, size, inseam, wholesale_cost
+        FROM products
+        WHERE brand_id = $1
+          AND active = true
+          AND (base_name, size, COALESCE(inseam, '')) IN (
+            SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[])
+          )
+        ORDER BY base_name, size, inseam, id
+      `, [
+        brandId,
+        uniqueLookups.map(l => l.base_name),
+        uniqueLookups.map(l => l.size),
+        uniqueLookups.map(l => l.inseam || '')
+      ]);
+
+      for (const row of productResult.rows) {
+        const key = `${row.base_name}|${row.size}|${row.inseam || ''}`;
+        productLookupMap[key] = row;
+      }
+    }
+
     const results = [];
+
+    // Collect all operations for batch execution
+    const allUpdates = [];      // { id, quantity, lineTotal }
+    const allInserts = [];      // { orderId, productId, quantity, unitCost, lineTotal }
+    const allDeletes = [];      // item ids
 
     // For each copied order
     for (const copy of copies.rows) {
@@ -1693,22 +1797,11 @@ router.post('/:id/push-updates', authenticateToken, authorizeRoles('admin', 'buy
       let itemsUpdated = 0;
       let itemsRemoved = 0;
 
-      // Get existing items in the copy
-      const copyItems = await client.query(`
-        SELECT
-          oi.*,
-          p.base_name,
-          p.size,
-          p.color,
-          p.inseam
-        FROM order_items oi
-        JOIN products p ON oi.product_id = p.id
-        WHERE oi.order_id = $1
-      `, [copy.id]);
+      const copyItems = copyItemsByOrderId[copy.id] || [];
 
       // Create a map of copy items by base_name+size+inseam for easy lookup
       const copyItemMap = new Map();
-      for (const item of copyItems.rows) {
+      for (const item of copyItems) {
         const key = `${item.base_name}|${item.size}|${item.inseam || ''}`;
         copyItemMap.set(key, item);
       }
@@ -1727,57 +1820,35 @@ router.post('/:id/push-updates', authenticateToken, authorizeRoles('admin', 'buy
 
           if (existingCopyItem.quantity !== sourceItem.quantity) {
             const lineTotal = parseFloat(existingCopyItem.unit_cost || 0) * parseInt(sourceItem.quantity);
-            await client.query(`
-              UPDATE order_items
-              SET quantity = $1, line_total = $2
-              WHERE id = $3
-            `, [sourceItem.quantity, lineTotal, existingCopyItem.id]);
+            allUpdates.push({ id: existingCopyItem.id, quantity: sourceItem.quantity, lineTotal });
             itemsUpdated++;
           }
         } else {
-          // Item doesn't exist in copy - find matching product for this location
-          // Try to find product with same base_name, size, and inseam (may have different color)
-          const matchingProduct = await client.query(`
-            SELECT id, wholesale_cost FROM products
-            WHERE base_name = $1 AND size = $2 AND brand_id = $3
-            AND (inseam = $4 OR (inseam IS NULL AND $4 IS NULL))
-            AND active = true
-            LIMIT 1
-          `, [sourceItem.base_name, sourceItem.size, sourceOrder.rows[0].brand_id, sourceItem.inseam]);
+          // Item doesn't exist in copy - use pre-fetched product lookup
+          const matchingProduct = productLookupMap[key];
 
-          if (matchingProduct.rows.length > 0) {
-            const product = matchingProduct.rows[0];
-            const unitCost = product.wholesale_cost || sourceItem.unit_cost || 0;
+          if (matchingProduct) {
+            const unitCost = matchingProduct.wholesale_cost || sourceItem.unit_cost || 0;
             const lineTotal = parseFloat(unitCost) * parseInt(sourceItem.quantity);
-
-            await client.query(`
-              INSERT INTO order_items (order_id, product_id, quantity, unit_cost, line_total)
-              VALUES ($1, $2, $3, $4, $5)
-            `, [copy.id, product.id, sourceItem.quantity, unitCost, lineTotal]);
+            allInserts.push({
+              orderId: copy.id,
+              productId: matchingProduct.id,
+              quantity: sourceItem.quantity,
+              unitCost,
+              lineTotal
+            });
             itemsAdded++;
           }
         }
       }
 
       // Remove items that are in copy but not in source
-      for (const copyItem of copyItems.rows) {
+      for (const copyItem of copyItems) {
         if (!matchedCopyItemIds.has(copyItem.id)) {
-          await client.query('DELETE FROM order_items WHERE id = $1', [copyItem.id]);
+          allDeletes.push(copyItem.id);
           itemsRemoved++;
         }
       }
-
-      // Update the copy's total
-      await client.query(`
-        UPDATE orders
-        SET current_total = (
-          SELECT COALESCE(SUM(line_total), 0)
-          FROM order_items
-          WHERE order_id = $1
-        ),
-        updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-      `, [copy.id]);
 
       results.push({
         orderId: copy.id,
@@ -1788,6 +1859,53 @@ router.post('/:id/push-updates', authenticateToken, authorizeRoles('admin', 'buy
         itemsRemoved
       });
     }
+
+    // Execute batch updates
+    if (allUpdates.length > 0) {
+      const updateValues = allUpdates.map((_, i) =>
+        `($${i * 3 + 1}::integer, $${i * 3 + 2}::integer, $${i * 3 + 3}::numeric)`
+      ).join(',');
+      const updateParams = allUpdates.flatMap(u => [u.id, u.quantity, u.lineTotal]);
+
+      await client.query(`
+        UPDATE order_items AS oi
+        SET quantity = v.quantity, line_total = v.line_total
+        FROM (VALUES ${updateValues}) AS v(id, quantity, line_total)
+        WHERE oi.id = v.id
+      `, updateParams);
+    }
+
+    // Execute batch inserts
+    if (allInserts.length > 0) {
+      const insertValues = allInserts.map((_, i) =>
+        `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`
+      ).join(',');
+      const insertParams = allInserts.flatMap(ins => [
+        ins.orderId, ins.productId, ins.quantity, ins.unitCost, ins.lineTotal
+      ]);
+
+      await client.query(`
+        INSERT INTO order_items (order_id, product_id, quantity, unit_cost, line_total)
+        VALUES ${insertValues}
+      `, insertParams);
+    }
+
+    // Execute batch deletes
+    if (allDeletes.length > 0) {
+      await client.query(`DELETE FROM order_items WHERE id = ANY($1)`, [allDeletes]);
+    }
+
+    // Update all order totals in a single query
+    await client.query(`
+      UPDATE orders
+      SET current_total = (
+        SELECT COALESCE(SUM(line_total), 0)
+        FROM order_items
+        WHERE order_id = orders.id
+      ),
+      updated_at = CURRENT_TIMESTAMP
+      WHERE id = ANY($1)
+    `, [copyIds]);
 
     await client.query('COMMIT');
 
@@ -2230,46 +2348,60 @@ router.post('/batch-adjust', authenticateToken, authorizeRoles('admin', 'buyer')
       return res.status(400).json({ error: 'adjustments array is required' });
     }
 
+    // Filter out invalid entries
+    const validAdjustments = adjustments.filter(adj =>
+      adj.orderId && adj.itemId && adj.adjusted_quantity !== undefined
+    );
+    const invalidCount = adjustments.length - validAdjustments.length;
+
+    if (validAdjustments.length === 0) {
+      return res.json({ updated: 0, failed: adjustments.map(adj => ({ itemId: adj.itemId, error: 'Missing required fields' })) });
+    }
+
     await client.query('BEGIN');
 
-    let updated = 0;
-    const failed = [];
+    // Batch verify all items exist in one query
+    const itemIds = validAdjustments.map(adj => adj.itemId);
+    const orderPairs = validAdjustments.map(adj => `(${adj.itemId}, ${adj.orderId})`).join(',');
 
-    for (const adj of adjustments) {
-      const { orderId, itemId, adjusted_quantity } = adj;
+    const existingResult = await client.query(`
+      SELECT id, order_id FROM order_items
+      WHERE (id, order_id) IN (${orderPairs})
+    `);
 
-      if (!orderId || !itemId || adjusted_quantity === undefined) {
-        failed.push({ itemId, error: 'Missing required fields' });
-        continue;
-      }
+    const existingItems = new Set(existingResult.rows.map(r => r.id));
+    const failed = validAdjustments
+      .filter(adj => !existingItems.has(adj.itemId))
+      .map(adj => ({ itemId: adj.itemId, error: 'Item not found' }));
 
-      try {
-        // Verify item exists and belongs to this order
-        const itemResult = await client.query(
-          'SELECT id FROM order_items WHERE id = $1 AND order_id = $2',
-          [itemId, orderId]
-        );
+    // Add invalid entries to failed list
+    if (invalidCount > 0) {
+      adjustments.filter(adj => !adj.orderId || !adj.itemId || adj.adjusted_quantity === undefined)
+        .forEach(adj => failed.push({ itemId: adj.itemId, error: 'Missing required fields' }));
+    }
 
-        if (itemResult.rows.length === 0) {
-          failed.push({ itemId, error: 'Item not found' });
-          continue;
-        }
+    // Bulk update all valid items using a VALUES clause
+    const validItems = validAdjustments.filter(adj => existingItems.has(adj.itemId));
 
-        // Update adjusted_quantity
-        await client.query(
-          'UPDATE order_items SET adjusted_quantity = $1 WHERE id = $2',
-          [adjusted_quantity, itemId]
-        );
+    if (validItems.length > 0) {
+      // Build VALUES clause for bulk update
+      const values = validItems.map((adj, i) =>
+        `($${i * 2 + 1}::integer, $${i * 2 + 2}::integer)`
+      ).join(',');
 
-        updated++;
-      } catch (err) {
-        failed.push({ itemId, error: err.message });
-      }
+      const params = validItems.flatMap(adj => [adj.itemId, adj.adjusted_quantity]);
+
+      await client.query(`
+        UPDATE order_items AS oi
+        SET adjusted_quantity = v.qty
+        FROM (VALUES ${values}) AS v(id, qty)
+        WHERE oi.id = v.id
+      `, params);
     }
 
     await client.query('COMMIT');
 
-    res.json({ updated, failed });
+    res.json({ updated: validItems.length, failed });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Batch adjust error:', error);
@@ -2494,78 +2626,73 @@ router.post('/finalize/brand-wide', authenticateToken, authorizeRoles('admin', '
       return res.status(400).json({ error: 'seasonId and brandId are required' });
     }
 
-    // Get all orders for this brand/season
+    // Get all orders for this brand/season with item counts in a single query
     const ordersResult = await client.query(`
-      SELECT o.id, o.order_number, o.location_id, l.name as location_name
+      SELECT o.id, o.order_number, o.location_id, l.name as location_name,
+             COUNT(oi.id) as item_count
       FROM orders o
       LEFT JOIN locations l ON o.location_id = l.id
+      LEFT JOIN order_items oi ON oi.order_id = o.id
       WHERE o.season_id = $1 AND o.brand_id = $2 AND o.status != 'cancelled'
+      GROUP BY o.id, o.order_number, o.location_id, l.name
     `, [seasonId, brandId]);
 
     if (ordersResult.rows.length === 0) {
       return res.status(404).json({ error: 'No orders found for this brand/season' });
     }
 
+    const orderIds = ordersResult.rows.map(o => o.id);
+
     await client.query('BEGIN');
 
-    const results = [];
-    for (const order of ordersResult.rows) {
-      // Get all items for this order
-      const itemsResult = await client.query(`
-        SELECT
-          oi.id as order_item_id,
-          oi.product_id,
-          oi.quantity as original_quantity,
-          COALESCE(oi.adjusted_quantity, oi.quantity) as adjusted_quantity,
-          oi.unit_cost
-        FROM order_items oi
-        WHERE oi.order_id = $1
-      `, [order.id]);
+    // Bulk insert/update all finalized adjustments in a single query
+    await client.query(`
+      INSERT INTO finalized_adjustments (
+        order_id, order_item_id, product_id,
+        original_quantity, adjusted_quantity, unit_cost,
+        season_id, brand_id, location_id, ship_date,
+        finalized_by, finalized_at
+      )
+      SELECT
+        o.id,
+        oi.id,
+        oi.product_id,
+        oi.quantity,
+        COALESCE(oi.adjusted_quantity, oi.quantity),
+        oi.unit_cost,
+        o.season_id,
+        o.brand_id,
+        o.location_id,
+        o.ship_date,
+        $1,
+        CURRENT_TIMESTAMP
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.id
+      WHERE o.id = ANY($2)
+      ON CONFLICT (order_item_id) DO UPDATE SET
+        original_quantity = EXCLUDED.original_quantity,
+        adjusted_quantity = EXCLUDED.adjusted_quantity,
+        unit_cost = EXCLUDED.unit_cost,
+        finalized_by = EXCLUDED.finalized_by,
+        finalized_at = CURRENT_TIMESTAMP
+    `, [req.user.id, orderIds]);
 
-      let finalizedCount = 0;
-      for (const item of itemsResult.rows) {
-        await client.query(`
-          INSERT INTO finalized_adjustments (
-            order_id, order_item_id, product_id,
-            original_quantity, adjusted_quantity, unit_cost,
-            season_id, brand_id, location_id, ship_date,
-            finalized_by, finalized_at
-          )
-          SELECT $1, $2, $3, $4, $5, $6, o.season_id, o.brand_id, o.location_id, o.ship_date, $7, CURRENT_TIMESTAMP
-          FROM orders o WHERE o.id = $1
-          ON CONFLICT (order_item_id) DO UPDATE SET
-            original_quantity = EXCLUDED.original_quantity,
-            adjusted_quantity = EXCLUDED.adjusted_quantity,
-            unit_cost = EXCLUDED.unit_cost,
-            finalized_by = EXCLUDED.finalized_by,
-            finalized_at = CURRENT_TIMESTAMP
-        `, [
-          order.id,
-          item.order_item_id,
-          item.product_id,
-          item.original_quantity,
-          item.adjusted_quantity,
-          item.unit_cost,
-          req.user.id
-        ]);
-        finalizedCount++;
-      }
-
-      // Update order's finalized_at timestamp
-      await client.query(`
-        UPDATE orders SET finalized_at = CURRENT_TIMESTAMP WHERE id = $1
-      `, [order.id]);
-
-      results.push({
-        orderId: order.id,
-        orderNumber: order.order_number,
-        locationId: order.location_id,
-        locationName: order.location_name,
-        finalizedItems: finalizedCount
-      });
-    }
+    // Bulk update all orders' finalized_at timestamp
+    await client.query(`
+      UPDATE orders SET finalized_at = CURRENT_TIMESTAMP
+      WHERE id = ANY($1)
+    `, [orderIds]);
 
     await client.query('COMMIT');
+
+    // Build results array from the orders we already fetched
+    const results = ordersResult.rows.map(order => ({
+      orderId: order.id,
+      orderNumber: order.order_number,
+      locationId: order.location_id,
+      locationName: order.location_name,
+      finalizedItems: parseInt(order.item_count) || 0
+    }));
 
     res.json({
       success: true,

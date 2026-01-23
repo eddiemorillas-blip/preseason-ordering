@@ -1,5 +1,9 @@
 const { BigQuery } = require('@google-cloud/bigquery');
+const NodeCache = require('node-cache');
 const path = require('path');
+
+// Cache for BigQuery results (5 minute TTL, check every 2 minutes)
+const stockCache = new NodeCache({ stdTTL: 300, checkperiod: 120 });
 
 // Initialize BigQuery client
 // Support credentials as base64, JSON string, or file path
@@ -197,9 +201,23 @@ const LOCATION_TO_FACILITY = {
 
 /**
  * Get current stock on hand from INVENTORY_on_hand_report table
+ * Results are cached for 5 minutes to reduce BigQuery costs and latency
  */
 async function getStockOnHand(upcs = []) {
   if (!upcs || upcs.length === 0) return [];
+
+  // Sort UPCs for consistent cache key
+  const sortedUpcs = [...upcs].sort();
+  const cacheKey = `stock:${sortedUpcs.join(',')}`;
+
+  // Check cache first
+  const cached = stockCache.get(cacheKey);
+  if (cached) {
+    console.log(`[BigQuery Cache] HIT for ${upcs.length} UPCs`);
+    return cached;
+  }
+
+  console.log(`[BigQuery Cache] MISS for ${upcs.length} UPCs - querying BigQuery`);
 
   // Convert UPCs to quoted strings for SQL
   const upcList = upcs.map(u => `'${u}'`).join(',');
@@ -216,6 +234,10 @@ async function getStockOnHand(upcs = []) {
   `;
 
   const [rows] = await bigquery.query({ query });
+
+  // Cache the result
+  stockCache.set(cacheKey, rows);
+
   return rows;
 }
 
@@ -242,6 +264,21 @@ async function getStockByUPCs(upcs) {
   return result;
 }
 
+/**
+ * Clear the stock cache (useful when stock data is known to have changed)
+ */
+function clearStockCache() {
+  stockCache.flushAll();
+  console.log('[BigQuery Cache] Stock cache cleared');
+}
+
+/**
+ * Get cache statistics
+ */
+function getCacheStats() {
+  return stockCache.getStats();
+}
+
 module.exports = {
   bigquery,
   getSalesByUPC,
@@ -252,6 +289,8 @@ module.exports = {
   testConnection,
   getStockOnHand,
   getStockByUPCs,
+  clearStockCache,
+  getCacheStats,
   FACILITY_TO_LOCATION,
   LOCATION_TO_FACILITY
 };

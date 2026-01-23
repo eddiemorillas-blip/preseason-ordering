@@ -28,6 +28,7 @@
     "fuse.js": "^7.0.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
+    "node-cache": "^5.1.2",
     "openai": "^6.16.0",
     "pg": "^8.17.2",
     "xlsx": "^0.18.5"
