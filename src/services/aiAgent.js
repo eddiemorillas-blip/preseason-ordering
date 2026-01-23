@@ -303,13 +303,15 @@ async function callOpenAI(messages, tools, model) {
  */
 async function callAnthropic(messages, tools, model) {
   // Anthropic requires system message separate from messages array
-  const systemMessage = messages.find(m => m.role === 'system');
+  // Combine ALL system messages (there may be multiple - base prompt + context)
+  const systemMessages = messages.filter(m => m.role === 'system');
+  const systemContent = systemMessages.map(m => m.content).join('\n\n');
   const conversationMessages = messages.filter(m => m.role !== 'system');
 
   const params = {
     model,
     max_tokens: parseInt(process.env.AI_MAX_TOKENS_PER_REQUEST) || 4000,
-    system: systemMessage ? systemMessage.content : SYSTEM_PROMPT,
+    system: systemContent || SYSTEM_PROMPT,
     messages: conversationMessages
   };
 
