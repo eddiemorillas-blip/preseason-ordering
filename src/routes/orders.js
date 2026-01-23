@@ -855,31 +855,28 @@ router.get('/inventory', authenticateToken, async (req, res) => {
       }
     });
 
-    // Get "on order" quantities from OTHER finalized orders for the same products/location
-    // These are orders that have been finalized but not yet received
+    // Get "on order" quantities from ALL finalized orders for the same products/location
+    // This shows total pending inventory (finalized but not yet received)
     const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
     const locationIds = [...new Set(items.map(item => item.location_id).filter(Boolean))];
-    const orderIds = [...new Set(items.map(item => item.order_id).filter(Boolean))];
 
     console.log(`[On-Order Debug] Looking for on-order quantities:`);
     console.log(`  - Product IDs: ${productIds.length} products`);
     console.log(`  - Location IDs: ${locationIds.join(', ')}`);
-    console.log(`  - Excluding order IDs: ${orderIds.join(', ')}`);
 
     let onOrderData = {};
     if (productIds.length > 0 && locationIds.length > 0) {
       try {
-        // First check how many finalized orders exist for this location
+        // Check how many finalized orders exist for this location
         const countResult = await pool.query(`
           SELECT COUNT(*) as count FROM orders
           WHERE finalized_at IS NOT NULL
             AND location_id = ANY($1)
-            AND id != ALL($2)
-            AND status != 'cancelled'
-        `, [locationIds, orderIds]);
-        console.log(`  - Other finalized orders for this location: ${countResult.rows[0].count}`);
+            AND status NOT IN ('cancelled', 'received')
+        `, [locationIds]);
+        console.log(`  - Total finalized orders for this location: ${countResult.rows[0].count}`);
 
-        // Query for quantities from finalized orders (excluding current orders being viewed)
+        // Query for quantities from ALL finalized orders (not cancelled, not received)
         const onOrderResult = await pool.query(`
           SELECT
             oi.product_id,
@@ -890,11 +887,9 @@ router.get('/inventory', authenticateToken, async (req, res) => {
           WHERE o.finalized_at IS NOT NULL
             AND o.location_id = ANY($1)
             AND oi.product_id = ANY($2)
-            AND o.id != ALL($3)
-            AND o.status != 'cancelled'
-            AND o.status != 'received'
+            AND o.status NOT IN ('cancelled', 'received')
           GROUP BY oi.product_id, o.location_id
-        `, [locationIds, productIds, orderIds]);
+        `, [locationIds, productIds]);
 
         console.log(`  - Found ${onOrderResult.rows.length} product-location combos with on-order qty`);
 
