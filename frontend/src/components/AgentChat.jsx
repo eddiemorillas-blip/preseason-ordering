@@ -91,7 +91,7 @@ const AgentChat = ({
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ message: userMessage })
+        body: JSON.stringify({ message: userMessage, context })
       });
 
       if (!response.ok) {

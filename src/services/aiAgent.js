@@ -144,31 +144,59 @@ async function sendMessage(conversationId, userMessage, context = {}, tools = []
         const locationName = locationResult.rows[0]?.name || `ID ${context.locationId}`;
         contextParts.push(`Location: ${locationName} (ID: ${context.locationId})`);
       }
+      if (context.shipDate) {
+        contextParts.push(`Ship Date Filter: ${context.shipDate}`);
+      }
 
-      // Also get current order info if we have all three context fields
+      // Get detailed order info - if shipDate provided, filter to just that order
       if (context.seasonId && context.brandId && context.locationId) {
-        const orderResult = await client.query(`
+        let orderQuery = `
           SELECT o.id, o.order_number, o.ship_date, o.status, o.finalized_at,
                  COUNT(oi.id) as item_count,
-                 SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as total_units
+                 SUM(oi.quantity) as original_units,
+                 SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as adjusted_units,
+                 SUM(oi.quantity * oi.unit_cost) as original_total,
+                 SUM(COALESCE(oi.adjusted_quantity, oi.quantity) * oi.unit_cost) as adjusted_total
           FROM orders o
           LEFT JOIN order_items oi ON oi.order_id = o.id
           WHERE o.season_id = $1 AND o.brand_id = $2 AND o.location_id = $3 AND o.status != 'cancelled'
-          GROUP BY o.id
-          ORDER BY o.ship_date
-        `, [context.seasonId, context.brandId, context.locationId]);
+        `;
+        const queryParams = [context.seasonId, context.brandId, context.locationId];
+
+        if (context.shipDate) {
+          orderQuery += ` AND o.ship_date = $4`;
+          queryParams.push(context.shipDate);
+        }
+
+        orderQuery += ` GROUP BY o.id ORDER BY o.ship_date`;
+
+        const orderResult = await client.query(orderQuery, queryParams);
 
         if (orderResult.rows.length > 0) {
-          const orders = orderResult.rows.map(o =>
-            `Order ${o.order_number} (ID: ${o.id}, Ship: ${o.ship_date ? new Date(o.ship_date).toLocaleDateString() : 'N/A'}, ${o.item_count} items, ${o.total_units} units, ${o.finalized_at ? 'finalized' : 'draft'})`
-          ).join('; ');
-          contextParts.push(`Current orders: ${orders}`);
+          const ordersInfo = orderResult.rows.map(o => {
+            const originalTotal = parseFloat(o.original_total) || 0;
+            const adjustedTotal = parseFloat(o.adjusted_total) || 0;
+            const reductionPct = originalTotal > 0
+              ? ((originalTotal - adjustedTotal) / originalTotal * 100).toFixed(1)
+              : 0;
+
+            return `
+Order: ${o.order_number} (ID: ${o.id})
+  Ship Date: ${o.ship_date ? new Date(o.ship_date).toLocaleDateString() : 'N/A'}
+  Status: ${o.finalized_at ? 'finalized' : 'draft'}
+  Items: ${o.item_count}
+  Original: ${o.original_units} units / $${originalTotal.toFixed(2)}
+  Adjusted: ${o.adjusted_units} units / $${adjustedTotal.toFixed(2)}
+  Reduction: ${reductionPct}%`;
+          }).join('\n');
+
+          contextParts.push(`\n--- CURRENT ORDER DETAILS ---${ordersInfo}`);
         }
       }
 
       messages.push({
         role: 'system',
-        content: `Current working context - The user is viewing the Order Adjustment page for:\n${contextParts.join('\n')}\n\nYou have access to tools to search products, check inventory, and create order adjustment suggestions. Use the IDs provided when calling tools.`
+        content: `Current working context - The user is viewing the Order Adjustment page for:\n${contextParts.join('\n')}\n\nYou have access to tools to search products, check inventory, and create order adjustment suggestions. Use the IDs provided when calling tools. The user wants to adjust orders to target a specific reduction percentage (often 20% or less).`
       });
     }
 

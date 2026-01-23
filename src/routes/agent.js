@@ -518,7 +518,7 @@ router.delete('/conversations/:id', authenticateToken, async (req, res) => {
 router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { message } = req.body;
+    const { message, context: frontendContext } = req.body;
 
     if (!message || message.trim().length === 0) {
       return res.status(400).json({ error: 'Message is required' });
@@ -550,12 +550,15 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
       return res.status(402).json({ error: 'Monthly AI budget exceeded' });
     }
 
+    // Build context: start with conversation data, then override with frontend context
+    // Frontend context has the current ship date filter which is more accurate
     const context = {
       userId: req.user.id,
       conversationId: parseInt(id),
-      seasonId: convResult.rows[0].season_id,
-      brandId: convResult.rows[0].brand_id,
-      locationId: convResult.rows[0].location_id
+      seasonId: frontendContext?.seasonId || convResult.rows[0].season_id,
+      brandId: frontendContext?.brandId || convResult.rows[0].brand_id,
+      locationId: frontendContext?.locationId || convResult.rows[0].location_id,
+      shipDate: frontendContext?.shipDate || null
     };
 
     // Send message to AI agent

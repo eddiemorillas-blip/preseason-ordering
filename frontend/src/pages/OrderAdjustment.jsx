@@ -1536,6 +1536,10 @@ const OrderAdjustment = () => {
             <AgentChat
               conversationId={aiConversationId}
               context={{
+                seasonId: selectedSeasonId ? parseInt(selectedSeasonId) : null,
+                brandId: selectedBrandId ? parseInt(selectedBrandId) : null,
+                locationId: activeLocationId ? parseInt(activeLocationId) : null,
+                shipDate: selectedShipDate || null,
                 seasonName: seasons.find(s => s.id === parseInt(selectedSeasonId))?.name,
                 brandName: brands.find(b => b.id === parseInt(selectedBrandId))?.name,
                 locationName: locations.find(l => l.id === activeLocationId)?.name
