@@ -2,7 +2,7 @@ const pool = require('../config/database');
 const bigquery = require('./bigquery');
 
 /**
- * Tool 1: Query historical sales data from BigQuery
+ * Tool 1: Query historical sales data - tries BigQuery first, falls back to local PostgreSQL
  * @param {Object} args - { brandId, locationId, startDate, endDate, upcs? }
  * @param {Object} context - { userId }
  * @returns {Object} Sales data with metrics
@@ -20,57 +20,96 @@ async function query_sales_data(args, context) {
     }
 
     const brandName = brandResult.rows[0].name;
-    const facilityId = bigquery.LOCATION_TO_FACILITY[locationId];
 
-    if (!facilityId) {
-      return { error: true, message: 'Location not mapped to BigQuery facility' };
+    // Try BigQuery first
+    let usedBigQuery = false;
+    let rows = [];
+
+    try {
+      const facilityId = bigquery.LOCATION_TO_FACILITY[locationId];
+      if (facilityId && bigquery.bigquery) {
+        let bqQuery = `
+          SELECT
+            p.BARCODE as upc,
+            p.DESCRIPTION as product_name,
+            DATE(i.POSTDATE) as sale_date,
+            SUM(ii.QUANTITY) as qty_sold,
+            SUM(ii.QUANTITY * ii.PRICE) as revenue,
+            COUNT(DISTINCT i.INVOICE_ID) as transaction_count
+          FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+          JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+          JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+          LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
+          WHERE DATE(i.POSTDATE) >= @startDate
+            AND DATE(i.POSTDATE) <= @endDate
+            AND p.facility_id_true = @facilityId
+            AND LOWER(v.VENDOR_NAME) LIKE CONCAT('%', @brandName, '%')
+            AND p.BARCODE IS NOT NULL
+            AND LENGTH(p.BARCODE) > 5
+            AND ii.QUANTITY > 0
+        `;
+
+        const queryParams = {
+          startDate,
+          endDate,
+          facilityId,
+          brandName: brandName.toLowerCase()
+        };
+
+        if (upcs && upcs.length > 0) {
+          bqQuery += ` AND p.BARCODE IN UNNEST(@upcs)`;
+          queryParams.upcs = upcs;
+        }
+
+        bqQuery += `
+          GROUP BY p.BARCODE, p.DESCRIPTION, DATE(i.POSTDATE)
+          ORDER BY sale_date DESC, qty_sold DESC
+          LIMIT 10000
+        `;
+
+        const [bqRows] = await bigquery.bigquery.query({
+          query: bqQuery,
+          params: queryParams
+        });
+        rows = bqRows;
+        usedBigQuery = true;
+      }
+    } catch (bqError) {
+      console.log('BigQuery failed, falling back to local sales_data:', bqError.message);
     }
 
-    // Build BigQuery query
-    let bqQuery = `
-      SELECT
-        p.BARCODE as upc,
-        p.DESCRIPTION as product_name,
-        DATE(i.POSTDATE) as sale_date,
-        SUM(ii.QUANTITY) as qty_sold,
-        SUM(ii.QUANTITY * ii.PRICE) as revenue,
-        COUNT(DISTINCT i.INVOICE_ID) as transaction_count
-      FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
-      JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
-      JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
-      LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
-      WHERE DATE(i.POSTDATE) >= @startDate
-        AND DATE(i.POSTDATE) <= @endDate
-        AND p.facility_id_true = @facilityId
-        AND LOWER(v.VENDOR_NAME) LIKE CONCAT('%', @brandName, '%')
-        AND p.BARCODE IS NOT NULL
-        AND LENGTH(p.BARCODE) > 5
-        AND ii.QUANTITY > 0
-    `;
+    // Fallback to local PostgreSQL sales_data table
+    if (!usedBigQuery || rows.length === 0) {
+      let localQuery = `
+        SELECT
+          p.upc,
+          p.name as product_name,
+          sd.start_date as sale_date,
+          SUM(sd.quantity_sold) as qty_sold,
+          SUM(sd.quantity_sold * COALESCE(p.wholesale_price, p.msrp * 0.5)) as revenue
+        FROM sales_data sd
+        JOIN products p ON sd.product_id = p.id
+        WHERE sd.location_id = $1
+          AND p.brand_id = $2
+          AND sd.start_date >= $3::date
+          AND sd.end_date <= $4::date
+      `;
+      const localParams = [locationId, brandId, startDate, endDate];
 
-    const queryParams = {
-      startDate,
-      endDate,
-      facilityId,
-      brandName: brandName.toLowerCase()
-    };
+      if (upcs && upcs.length > 0) {
+        localQuery += ` AND p.upc = ANY($5)`;
+        localParams.push(upcs);
+      }
 
-    // Filter by specific UPCs if provided
-    if (upcs && upcs.length > 0) {
-      bqQuery += ` AND p.BARCODE IN UNNEST(@upcs)`;
-      queryParams.upcs = upcs;
+      localQuery += `
+        GROUP BY p.upc, p.name, sd.start_date
+        ORDER BY sale_date DESC, qty_sold DESC
+        LIMIT 500
+      `;
+
+      const localResult = await pool.query(localQuery, localParams);
+      rows = localResult.rows;
     }
-
-    bqQuery += `
-      GROUP BY p.BARCODE, p.DESCRIPTION, DATE(i.POSTDATE)
-      ORDER BY sale_date DESC, qty_sold DESC
-      LIMIT 10000
-    `;
-
-    const [rows] = await bigquery.bigquery.query({
-      query: bqQuery,
-      params: queryParams
-    });
 
     // Calculate summary metrics
     const totalQty = rows.reduce((sum, r) => sum + parseInt(r.qty_sold || 0), 0);
@@ -79,6 +118,7 @@ async function query_sales_data(args, context) {
 
     return {
       success: true,
+      source: usedBigQuery ? 'bigquery' : 'local_cache',
       summary: {
         total_quantity_sold: totalQty,
         total_revenue: totalRevenue.toFixed(2),
@@ -86,7 +126,7 @@ async function query_sales_data(args, context) {
         records_count: rows.length,
         date_range: { start: startDate, end: endDate }
       },
-      sales_data: rows.slice(0, 50) // Return top 50 for context
+      sales_data: rows.slice(0, 50)
     };
   } catch (error) {
     console.error('query_sales_data error:', error);
