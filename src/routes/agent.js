@@ -525,8 +525,13 @@ router.post('/conversations/:id/messages', authenticateToken, authorizeRoles('ad
     }
 
     // Check if AI agent is enabled
-    if (process.env.AI_AGENT_ENABLED !== 'true') {
-      return res.status(503).json({ error: 'AI agent is not enabled' });
+    const aiEnabled = (process.env.AI_AGENT_ENABLED || '').toString().trim().toLowerCase();
+    console.log(`[Agent] AI_AGENT_ENABLED check: "${process.env.AI_AGENT_ENABLED}" -> "${aiEnabled}"`);
+    if (aiEnabled !== 'true') {
+      return res.status(503).json({
+        error: 'AI agent is not enabled',
+        debug: { raw: process.env.AI_AGENT_ENABLED, parsed: aiEnabled }
+      });
     }
 
     // Verify user owns conversation
