@@ -211,14 +211,15 @@ const OrderAdjustment = () => {
       const inv = response.data.inventory || [];
       const sum = response.data.summary || null;
 
-      // Deduplicate items by item_id (safety measure)
-      const seenIds = new Set();
+      // Deduplicate items by order_id + product_id (safety measure)
+      const seenKeys = new Set();
       const dedupedInv = inv.filter(item => {
-        if (seenIds.has(item.item_id)) {
-          console.warn('Duplicate item_id found and removed:', item.item_id);
+        const key = `${item.order_id}-${item.product_id}`;
+        if (seenKeys.has(key)) {
+          console.warn('Duplicate product found and removed:', item.product_name, 'order:', item.order_id, 'product:', item.product_id);
           return false;
         }
-        seenIds.add(item.item_id);
+        seenKeys.add(key);
         return true;
       });
 
