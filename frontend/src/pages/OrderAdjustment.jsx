@@ -288,8 +288,9 @@ const OrderAdjustment = () => {
   const updateLocalInventory = (itemId, adjustedQty) => {
     if (!activeLocationId) return;
 
+    const currentCacheKey = `${activeLocationId}-${selectedShipDate || 'all'}`;
     setInventoryByLocation(prev => {
-      const locationData = prev[activeLocationId];
+      const locationData = prev[currentCacheKey];
       if (!locationData) return prev;
 
       const updatedItems = locationData.items.map(i =>
@@ -315,7 +316,7 @@ const OrderAdjustment = () => {
 
       return {
         ...prev,
-        [activeLocationId]: { ...locationData, items: updatedItems, summary: newSummary }
+        [currentCacheKey]: { ...locationData, items: updatedItems, summary: newSummary }
       };
     });
   };
@@ -423,12 +424,13 @@ const OrderAdjustment = () => {
       // Add to inventory
       const newItem = response.data.item;
       if (newItem) {
+        const currentCacheKey = `${activeLocationId}-${selectedShipDate || 'all'}`;
         setInventoryByLocation(prev => {
-          const locationData = prev[activeLocationId];
+          const locationData = prev[currentCacheKey];
           if (!locationData) return prev;
           return {
             ...prev,
-            [activeLocationId]: {
+            [currentCacheKey]: {
               ...locationData,
               items: [...locationData.items, {
                 item_id: newItem.id,
@@ -444,7 +446,9 @@ const OrderAdjustment = () => {
                 size: product.size,
                 color: product.color,
                 inseam: product.inseam,
-                stock_on_hand: product.stock_on_hand || 0
+                stock_on_hand: product.stock_on_hand || 0,
+                location_id: activeLocationId,
+                location_name: locations.find(l => l.id === activeLocationId)?.name || ''
               }]
             }
           };
@@ -529,12 +533,13 @@ const OrderAdjustment = () => {
         setSelectedProducts(new Set());
 
         if (newItems.length > 0) {
+          const currentCacheKey = `${activeLocationId}-${selectedShipDate || 'all'}`;
           setInventoryByLocation(prev => {
-            const locationData = prev[activeLocationId];
+            const locationData = prev[currentCacheKey];
             if (!locationData) return prev;
             return {
               ...prev,
-              [activeLocationId]: {
+              [currentCacheKey]: {
                 ...locationData,
                 items: [...locationData.items, ...newItems]
               }
@@ -584,13 +589,14 @@ const OrderAdjustment = () => {
           }
         }));
 
-        // Update cached data
+        // Update cached data - use the current ship date filter
+        const currentCacheKey = `${locationId}-${selectedShipDate || 'all'}`;
         setInventoryByLocation(prev => {
-          const locationData = prev[locationId];
+          const locationData = prev[currentCacheKey];
           if (!locationData) return prev;
           return {
             ...prev,
-            [locationId]: {
+            [currentCacheKey]: {
               ...locationData,
               order: { ...locationData.order, finalized_at: response.data.order.finalized_at }
             }
@@ -628,14 +634,15 @@ const OrderAdjustment = () => {
       });
       setOrderStatusByLocation(prev => ({ ...prev, ...updatedStatuses }));
 
-      // Update cached inventory data
+      // Update cached inventory data - use the current ship date filter
       setInventoryByLocation(prev => {
         const updated = { ...prev };
         Object.keys(updatedStatuses).forEach(locId => {
-          if (updated[locId]) {
-            updated[locId] = {
-              ...updated[locId],
-              order: { ...updated[locId].order, finalized_at: now }
+          const cacheKey = `${locId}-${selectedShipDate || 'all'}`;
+          if (updated[cacheKey]) {
+            updated[cacheKey] = {
+              ...updated[cacheKey],
+              order: { ...updated[cacheKey].order, finalized_at: now }
             };
           }
         });
@@ -1416,12 +1423,13 @@ const OrderAdjustment = () => {
                           if (confirm('Remove this item from the order?')) {
                             try {
                               await orderAPI.deleteItem(item.order_id, item.item_id);
+                              const currentCacheKey = `${activeLocationId}-${selectedShipDate || 'all'}`;
                               setInventoryByLocation(prev => {
-                                const locationData = prev[activeLocationId];
+                                const locationData = prev[currentCacheKey];
                                 if (!locationData) return prev;
                                 return {
                                   ...prev,
-                                  [activeLocationId]: {
+                                  [currentCacheKey]: {
                                     ...locationData,
                                     items: locationData.items.filter(i => i.item_id !== item.item_id)
                                   }
