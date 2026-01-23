@@ -211,8 +211,19 @@ const OrderAdjustment = () => {
       const inv = response.data.inventory || [];
       const sum = response.data.summary || null;
 
+      // Deduplicate items by item_id (safety measure)
+      const seenIds = new Set();
+      const dedupedInv = inv.filter(item => {
+        if (seenIds.has(item.item_id)) {
+          console.warn('Duplicate item_id found and removed:', item.item_id);
+          return false;
+        }
+        seenIds.add(item.item_id);
+        return true;
+      });
+
       // Get order details
-      const orderIds = [...new Set(inv.map(i => i.order_id))];
+      const orderIds = [...new Set(dedupedInv.map(i => i.order_id))];
       let order = null;
       if (orderIds.length === 1 && orderIds[0]) {
         const orderRes = await orderAPI.getById(orderIds[0]);
@@ -221,7 +232,7 @@ const OrderAdjustment = () => {
 
       // Add location info to each item
       const locationName = locations.find(l => l.id === locationId)?.name || '';
-      const itemsWithLocation = inv.map(item => ({
+      const itemsWithLocation = dedupedInv.map(item => ({
         ...item,
         location_id: locationId,
         location_name: locationName
@@ -261,6 +272,20 @@ const OrderAdjustment = () => {
       newParams.delete(key);
     }
     setSearchParams(newParams);
+  };
+
+  // Force refresh - clears cache and refetches
+  const handleForceRefresh = () => {
+    if (!activeLocationId) return;
+    const currentCacheKey = `${activeLocationId}-${selectedShipDate || 'all'}`;
+    // Clear this cache entry
+    setInventoryByLocation(prev => {
+      const newCache = { ...prev };
+      delete newCache[currentCacheKey];
+      return newCache;
+    });
+    // Fetch fresh data
+    fetchInventoryForLocation(activeLocationId, selectedShipDate);
   };
 
   const handleEditClick = (item) => {
@@ -1012,6 +1037,17 @@ const OrderAdjustment = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                 </svg>
                 AI Assistant
+              </button>
+              <button
+                onClick={handleForceRefresh}
+                disabled={loadingLocations.has(activeLocationId)}
+                className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 flex items-center gap-1"
+                title="Force refresh data from server"
+              >
+                <svg className={`w-4 h-4 ${loadingLocations.has(activeLocationId) ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Refresh
               </button>
               <div className="flex-1" />
               {currentOrder && (
