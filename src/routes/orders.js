@@ -2426,4 +2426,270 @@ router.post('/fix-prices', authenticateToken, authorizeRoles('admin'), async (re
   }
 });
 
+// POST /api/orders/finalize/brand-wide - Finalize all orders for a brand/season
+router.post('/finalize/brand-wide', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { seasonId, brandId } = req.body;
+
+    if (!seasonId || !brandId) {
+      return res.status(400).json({ error: 'seasonId and brandId are required' });
+    }
+
+    // Get all orders for this brand/season
+    const ordersResult = await client.query(`
+      SELECT o.id, o.order_number, o.location_id, l.name as location_name
+      FROM orders o
+      LEFT JOIN locations l ON o.location_id = l.id
+      WHERE o.season_id = $1 AND o.brand_id = $2 AND o.status != 'cancelled'
+    `, [seasonId, brandId]);
+
+    if (ordersResult.rows.length === 0) {
+      return res.status(404).json({ error: 'No orders found for this brand/season' });
+    }
+
+    await client.query('BEGIN');
+
+    const results = [];
+    for (const order of ordersResult.rows) {
+      // Get all items for this order
+      const itemsResult = await client.query(`
+        SELECT
+          oi.id as order_item_id,
+          oi.product_id,
+          oi.quantity as original_quantity,
+          COALESCE(oi.adjusted_quantity, oi.quantity) as adjusted_quantity,
+          oi.unit_cost
+        FROM order_items oi
+        WHERE oi.order_id = $1
+      `, [order.id]);
+
+      let finalizedCount = 0;
+      for (const item of itemsResult.rows) {
+        await client.query(`
+          INSERT INTO finalized_adjustments (
+            order_id, order_item_id, product_id,
+            original_quantity, adjusted_quantity, unit_cost,
+            season_id, brand_id, location_id, ship_date,
+            finalized_by, finalized_at
+          )
+          SELECT $1, $2, $3, $4, $5, $6, o.season_id, o.brand_id, o.location_id, o.ship_date, $7, CURRENT_TIMESTAMP
+          FROM orders o WHERE o.id = $1
+          ON CONFLICT (order_item_id) DO UPDATE SET
+            original_quantity = EXCLUDED.original_quantity,
+            adjusted_quantity = EXCLUDED.adjusted_quantity,
+            unit_cost = EXCLUDED.unit_cost,
+            finalized_by = EXCLUDED.finalized_by,
+            finalized_at = CURRENT_TIMESTAMP
+        `, [
+          order.id,
+          item.order_item_id,
+          item.product_id,
+          item.original_quantity,
+          item.adjusted_quantity,
+          item.unit_cost,
+          req.user.id
+        ]);
+        finalizedCount++;
+      }
+
+      // Update order's finalized_at timestamp
+      await client.query(`
+        UPDATE orders SET finalized_at = CURRENT_TIMESTAMP WHERE id = $1
+      `, [order.id]);
+
+      results.push({
+        orderId: order.id,
+        orderNumber: order.order_number,
+        locationId: order.location_id,
+        locationName: order.location_name,
+        finalizedItems: finalizedCount
+      });
+    }
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      finalizedOrders: results.length,
+      orders: results
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Brand-wide finalize error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/orders/inventory/suggested-items - Get products with low stock coverage to suggest adding
+router.get('/inventory/suggested-items', authenticateToken, async (req, res) => {
+  try {
+    const { seasonId, brandId, locationId, targetMonths = 3 } = req.query;
+
+    if (!seasonId || !brandId || !locationId) {
+      return res.status(400).json({ error: 'seasonId, brandId, and locationId are required' });
+    }
+
+    const target = parseInt(targetMonths);
+
+    // Get products for this brand/season that are NOT currently in any order for this location
+    // (or have 0 quantity in the order)
+    const productsResult = await pool.query(`
+      SELECT
+        p.id,
+        p.name,
+        p.base_name,
+        p.sku,
+        p.upc,
+        p.size,
+        p.color,
+        p.inseam,
+        COALESCE(sp.wholesale_cost, p.wholesale_cost) as wholesale_cost,
+        COALESCE(sp.msrp, p.msrp) as msrp,
+        p.category,
+        p.gender
+      FROM products p
+      INNER JOIN season_prices sp ON sp.product_id = p.id AND sp.season_id = $2
+      WHERE
+        p.brand_id = $1
+        AND p.active = true
+        AND p.id NOT IN (
+          SELECT DISTINCT oi.product_id
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          WHERE o.season_id = $2
+            AND o.location_id = $3
+            AND o.status != 'cancelled'
+            AND COALESCE(oi.adjusted_quantity, oi.quantity) > 0
+        )
+        AND p.id NOT IN (
+          SELECT product_id FROM ignored_products
+          WHERE brand_id = $1
+            AND (location_id = $3 OR location_id IS NULL)
+        )
+      ORDER BY p.base_name, p.size, p.color
+    `, [brandId, seasonId, locationId]);
+
+    const products = productsResult.rows;
+    if (products.length === 0) {
+      return res.json({ suggestedItems: [], families: [] });
+    }
+
+    // Get UPCs for BigQuery lookup
+    const upcs = products.filter(p => p.upc).map(p => p.upc);
+    const upcToProduct = {};
+    products.forEach(p => { if (p.upc) upcToProduct[p.upc] = p; });
+
+    // Get facility ID for location
+    const { LOCATION_TO_FACILITY, bigquery, getStockByUPCs } = require('../services/bigquery');
+    const facilityId = LOCATION_TO_FACILITY[locationId];
+
+    // Fetch stock and velocity data from BigQuery
+    let stockByUpc = {};
+    let velocityByUpc = {};
+
+    if (upcs.length > 0 && facilityId) {
+      // Get stock on hand
+      try {
+        stockByUpc = await getStockByUPCs(upcs, facilityId);
+      } catch (e) {
+        console.error('Error fetching stock:', e.message);
+      }
+
+      // Get velocity (average monthly sales)
+      try {
+        const upcList = upcs.map(u => `'${u}'`).join(',');
+        const upcListNoLeadingZeros = upcs.map(u => `'${u.replace(/^0+/, '')}'`).join(',');
+
+        const velocityQuery = `
+          SELECT
+            p.BARCODE as upc,
+            SUM(ii.QUANTITY) as total_qty_sold,
+            COUNT(DISTINCT FORMAT_DATE('%Y-%m', DATE(i.POSTDATE))) as months_of_data
+          FROM rgp_cleaned_zone.invoice_items_all ii
+          JOIN rgp_cleaned_zone.invoices_all i ON ii.invoice_concat = i.invoice_concat
+          JOIN rgp_cleaned_zone.products_all p ON ii.product_concat = p.product_concat
+          WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
+            AND (p.BARCODE IN (${upcList}) OR LTRIM(p.BARCODE, '0') IN (${upcListNoLeadingZeros}))
+            AND ii.QUANTITY > 0
+            AND p.facility_id_true = '${facilityId}'
+          GROUP BY p.BARCODE
+        `;
+
+        const [rows] = await bigquery.query({ query: velocityQuery });
+        rows.forEach(row => {
+          const monthsOfData = Math.max(1, parseInt(row.months_of_data) || 1);
+          const totalSold = parseInt(row.total_qty_sold) || 0;
+          const avgMonthlySales = totalSold / monthsOfData;
+          velocityByUpc[row.upc] = avgMonthlySales;
+          velocityByUpc[row.upc.replace(/^0+/, '')] = avgMonthlySales;
+        });
+      } catch (e) {
+        console.error('Error fetching velocity:', e.message);
+      }
+    }
+
+    // Calculate suggested items (where months_supply < 1)
+    const suggestedItems = [];
+    products.forEach(product => {
+      if (!product.upc) return;
+
+      const stock = stockByUpc[product.upc] ?? stockByUpc[product.upc?.replace(/^0+/, '')] ?? 0;
+      const velocity = velocityByUpc[product.upc] ?? velocityByUpc[product.upc?.replace(/^0+/, '')] ?? 0;
+
+      // Skip if no sales history
+      if (velocity <= 0) return;
+
+      const monthsSupply = stock / velocity;
+
+      // Suggest if less than 1 month of supply
+      if (monthsSupply < 1) {
+        // Calculate suggested qty to reach target months coverage
+        const targetStock = velocity * target;
+        const suggestedQty = Math.max(1, Math.round(targetStock - stock));
+
+        suggestedItems.push({
+          ...product,
+          stock_on_hand: stock,
+          avg_monthly_sales: Math.round(velocity * 10) / 10,
+          months_supply: Math.round(monthsSupply * 10) / 10,
+          suggested_qty: suggestedQty,
+          target_months: target
+        });
+      }
+    });
+
+    // Group by base_name for family view
+    const familyMap = {};
+    suggestedItems.forEach(item => {
+      const baseName = item.base_name || item.name;
+      if (!familyMap[baseName]) {
+        familyMap[baseName] = { base_name: baseName, products: [] };
+      }
+      familyMap[baseName].products.push(item);
+    });
+
+    const families = Object.values(familyMap).sort((a, b) =>
+      a.base_name.localeCompare(b.base_name)
+    );
+
+    res.json({
+      suggestedItems,
+      families,
+      summary: {
+        totalProducts: suggestedItems.length,
+        totalFamilies: families.length,
+        totalSuggestedUnits: suggestedItems.reduce((sum, i) => sum + i.suggested_qty, 0),
+        totalSuggestedValue: suggestedItems.reduce((sum, i) => sum + (i.wholesale_cost * i.suggested_qty), 0)
+      }
+    });
+  } catch (error) {
+    console.error('Get suggested items error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 module.exports = router;

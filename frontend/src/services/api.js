@@ -115,6 +115,8 @@ export const orderAPI = {
   unignoreProduct: (data) => api.post('/orders/unignore-product', data),
   finalize: (orderId) => api.post(`/orders/${orderId}/finalize`),
   getFinalizedStatus: (params) => api.get('/orders/finalized-status', { params }),
+  finalizeBrandWide: (seasonId, brandId) => api.post('/orders/finalize/brand-wide', { seasonId, brandId }),
+  getSuggestedItems: (params) => api.get('/orders/inventory/suggested-items', { params }),
 };
 
 // Export API calls
