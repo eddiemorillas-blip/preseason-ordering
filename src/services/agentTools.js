@@ -1926,6 +1926,213 @@ async function analyze_by_category(args, context) {
   }
 }
 
+/**
+ * Tool 22: Get comprehensive inventory status for a brand/location
+ * Shows stock on hand, order quantities, velocity, and coverage analysis
+ * @param {Object} args - { brandId, locationId, seasonId?, includeZeroStock? }
+ * @param {Object} context - { userId }
+ * @returns {Object} Complete inventory status with stock, orders, and analysis
+ */
+async function get_inventory_status(args, context) {
+  const { brandId, locationId, seasonId, includeZeroStock = false } = args;
+
+  if (!brandId || !locationId) {
+    return { error: true, message: 'brandId and locationId are required' };
+  }
+
+  try {
+    // Get brand info
+    const brandResult = await pool.query('SELECT name, code FROM brands WHERE id = $1', [brandId]);
+    if (brandResult.rows.length === 0) {
+      return { error: true, message: 'Brand not found' };
+    }
+    const brandName = brandResult.rows[0].name;
+
+    // Get location info
+    const locationResult = await pool.query('SELECT name, code FROM locations WHERE id = $1', [locationId]);
+    if (locationResult.rows.length === 0) {
+      return { error: true, message: 'Location not found' };
+    }
+    const locationName = locationResult.rows[0].name;
+
+    const { LOCATION_TO_FACILITY, bigquery } = require('./bigquery');
+    const facilityId = LOCATION_TO_FACILITY[locationId];
+
+    if (!facilityId) {
+      return { error: true, message: 'Location not mapped to BigQuery facility' };
+    }
+
+    // Query BigQuery for ALL inventory for this brand at this location
+    // Join with sales data to get velocity
+    const inventoryQuery = `
+      WITH inventory AS (
+        SELECT
+          i.barcode as upc,
+          i.product_description as product_name,
+          i.on_hand_qty as stock_on_hand,
+          i.facility_id
+        FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+        JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON i.barcode = p.BARCODE
+        LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
+        WHERE i.facility_id = '${facilityId}'
+          AND LOWER(v.VENDOR_NAME) LIKE '%${brandName.toLowerCase()}%'
+          ${includeZeroStock ? '' : 'AND i.on_hand_qty > 0'}
+      ),
+      sales AS (
+        SELECT
+          p.BARCODE as upc,
+          SUM(ii.QUANTITY) as total_sold_12m,
+          COUNT(DISTINCT FORMAT_DATE('%Y-%m', DATE(i.POSTDATE))) as months_with_sales
+        FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+        JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+        JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+        WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
+          AND p.facility_id_true = '${facilityId}'
+          AND ii.QUANTITY > 0
+        GROUP BY p.BARCODE
+      )
+      SELECT
+        inv.upc,
+        inv.product_name,
+        inv.stock_on_hand,
+        COALESCE(s.total_sold_12m, 0) as total_sold_12m,
+        COALESCE(s.months_with_sales, 0) as months_with_sales,
+        CASE
+          WHEN COALESCE(s.months_with_sales, 0) > 0
+          THEN ROUND(COALESCE(s.total_sold_12m, 0) / GREATEST(s.months_with_sales, 1), 2)
+          ELSE 0
+        END as avg_monthly_sales
+      FROM inventory inv
+      LEFT JOIN sales s ON inv.upc = s.upc
+      ORDER BY inv.stock_on_hand DESC
+    `;
+
+    const [inventoryRows] = await bigquery.query({ query: inventoryQuery });
+
+    if (inventoryRows.length === 0) {
+      return {
+        success: true,
+        message: `No inventory found for ${brandName} at ${locationName}`,
+        inventory: [],
+        summary: { total_items: 0 }
+      };
+    }
+
+    // Get UPCs for database lookup
+    const upcs = inventoryRows.map(r => r.upc);
+
+    // Get order quantities from database for these UPCs
+    let orderQuery = `
+      SELECT
+        p.upc,
+        SUM(oi.quantity) as original_order_qty,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity)) as effective_order_qty,
+        SUM(oi.quantity * oi.unit_cost) as original_order_value,
+        SUM(COALESCE(oi.adjusted_quantity, oi.quantity) * oi.unit_cost) as effective_order_value
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      JOIN products p ON oi.product_id = p.id
+      WHERE o.brand_id = $1
+        AND o.location_id = $2
+        AND o.status != 'cancelled'
+        AND p.upc = ANY($3)
+    `;
+    const orderParams = [brandId, locationId, upcs];
+
+    if (seasonId) {
+      orderQuery += ` AND o.season_id = $4`;
+      orderParams.push(seasonId);
+    }
+
+    orderQuery += ` GROUP BY p.upc`;
+
+    const orderResult = await pool.query(orderQuery, orderParams);
+    const ordersByUpc = {};
+    orderResult.rows.forEach(row => {
+      ordersByUpc[row.upc] = {
+        original_order_qty: parseInt(row.original_order_qty) || 0,
+        effective_order_qty: parseInt(row.effective_order_qty) || 0,
+        original_order_value: parseFloat(row.original_order_value) || 0,
+        effective_order_value: parseFloat(row.effective_order_value) || 0
+      };
+    });
+
+    // Build combined inventory status
+    const inventory = inventoryRows.map(row => {
+      const stock = parseInt(row.stock_on_hand) || 0;
+      const avgMonthlySales = parseFloat(row.avg_monthly_sales) || 0;
+      const orders = ordersByUpc[row.upc] || { original_order_qty: 0, effective_order_qty: 0 };
+
+      // Calculate months of coverage (stock / velocity)
+      const monthsCoverage = avgMonthlySales > 0 ? stock / avgMonthlySales : (stock > 0 ? 999 : 0);
+
+      // Determine status
+      let status;
+      if (avgMonthlySales === 0 && stock > 0) {
+        status = 'no_velocity';  // Has stock but no recent sales
+      } else if (monthsCoverage < 1) {
+        status = 'critical';  // Less than 1 month coverage
+      } else if (monthsCoverage < 2) {
+        status = 'low';  // 1-2 months coverage
+      } else if (monthsCoverage > 6) {
+        status = 'overstocked';  // More than 6 months coverage
+      } else {
+        status = 'healthy';  // 2-6 months coverage
+      }
+
+      return {
+        upc: row.upc,
+        product_name: row.product_name,
+        stock_on_hand: stock,
+        avg_monthly_sales: avgMonthlySales,
+        total_sold_12m: parseInt(row.total_sold_12m) || 0,
+        months_coverage: monthsCoverage > 100 ? '99+' : monthsCoverage.toFixed(1),
+        status,
+        original_order_qty: orders.original_order_qty,
+        effective_order_qty: orders.effective_order_qty,
+        order_adjusted: orders.effective_order_qty !== orders.original_order_qty,
+        total_available: stock + orders.effective_order_qty  // Stock + incoming order
+      };
+    });
+
+    // Calculate summary
+    const totalStock = inventory.reduce((sum, i) => sum + i.stock_on_hand, 0);
+    const totalOrderQty = inventory.reduce((sum, i) => sum + i.effective_order_qty, 0);
+    const criticalCount = inventory.filter(i => i.status === 'critical').length;
+    const lowCount = inventory.filter(i => i.status === 'low').length;
+    const healthyCount = inventory.filter(i => i.status === 'healthy').length;
+    const overstockedCount = inventory.filter(i => i.status === 'overstocked').length;
+    const noVelocityCount = inventory.filter(i => i.status === 'no_velocity').length;
+
+    return {
+      success: true,
+      brand: brandName,
+      location: locationName,
+      season_filter: seasonId ? 'applied' : 'all seasons',
+      summary: {
+        total_skus: inventory.length,
+        total_stock_on_hand: totalStock,
+        total_on_order: totalOrderQty,
+        status_breakdown: {
+          critical: criticalCount,
+          low: lowCount,
+          healthy: healthyCount,
+          overstocked: overstockedCount,
+          no_velocity: noVelocityCount
+        }
+      },
+      inventory: inventory.slice(0, 200),  // Limit to 200 items
+      alerts: {
+        critical_items: inventory.filter(i => i.status === 'critical').slice(0, 20),
+        overstocked_items: inventory.filter(i => i.status === 'overstocked').slice(0, 20)
+      }
+    };
+  } catch (error) {
+    console.error('get_inventory_status error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
 module.exports = {
   query_sales_data,
   get_order_inventory,
@@ -1948,5 +2155,6 @@ module.exports = {
   get_suggested_items,
   get_finalized_history,
   compare_to_last_year,
-  analyze_by_category
+  analyze_by_category,
+  get_inventory_status
 };

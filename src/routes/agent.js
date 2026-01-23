@@ -311,6 +311,20 @@ const AVAILABLE_TOOLS = [
         groupBy: { type: 'string', description: 'How to group: "category", "subcategory", "base_name" (product family), or "gender". Default: "category"' }
       }
     }
+  },
+  {
+    name: 'get_inventory_status',
+    description: 'Get COMPREHENSIVE inventory status for a brand at a location. Shows ALL products with: stock on hand, sales velocity, months of coverage, order quantities, and status flags (critical/low/healthy/overstocked). Use this to understand the full inventory picture and identify problems.',
+    parameters: {
+      type: 'object',
+      properties: {
+        brandId: { type: 'integer', description: 'Brand ID (required)' },
+        locationId: { type: 'integer', description: 'Location ID (required)' },
+        seasonId: { type: 'integer', description: 'Filter orders to specific season (optional)' },
+        includeZeroStock: { type: 'boolean', description: 'Include items with zero stock (default: false)' }
+      },
+      required: ['brandId', 'locationId']
+    }
   }
 ];
 
