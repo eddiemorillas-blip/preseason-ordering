@@ -1335,21 +1335,49 @@ router.post('/:id/items', authenticateToken, authorizeRoles('admin', 'buyer'), a
       if (!price && !seasonId) {
         price = product.wholesale_cost || 0;
       }
-      const lineTotal = parseFloat(price) * parseInt(quantity);
 
-      // For items added via "Add Items" (is_addition=true):
-      // - original quantity = 0 (doesn't count toward Original $)
-      // - adjusted_quantity = qty (counts toward Current $)
-      const originalQty = is_addition ? 0 : quantity;
-      const adjustedQty = is_addition ? quantity : null;
-
-      // Insert order item
-      const itemResult = await client.query(
-        `INSERT INTO order_items (order_id, product_id, quantity, adjusted_quantity, unit_cost, line_total, notes, case_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING *`,
-        [id, product_id, originalQty, adjustedQty, price, lineTotal, notes || null, case_id || null]
+      // Check if this product already exists in the order
+      const existingItem = await client.query(
+        'SELECT id, quantity, adjusted_quantity FROM order_items WHERE order_id = $1 AND product_id = $2',
+        [id, product_id]
       );
+
+      let itemResult;
+      if (existingItem.rows.length > 0) {
+        // Product already exists - update quantity instead of creating duplicate
+        const existing = existingItem.rows[0];
+        const newQty = is_addition
+          ? (existing.adjusted_quantity || existing.quantity) + parseInt(quantity)
+          : existing.quantity + parseInt(quantity);
+        const newAdjustedQty = is_addition ? newQty : existing.adjusted_quantity;
+        const lineTotal = parseFloat(price) * newQty;
+
+        itemResult = await client.query(
+          `UPDATE order_items
+           SET quantity = CASE WHEN $3 THEN quantity ELSE $1 END,
+               adjusted_quantity = CASE WHEN $3 THEN $1 ELSE adjusted_quantity END,
+               line_total = $2
+           WHERE id = $4
+           RETURNING *`,
+          [newQty, lineTotal, is_addition, existing.id]
+        );
+      } else {
+        // New item - insert
+        const lineTotal = parseFloat(price) * parseInt(quantity);
+
+        // For items added via "Add Items" (is_addition=true):
+        // - original quantity = 0 (doesn't count toward Original $)
+        // - adjusted_quantity = qty (counts toward Current $)
+        const originalQty = is_addition ? 0 : quantity;
+        const adjustedQty = is_addition ? quantity : null;
+
+        itemResult = await client.query(
+          `INSERT INTO order_items (order_id, product_id, quantity, adjusted_quantity, unit_cost, line_total, notes, case_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING *`,
+          [id, product_id, originalQty, adjustedQty, price, lineTotal, notes || null, case_id || null]
+        );
+      }
 
       // Update order total
       await client.query(
