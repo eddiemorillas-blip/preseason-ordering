@@ -314,7 +314,7 @@ const AVAILABLE_TOOLS = [
   },
   {
     name: 'get_inventory_status',
-    description: 'Get COMPREHENSIVE inventory status for a brand at a location. Shows ALL products with: stock on hand, sales velocity, months of coverage, order quantities, and status flags (critical/low/healthy/overstocked). Use this to understand the full inventory picture and identify problems.',
+    description: 'Get COMPREHENSIVE inventory status for a brand at a location. Shows ALL products with: stock on hand, sales velocity, months of coverage, order quantities, and status flags (critical/low/healthy/overstocked). Use this to understand the full inventory picture and identify problems. Items with <1 month coverage are CRITICAL and need immediate ordering (assumes 1-month lead time).',
     parameters: {
       type: 'object',
       properties: {
@@ -324,6 +324,20 @@ const AVAILABLE_TOOLS = [
         includeZeroStock: { type: 'boolean', description: 'Include items with zero stock (default: false)' }
       },
       required: ['brandId', 'locationId']
+    }
+  },
+  {
+    name: 'analyze_seasonality',
+    description: 'Analyze MONTHLY SALES PATTERNS to identify peak and slow seasons. Shows seasonality index for each month (1.0 = average, 1.3 = 30% above average peak, 0.7 = 30% below average slow). Use this to understand WHEN demand spikes and adjust order quantities accordingly. Assumes 1-month lead time.',
+    parameters: {
+      type: 'object',
+      properties: {
+        brandId: { type: 'integer', description: 'Brand ID (required)' },
+        locationId: { type: 'integer', description: 'Location ID - analyze specific store (optional, default: all locations)' },
+        category: { type: 'string', description: 'Filter by product category (optional)' },
+        months: { type: 'integer', description: 'Months of history to analyze (default: 24)' }
+      },
+      required: ['brandId']
     }
   }
 ];

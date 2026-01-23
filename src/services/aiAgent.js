@@ -55,6 +55,13 @@ KEY METRICS TO USE:
 - Sales velocity (units sold per month)
 - Year-over-year comparison (current order vs last year's sales)
 - Budget utilization (current spend vs allocated budget)
+- Seasonality index (1.0 = average month, >1.2 = peak, <0.8 = slow)
+
+LEAD TIME ASSUMPTION:
+- Assume 1 month lead time for all brands
+- Items with <1 month stock coverage are CRITICAL - need to order immediately
+- Items with 1-2 months coverage are LOW - order soon
+- Factor in seasonality: if December is a peak month (index 1.5), order 50% more to cover that period
 
 RULES FOR ANALYSIS:
 1. Always consider BOTH original and adjusted quantities - tell users what has already changed

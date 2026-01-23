@@ -2133,6 +2133,196 @@ async function get_inventory_status(args, context) {
   }
 }
 
+/**
+ * Tool 23: Analyze seasonality patterns in sales data
+ * Shows monthly sales patterns to identify peak/low seasons
+ * @param {Object} args - { brandId, locationId?, category?, months? }
+ * @param {Object} context - { userId }
+ * @returns {Object} Monthly sales patterns with seasonality analysis
+ */
+async function analyze_seasonality(args, context) {
+  const { brandId, locationId, category, months = 24 } = args;
+
+  if (!brandId) {
+    return { error: true, message: 'brandId is required' };
+  }
+
+  try {
+    // Get brand name for BigQuery query
+    const brandResult = await pool.query('SELECT name FROM brands WHERE id = $1', [brandId]);
+    if (brandResult.rows.length === 0) {
+      return { error: true, message: 'Brand not found' };
+    }
+    const brandName = brandResult.rows[0].name;
+
+    const { LOCATION_TO_FACILITY, bigquery } = require('./bigquery');
+
+    // Build facility filter if location specified
+    let facilityFilter = '';
+    if (locationId) {
+      const facilityId = LOCATION_TO_FACILITY[locationId];
+      if (facilityId) {
+        facilityFilter = `AND p.facility_id_true = '${facilityId}'`;
+      }
+    }
+
+    // Build category filter if specified
+    let categoryFilter = '';
+    if (category) {
+      categoryFilter = `AND LOWER(p.DISP_CATEGORY) LIKE '%${category.toLowerCase()}%'`;
+    }
+
+    // Query monthly sales patterns
+    const query = `
+      WITH monthly_sales AS (
+        SELECT
+          FORMAT_DATE('%Y-%m', DATE(i.POSTDATE)) as year_month,
+          EXTRACT(MONTH FROM DATE(i.POSTDATE)) as month_num,
+          FORMAT_DATE('%B', DATE(i.POSTDATE)) as month_name,
+          EXTRACT(YEAR FROM DATE(i.POSTDATE)) as year,
+          SUM(ii.QUANTITY) as units_sold,
+          SUM(ii.QUANTITY * ii.PRICE) as revenue,
+          COUNT(DISTINCT i.INVOICE_ID) as transactions,
+          COUNT(DISTINCT p.BARCODE) as unique_products
+        FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+        JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+        JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+        LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
+        WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${months} MONTH)
+          AND LOWER(v.VENDOR_NAME) LIKE '%${brandName.toLowerCase()}%'
+          AND ii.QUANTITY > 0
+          AND p.BARCODE IS NOT NULL
+          ${facilityFilter}
+          ${categoryFilter}
+        GROUP BY year_month, month_num, month_name, year
+        ORDER BY year_month
+      ),
+      monthly_averages AS (
+        SELECT
+          month_num,
+          month_name,
+          AVG(units_sold) as avg_units,
+          AVG(revenue) as avg_revenue,
+          COUNT(*) as data_points
+        FROM monthly_sales
+        GROUP BY month_num, month_name
+      )
+      SELECT
+        ms.*,
+        ma.avg_units as month_avg_units,
+        ma.avg_revenue as month_avg_revenue,
+        ROUND(SAFE_DIVIDE(ms.units_sold, ma.avg_units) * 100, 1) as vs_month_avg_pct
+      FROM monthly_sales ms
+      JOIN monthly_averages ma ON ms.month_num = ma.month_num
+      ORDER BY ms.year_month
+    `;
+
+    const [rows] = await bigquery.query({ query });
+
+    if (rows.length === 0) {
+      return { success: true, message: 'No sales data found for this brand', monthly_data: [] };
+    }
+
+    // Calculate overall average
+    const totalUnits = rows.reduce((sum, r) => sum + parseInt(r.units_sold), 0);
+    const totalRevenue = rows.reduce((sum, r) => sum + parseFloat(r.revenue), 0);
+    const overallAvgUnits = totalUnits / rows.length;
+    const overallAvgRevenue = totalRevenue / rows.length;
+
+    // Build monthly patterns (aggregate by month across years)
+    const monthlyPatterns = {};
+    rows.forEach(row => {
+      const monthNum = parseInt(row.month_num);
+      if (!monthlyPatterns[monthNum]) {
+        monthlyPatterns[monthNum] = {
+          month_num: monthNum,
+          month_name: row.month_name,
+          total_units: 0,
+          total_revenue: 0,
+          data_points: 0
+        };
+      }
+      monthlyPatterns[monthNum].total_units += parseInt(row.units_sold);
+      monthlyPatterns[monthNum].total_revenue += parseFloat(row.revenue);
+      monthlyPatterns[monthNum].data_points += 1;
+    });
+
+    // Calculate seasonality index for each month
+    const patterns = Object.values(monthlyPatterns).map(m => {
+      const avgUnits = m.total_units / m.data_points;
+      const avgRevenue = m.total_revenue / m.data_points;
+      const seasonalityIndex = overallAvgUnits > 0 ? (avgUnits / overallAvgUnits) : 1;
+
+      let season;
+      if (seasonalityIndex >= 1.3) season = 'peak';
+      else if (seasonalityIndex >= 1.1) season = 'high';
+      else if (seasonalityIndex <= 0.7) season = 'low';
+      else if (seasonalityIndex <= 0.9) season = 'slow';
+      else season = 'normal';
+
+      return {
+        month_num: m.month_num,
+        month_name: m.month_name,
+        avg_units: Math.round(avgUnits),
+        avg_revenue: Math.round(avgRevenue),
+        seasonality_index: seasonalityIndex.toFixed(2),
+        season,
+        recommendation: seasonalityIndex >= 1.2
+          ? `Order ${Math.round((seasonalityIndex - 1) * 100)}% more for this month`
+          : seasonalityIndex <= 0.8
+          ? `Order ${Math.round((1 - seasonalityIndex) * 100)}% less for this month`
+          : 'Normal ordering'
+      };
+    }).sort((a, b) => a.month_num - b.month_num);
+
+    // Identify peak and low months
+    const peakMonths = patterns.filter(p => p.season === 'peak').map(p => p.month_name);
+    const lowMonths = patterns.filter(p => p.season === 'low').map(p => p.month_name);
+
+    // Format monthly data with trend
+    const monthlyData = rows.map(row => ({
+      year_month: row.year_month,
+      month_name: row.month_name,
+      year: parseInt(row.year),
+      units_sold: parseInt(row.units_sold),
+      revenue: parseFloat(row.revenue).toFixed(2),
+      transactions: parseInt(row.transactions),
+      unique_products: parseInt(row.unique_products),
+      vs_month_avg_pct: row.vs_month_avg_pct ? `${row.vs_month_avg_pct}%` : 'N/A'
+    }));
+
+    return {
+      success: true,
+      brand: brandName,
+      location: locationId ? 'filtered' : 'all locations',
+      category: category || 'all categories',
+      analysis_period_months: months,
+      summary: {
+        total_months_analyzed: rows.length,
+        overall_avg_monthly_units: Math.round(overallAvgUnits),
+        overall_avg_monthly_revenue: Math.round(overallAvgRevenue),
+        peak_months: peakMonths.length > 0 ? peakMonths : ['None identified'],
+        low_months: lowMonths.length > 0 ? lowMonths : ['None identified'],
+        seasonality_range: {
+          highest: patterns.reduce((max, p) => parseFloat(p.seasonality_index) > parseFloat(max.seasonality_index) ? p : max).month_name,
+          lowest: patterns.reduce((min, p) => parseFloat(p.seasonality_index) < parseFloat(min.seasonality_index) ? p : min).month_name
+        }
+      },
+      monthly_patterns: patterns,
+      monthly_data: monthlyData,
+      lead_time_note: 'Assuming 1 month lead time - order 1 month before peak demand periods'
+    };
+  } catch (error) {
+    console.error('analyze_seasonality error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+// Update get_inventory_status to factor in 1-month lead time
+// (The existing function already calculates months_coverage, which implicitly
+// handles this - items with <1 month coverage are flagged as critical,
+// meaning you need to order NOW given 1-month lead time)
+
 module.exports = {
   query_sales_data,
   get_order_inventory,
@@ -2156,5 +2346,6 @@ module.exports = {
   get_finalized_history,
   compare_to_last_year,
   analyze_by_category,
-  get_inventory_status
+  get_inventory_status,
+  analyze_seasonality
 };
