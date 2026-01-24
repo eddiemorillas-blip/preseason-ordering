@@ -155,7 +155,7 @@ async function get_order_inventory(args, context) {
         oi.adjusted_quantity,
         COALESCE(oi.adjusted_quantity, oi.quantity) as effective_quantity,
         oi.unit_cost,
-        oi.ship_date,
+        o.ship_date,
         p.id as product_id,
         p.name as product_name,
         p.sku,
@@ -201,7 +201,7 @@ async function get_order_inventory(args, context) {
       paramIndex++;
     }
 
-    query += ' ORDER BY o.created_at DESC, oi.ship_date';
+    query += ' ORDER BY o.created_at DESC, o.ship_date';
 
     const result = await pool.query(query, params);
 
@@ -790,7 +790,6 @@ async function get_order_details(args, context) {
         oi.adjusted_quantity,
         COALESCE(oi.adjusted_quantity, oi.quantity) as effective_quantity,
         oi.unit_cost,
-        oi.ship_date,
         p.name as product_name,
         p.sku,
         p.upc,
@@ -804,7 +803,7 @@ async function get_order_details(args, context) {
       FROM order_items oi
       JOIN products p ON oi.product_id = p.id
       WHERE oi.order_id = $1
-      ORDER BY oi.ship_date, p.base_name, p.size
+      ORDER BY p.base_name, p.size
     `, [orderId]);
 
     const items = itemsResult.rows.map(item => {
