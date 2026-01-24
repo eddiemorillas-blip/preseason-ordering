@@ -212,13 +212,21 @@ router.get('/ship-dates', authenticateToken, async (req, res) => {
     }
 
     const result = await pool.query(`
-      SELECT DISTINCT ship_date
+      SELECT DISTINCT ship_date::date as ship_date
       FROM orders
       WHERE ${whereClause}
       ORDER BY ship_date
     `, params);
 
-    res.json({ shipDates: result.rows.map(r => r.ship_date) });
+    // Convert to YYYY-MM-DD format for consistency
+    const shipDates = result.rows.map(r => {
+      if (r.ship_date instanceof Date) {
+        return r.ship_date.toISOString().split('T')[0];
+      }
+      return String(r.ship_date).split('T')[0];
+    });
+    console.log('[Ship Dates] Returning:', shipDates);
+    res.json({ shipDates });
   } catch (error) {
     console.error('Get ship dates error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -769,9 +777,11 @@ router.get('/inventory', authenticateToken, async (req, res) => {
     }
 
     if (shipDate) {
-      // Compare just the date portion to avoid timezone mismatch issues
-      whereClause += ` AND DATE(o.ship_date) = DATE($${paramIndex}::timestamp)`;
-      params.push(shipDate);
+      // Extract just the date portion (YYYY-MM-DD) to avoid timezone issues
+      const dateOnly = shipDate.split('T')[0];
+      console.log(`[Inventory] Ship date filter: raw="${shipDate}", dateOnly="${dateOnly}"`);
+      whereClause += ` AND o.ship_date::date = $${paramIndex}::date`;
+      params.push(dateOnly);
       paramIndex++;
     }
 
