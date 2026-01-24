@@ -122,7 +122,13 @@ const OrderAdjustment = () => {
           brandId: selectedBrandId,
           locationId: activeLocationId
         });
-        setShipDates(response.data.shipDates || []);
+        const dates = response.data.shipDates || [];
+        setShipDates(dates);
+
+        // Auto-select first ship date if none selected and dates are available
+        if (!selectedShipDate && dates.length > 0) {
+          updateFilter('shipDate', dates[0]);
+        }
       } catch (err) {
         console.error('Error fetching ship dates:', err);
         setShipDates([]);
@@ -858,21 +864,13 @@ const OrderAdjustment = () => {
                   onChange={(e) => updateFilter('shipDate', e.target.value)}
                   className="px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="">All Ship Dates</option>
+                  <option value="">-- Select Ship Date --</option>
                   {shipDates.map((date) => (
                     <option key={date} value={date}>
                       {new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                     </option>
                   ))}
                 </select>
-                {selectedShipDate && (
-                  <button
-                    onClick={() => updateFilter('shipDate', '')}
-                    className="text-sm text-gray-500 hover:text-gray-700"
-                  >
-                    Clear
-                  </button>
-                )}
               </div>
             )}
           </div>
