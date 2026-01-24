@@ -109,18 +109,18 @@ const OrderAdjustment = () => {
     }
   }, [selectedBrandId, locations]);
 
-  // Fetch ship dates when season/brand/location change
+  // Fetch ship dates when season/brand change (not per-location - ship dates are the same across locations)
   useEffect(() => {
     const fetchShipDates = async () => {
-      if (!selectedSeasonId || !selectedBrandId || !activeLocationId) {
+      if (!selectedSeasonId || !selectedBrandId) {
         setShipDates([]);
         return;
       }
       try {
         const response = await orderAPI.getShipDates({
           seasonId: selectedSeasonId,
-          brandId: selectedBrandId,
-          locationId: activeLocationId
+          brandId: selectedBrandId
+          // No locationId - ship dates should be consistent across all locations
         });
         const dates = response.data.shipDates || [];
         setShipDates(dates);
@@ -135,24 +135,12 @@ const OrderAdjustment = () => {
       }
     };
     fetchShipDates();
-  }, [selectedSeasonId, selectedBrandId, activeLocationId]);
-
-  // Track previous location to detect location changes
-  const prevLocationRef = useRef(activeLocationId);
+  }, [selectedSeasonId, selectedBrandId]);
 
   // Handle location changes and fetch inventory
+  // Ship date persists across location tab changes
   useEffect(() => {
     if (!selectedSeasonId || !selectedBrandId || !activeLocationId) return;
-
-    const locationChanged = prevLocationRef.current !== activeLocationId;
-    prevLocationRef.current = activeLocationId;
-
-    // If location changed and there's a ship date filter, clear it first
-    // The URL change will trigger another effect run with empty ship date
-    if (locationChanged && selectedShipDate) {
-      updateFilter('shipDate', '');
-      return; // Exit early - the URL update will trigger this effect again with cleared ship date
-    }
 
     // Fetch inventory if not cached - ship date is required
     if (!selectedShipDate) return; // Don't fetch without ship date
