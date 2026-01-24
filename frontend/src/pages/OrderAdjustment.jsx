@@ -865,11 +865,16 @@ const OrderAdjustment = () => {
                   className="px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">-- Select Ship Date --</option>
-                  {shipDates.map((date) => (
-                    <option key={date} value={date}>
-                      {new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                    </option>
-                  ))}
+                  {shipDates.map((date) => {
+                    // Parse YYYY-MM-DD without timezone conversion
+                    const [year, month, day] = date.split('-');
+                    const displayDate = new Date(year, month - 1, day);
+                    return (
+                      <option key={date} value={date}>
+                        {displayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             )}
