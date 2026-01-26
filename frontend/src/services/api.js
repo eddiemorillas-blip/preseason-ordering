@@ -115,6 +115,7 @@ export const orderAPI = {
   getIgnoredProducts: (params) => api.get('/orders/ignored-products', { params }),
   unignoreProduct: (data) => api.post('/orders/unignore-product', data),
   finalize: (orderId) => api.post(`/orders/${orderId}/finalize`),
+  unfinalize: (orderId) => api.post(`/orders/${orderId}/unfinalize`),
   getFinalizedStatus: (params) => api.get('/orders/finalized-status', { params }),
   finalizeBrandWide: (seasonId, brandId) => api.post('/orders/finalize/brand-wide', { seasonId, brandId }),
   getSuggestedItems: (params) => api.get('/orders/inventory/suggested-items', { params }),

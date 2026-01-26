@@ -30,6 +30,9 @@ const ExportCenter = () => {
   const [uploadResult, setUploadResult] = useState(null);
   const [uploadLocationId, setUploadLocationId] = useState('');
 
+  // Unfinalize state
+  const [unfinalizing, setUnfinalizing] = useState(null); // order_id being unfinalized
+
   // Fetch filter options on mount
   useEffect(() => {
     const fetchFilters = async () => {
@@ -106,6 +109,26 @@ const ExportCenter = () => {
   const formatDateTime = (date) => {
     if (!date) return '-';
     return new Date(date).toLocaleString();
+  };
+
+  // Unfinalize an order (revert to draft)
+  const handleUnfinalize = async (orderId) => {
+    if (!confirm('Are you sure you want to revert this order to draft? You will need to finalize it again when ready.')) {
+      return;
+    }
+
+    setUnfinalizing(orderId);
+    setError('');
+    try {
+      await orderAPI.unfinalize(orderId);
+      // Refresh the data
+      await fetchFinalizedStatus();
+    } catch (err) {
+      console.error('Error unfinalizing:', err);
+      setError(err.response?.data?.error || 'Failed to unfinalize order');
+    } finally {
+      setUnfinalizing(null);
+    }
   };
 
   // Export finalized orders
@@ -619,7 +642,17 @@ const ExportCenter = () => {
                         <td className="px-4 py-3 text-gray-500 text-xs">
                           {order.finalized_at ? formatDateTime(order.finalized_at) : '-'}
                         </td>
-                        <td className="px-4 py-3 text-right">
+                        <td className="px-4 py-3 text-right space-x-2">
+                          {order.finalized_at && (
+                            <button
+                              onClick={() => handleUnfinalize(order.order_id)}
+                              disabled={unfinalizing === order.order_id}
+                              className="text-orange-600 hover:text-orange-800 text-sm disabled:opacity-50"
+                              title="Revert to draft"
+                            >
+                              {unfinalizing === order.order_id ? 'Reverting...' : 'Undo'}
+                            </button>
+                          )}
                           <a
                             href={`/order-adjustment?season=${selectedSeasonId}&brand=${selectedBrandId}&location=${order.location_id}&shipDate=${order.ship_date}`}
                             className="text-blue-600 hover:text-blue-800 text-sm"

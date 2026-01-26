@@ -2552,6 +2552,62 @@ router.post('/:id/finalize', authenticateToken, authorizeRoles('admin', 'buyer')
   }
 });
 
+// POST /api/orders/:id/unfinalize - Revert a finalized order back to draft
+router.post('/:id/unfinalize', authenticateToken, authorizeRoles('admin', 'buyer'), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { id } = req.params;
+
+    // Get order details
+    const orderResult = await client.query(`
+      SELECT o.id, o.order_number, o.finalized_at
+      FROM orders o
+      WHERE o.id = $1
+    `, [id]);
+
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = orderResult.rows[0];
+
+    if (!order.finalized_at) {
+      return res.status(400).json({ error: 'Order is not finalized' });
+    }
+
+    await client.query('BEGIN');
+
+    // Delete finalized adjustments for this order
+    const deleteResult = await client.query(`
+      DELETE FROM finalized_adjustments WHERE order_id = $1
+    `, [id]);
+
+    // Clear the order's finalized_at timestamp
+    await client.query(`
+      UPDATE orders SET finalized_at = NULL WHERE id = $1
+    `, [id]);
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      deletedAdjustments: deleteResult.rowCount,
+      order: {
+        id: order.id,
+        order_number: order.order_number,
+        finalized_at: null
+      }
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Unfinalize order error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
 // GET /api/orders/validate-prices - Check orders for pricing issues
 router.get('/validate-prices', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
