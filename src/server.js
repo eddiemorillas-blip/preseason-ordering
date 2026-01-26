@@ -111,6 +111,86 @@ app.get('/api/debug/tables', async (req, res) => {
   }
 });
 
+// Debug endpoint to diagnose export issues
+app.get('/api/debug/export-diagnosis', async (req, res) => {
+  const pool = require('./config/database');
+  try {
+    // Check if finalized_adjustments table exists
+    const tableCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE table_name = 'finalized_adjustments'
+      ) as exists
+    `);
+
+    // Count records
+    const adjustmentCount = await pool.query('SELECT COUNT(*) as count FROM finalized_adjustments').catch(() => ({ rows: [{ count: 0 }] }));
+    const finalizedOrderCount = await pool.query('SELECT COUNT(*) as count FROM orders WHERE finalized_at IS NOT NULL');
+
+    // Get finalized orders with adjustment comparison
+    const comparison = await pool.query(`
+      SELECT
+        o.id,
+        o.order_number,
+        o.finalized_at,
+        o.season_id,
+        o.brand_id,
+        s.name as season_name,
+        b.name as brand_name,
+        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) as item_count,
+        (SELECT COUNT(*) FROM finalized_adjustments fa WHERE fa.order_id = o.id) as adjustment_count
+      FROM orders o
+      LEFT JOIN seasons s ON o.season_id = s.id
+      LEFT JOIN brands b ON o.brand_id = b.id
+      WHERE o.finalized_at IS NOT NULL
+      ORDER BY o.finalized_at DESC
+      LIMIT 30
+    `);
+
+    // Find orders with missing adjustments
+    const missingAdjustments = comparison.rows.filter(r => r.item_count > 0 && r.adjustment_count === 0);
+
+    // Get adjustments grouped by season/brand
+    const bySeasonBrand = await pool.query(`
+      SELECT
+        s.id as season_id,
+        s.name as season_name,
+        b.id as brand_id,
+        b.name as brand_name,
+        COUNT(DISTINCT fa.order_id) as order_count,
+        COUNT(*) as adjustment_count
+      FROM finalized_adjustments fa
+      LEFT JOIN seasons s ON fa.season_id = s.id
+      LEFT JOIN brands b ON fa.brand_id = b.id
+      GROUP BY s.id, s.name, b.id, b.name
+      ORDER BY s.name, b.name
+    `);
+
+    // Get users
+    const users = await pool.query('SELECT id, email, first_name, last_name, role FROM users ORDER BY role, email');
+
+    res.json({
+      tableExists: tableCheck.rows[0].exists,
+      totalAdjustmentRecords: parseInt(adjustmentCount.rows[0].count),
+      totalFinalizedOrders: parseInt(finalizedOrderCount.rows[0].count),
+      finalizedOrders: comparison.rows,
+      ordersWithMissingAdjustments: missingAdjustments,
+      adjustmentsBySeasonBrand: bySeasonBrand.rows,
+      users: users.rows.map(u => ({ ...u, canAccessExportCenter: ['admin', 'buyer'].includes(u.role) })),
+      diagnosis: {
+        hasMissingAdjustments: missingAdjustments.length > 0,
+        message: missingAdjustments.length > 0
+          ? `Found ${missingAdjustments.length} finalized order(s) with missing adjustment records. This causes the "no file to export" error.`
+          : adjustmentCount.rows[0].count === 0
+            ? 'The finalized_adjustments table is empty. No orders have been properly finalized.'
+            : 'Export data looks healthy.'
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/brands', brandsRoutes);
