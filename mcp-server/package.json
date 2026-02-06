@@ -1,0 +1,19 @@
+{
+  "name": "preseason-ordering-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for The Front's preseason ordering system",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "pg": "^8.17.0",
+    "dotenv": "^16.3.0",
+    "@google-cloud/bigquery": "^8.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

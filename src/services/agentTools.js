@@ -2362,6 +2362,214 @@ async function analyze_seasonality(args, context) {
 // handles this - items with <1 month coverage are flagged as critical,
 // meaning you need to order NOW given 1-month lead time)
 
+/**
+ * Tool: Get institutional knowledge for a brand/location/category
+ * @param {Object} args - { brandId?, locationId?, category? }
+ * @returns {Object} Knowledge entries and adjustment rules
+ */
+async function get_institutional_knowledge(args, context) {
+  const { brandId, locationId, category } = args;
+
+  try {
+    const conditions = ['ke.active = TRUE'];
+    const params = [];
+    let paramIdx = 1;
+
+    if (brandId) {
+      conditions.push(`(ke.type = 'brand' AND ke.target_id = $${paramIdx})`);
+      params.push(brandId);
+      paramIdx++;
+    }
+    if (locationId) {
+      conditions.push(`(ke.type = 'location' AND ke.target_id = $${paramIdx})`);
+      params.push(locationId);
+      paramIdx++;
+    }
+    if (category) {
+      conditions.push(`(ke.type = 'category' AND ke.target_name ILIKE $${paramIdx})`);
+      params.push(`%${category}%`);
+      paramIdx++;
+    }
+    // Always include general entries
+    conditions.push(`ke.type = 'general'`);
+
+    const whereClause = conditions.join(' OR ');
+
+    const knowledgeResult = await pool.query(
+      `SELECT ke.id, ke.type, ke.target_id, ke.target_name, ke.key, ke.value, ke.description, ke.priority
+       FROM knowledge_entries ke
+       WHERE (${whereClause})
+       ORDER BY ke.priority DESC, ke.created_at DESC
+       LIMIT 50`,
+      params
+    );
+
+    // Also get matching adjustment rules
+    const ruleConditions = ['ar.enabled = TRUE'];
+    const ruleParams = [];
+    let ruleIdx = 1;
+
+    if (brandId) {
+      ruleConditions.push(`(ar.brand_id = $${ruleIdx} OR ar.brand_id IS NULL)`);
+      ruleParams.push(brandId);
+      ruleIdx++;
+    }
+    if (locationId) {
+      ruleConditions.push(`(ar.location_id = $${ruleIdx} OR ar.location_id IS NULL)`);
+      ruleParams.push(locationId);
+      ruleIdx++;
+    }
+    if (category) {
+      ruleConditions.push(`(ar.category ILIKE $${ruleIdx} OR ar.category IS NULL)`);
+      ruleParams.push(`%${category}%`);
+      ruleIdx++;
+    }
+
+    const rulesResult = await pool.query(
+      `SELECT ar.id, ar.name, ar.description, ar.rule_type, ar.category,
+              ar.rule_config, b.name as brand_name, l.name as location_name
+       FROM adjustment_rules ar
+       LEFT JOIN brands b ON ar.brand_id = b.id
+       LEFT JOIN locations l ON ar.location_id = l.id
+       WHERE ${ruleConditions.join(' AND ')}
+       ORDER BY ar.created_at DESC
+       LIMIT 20`,
+      ruleParams
+    );
+
+    return {
+      success: true,
+      knowledge_entries: knowledgeResult.rows.map(r => ({
+        type: r.type,
+        target: r.target_name || r.type,
+        key: r.key,
+        description: r.description,
+        value: r.value,
+        priority: r.priority
+      })),
+      adjustment_rules: rulesResult.rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        description: r.description,
+        type: r.rule_type,
+        category: r.category,
+        scope: [r.brand_name, r.location_name].filter(Boolean).join(' / ') || 'All',
+        config: r.rule_config
+      })),
+      summary: {
+        knowledge_count: knowledgeResult.rows.length,
+        rules_count: rulesResult.rows.length
+      }
+    };
+  } catch (error) {
+    console.error('get_institutional_knowledge error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
+/**
+ * Tool: Get historical adjustment patterns
+ * @param {Object} args - { brandId?, locationId?, seasonCount? }
+ * @returns {Object} Historical adjustment patterns
+ */
+async function get_historical_patterns(args, context) {
+  const { brandId, locationId, seasonCount = 4 } = args;
+
+  try {
+    const conditions = [];
+    const params = [];
+    let paramIdx = 1;
+
+    if (brandId) {
+      conditions.push(`fa.brand_id = $${paramIdx}`);
+      params.push(brandId);
+      paramIdx++;
+    }
+    if (locationId) {
+      conditions.push(`fa.location_id = $${paramIdx}`);
+      params.push(locationId);
+      paramIdx++;
+    }
+
+    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    // Overall patterns
+    const overallResult = await pool.query(
+      `SELECT
+         COUNT(*) as total_items,
+         ROUND(AVG(CASE WHEN fa.original_quantity > 0
+           THEN ((fa.adjusted_quantity - fa.original_quantity)::numeric / fa.original_quantity * 100)
+           ELSE 0 END), 1) as avg_adjustment_pct,
+         SUM(fa.original_quantity) as total_original,
+         SUM(fa.adjusted_quantity) as total_adjusted
+       FROM finalized_adjustments fa
+       ${whereClause}`,
+      params
+    );
+
+    // By category (join with products to get category)
+    const categoryResult = await pool.query(
+      `SELECT
+         p.category,
+         COUNT(*) as item_count,
+         ROUND(AVG(CASE WHEN fa.original_quantity > 0
+           THEN ((fa.adjusted_quantity - fa.original_quantity)::numeric / fa.original_quantity * 100)
+           ELSE 0 END), 1) as avg_pct
+       FROM finalized_adjustments fa
+       JOIN products p ON fa.product_id = p.id
+       ${whereClause}
+       GROUP BY p.category
+       HAVING COUNT(*) >= 3
+       ORDER BY avg_pct ASC`,
+      params
+    );
+
+    // By size
+    const sizeResult = await pool.query(
+      `SELECT
+         LOWER(TRIM(p.size)) as size,
+         COUNT(*) as item_count,
+         ROUND(AVG(CASE WHEN fa.original_quantity > 0
+           THEN ((fa.adjusted_quantity - fa.original_quantity)::numeric / fa.original_quantity * 100)
+           ELSE 0 END), 1) as avg_pct
+       FROM finalized_adjustments fa
+       JOIN products p ON fa.product_id = p.id
+       ${whereClause}
+       AND p.size IS NOT NULL AND p.size != ''
+       GROUP BY LOWER(TRIM(p.size))
+       HAVING COUNT(*) >= 2
+       ORDER BY avg_pct ASC`,
+      params
+    );
+
+    const overall = overallResult.rows[0];
+
+    return {
+      success: true,
+      summary: {
+        total_finalized_items: parseInt(overall.total_items) || 0,
+        avg_adjustment_pct: parseFloat(overall.avg_adjustment_pct) || 0,
+        total_original_units: parseInt(overall.total_original) || 0,
+        total_adjusted_units: parseInt(overall.total_adjusted) || 0
+      },
+      by_category: categoryResult.rows.map(r => ({
+        category: r.category || 'Uncategorized',
+        item_count: parseInt(r.item_count),
+        avg_adjustment_pct: parseFloat(r.avg_pct)
+      })),
+      by_size: sizeResult.rows.map(r => ({
+        size: r.size,
+        item_count: parseInt(r.item_count),
+        avg_adjustment_pct: parseFloat(r.avg_pct)
+      })),
+      note: 'Use these historical patterns to inform suggestions. Negative percentages mean quantities were reduced.'
+    };
+  } catch (error) {
+    console.error('get_historical_patterns error:', error);
+    return { error: true, message: error.message };
+  }
+}
+
 module.exports = {
   query_sales_data,
   get_order_inventory,
@@ -2386,5 +2594,7 @@ module.exports = {
   compare_to_last_year,
   analyze_by_category,
   get_inventory_status,
-  analyze_seasonality
+  analyze_seasonality,
+  get_institutional_knowledge,
+  get_historical_patterns
 };

@@ -339,6 +339,30 @@ const AVAILABLE_TOOLS = [
       },
       required: ['brandId']
     }
+  },
+  {
+    name: 'get_institutional_knowledge',
+    description: 'Get institutional knowledge and adjustment rules for a brand, location, or category. This returns Eddie\'s domain expertise - patterns he\'s learned over years of ordering. ALWAYS check this before making suggestions to ensure they align with known patterns.',
+    parameters: {
+      type: 'object',
+      properties: {
+        brandId: { type: 'integer', description: 'Brand ID to get knowledge for' },
+        locationId: { type: 'integer', description: 'Location ID to get knowledge for' },
+        category: { type: 'string', description: 'Product category to get rules for (e.g., "Harnesses", "Rope", "Accessories")' }
+      }
+    }
+  },
+  {
+    name: 'get_historical_patterns',
+    description: 'Get historical adjustment patterns showing how quantities were typically adjusted in past seasons. Use this to understand what Eddie usually does for a brand/location - e.g., "historically reduces Petzl accessories by 15%". This helps make informed, data-backed suggestions.',
+    parameters: {
+      type: 'object',
+      properties: {
+        brandId: { type: 'integer', description: 'Brand ID to analyze patterns for' },
+        locationId: { type: 'integer', description: 'Location ID to analyze patterns for' },
+        seasonCount: { type: 'integer', description: 'Number of past seasons to analyze (default: 4)' }
+      }
+    }
   }
 ];
 

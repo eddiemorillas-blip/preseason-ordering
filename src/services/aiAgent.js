@@ -198,6 +198,19 @@ Order: ${o.order_number} (ID: ${o.id})
         role: 'system',
         content: `Current working context - The user is viewing the Order Adjustment page for:\n${contextParts.join('\n')}\n\nYou have access to tools to search products, check inventory, and create order adjustment suggestions. Use the IDs provided when calling tools. The user wants to adjust orders to target a specific reduction percentage (often 20% or less).`
       });
+
+      // Inject institutional knowledge context if available
+      try {
+        const knowledgeContext = await getKnowledgeContext(context.brandId, context.locationId, context.seasonId);
+        if (knowledgeContext) {
+          messages.push({
+            role: 'system',
+            content: knowledgeContext
+          });
+        }
+      } catch (knowledgeErr) {
+        console.log('Knowledge context not available:', knowledgeErr.message);
+      }
     }
 
     // Add conversation history (last 10 messages)
@@ -525,6 +538,131 @@ async function isBudgetExceeded(userId) {
   return usage.remaining_budget <= 0;
 }
 
+/**
+ * Fetch institutional knowledge context for the current brand/location/season
+ * This injects Eddie's domain expertise into the AI's context
+ * @param {number} brandId
+ * @param {number} locationId
+ * @param {number} seasonId
+ * @returns {string|null} Formatted knowledge context or null
+ */
+async function getKnowledgeContext(brandId, locationId, seasonId) {
+  const sections = [];
+
+  // Get brand knowledge
+  if (brandId) {
+    const brandKnowledge = await pool.query(
+      `SELECT ke.key, ke.description, ke.value, ke.priority,
+              COALESCE(ke.target_name, b.name) as brand_name
+       FROM knowledge_entries ke
+       LEFT JOIN brands b ON ke.target_id = b.id AND ke.type = 'brand'
+       WHERE ke.type = 'brand' AND ke.target_id = $1 AND ke.active = TRUE
+         AND (ke.season_id IS NULL OR ke.season_id = $2)
+       ORDER BY ke.priority DESC, ke.created_at DESC`,
+      [brandId, seasonId || 0]
+    );
+
+    if (brandKnowledge.rows.length > 0) {
+      const brandName = brandKnowledge.rows[0].brand_name || 'Unknown';
+      const entries = brandKnowledge.rows.map(r => `  - [${r.key}] ${r.description}`).join('\n');
+      sections.push(`BRAND KNOWLEDGE (${brandName}):\n${entries}`);
+    }
+  }
+
+  // Get location knowledge
+  if (locationId) {
+    const locationKnowledge = await pool.query(
+      `SELECT ke.key, ke.description, ke.value, ke.priority,
+              COALESCE(ke.target_name, l.name) as location_name
+       FROM knowledge_entries ke
+       LEFT JOIN locations l ON ke.target_id = l.id AND ke.type = 'location'
+       WHERE ke.type = 'location' AND ke.target_id = $1 AND ke.active = TRUE
+         AND (ke.season_id IS NULL OR ke.season_id = $2)
+       ORDER BY ke.priority DESC, ke.created_at DESC`,
+      [locationId, seasonId || 0]
+    );
+
+    if (locationKnowledge.rows.length > 0) {
+      const locationName = locationKnowledge.rows[0].location_name || 'Unknown';
+      const entries = locationKnowledge.rows.map(r => `  - [${r.key}] ${r.description}`).join('\n');
+      sections.push(`LOCATION KNOWLEDGE (${locationName}):\n${entries}`);
+    }
+  }
+
+  // Get general and category knowledge
+  const generalKnowledge = await pool.query(
+    `SELECT ke.key, ke.description, ke.value, ke.type, ke.target_name
+     FROM knowledge_entries ke
+     WHERE ke.type IN ('category', 'general') AND ke.active = TRUE
+       AND (ke.season_id IS NULL OR ke.season_id = $1)
+     ORDER BY ke.priority DESC, ke.created_at DESC
+     LIMIT 20`,
+    [seasonId || 0]
+  );
+
+  if (generalKnowledge.rows.length > 0) {
+    const entries = generalKnowledge.rows.map(r => {
+      const prefix = r.type === 'category' ? `[${r.target_name || 'Category'}]` : '[General]';
+      return `  - ${prefix} ${r.description}`;
+    }).join('\n');
+    sections.push(`CATEGORY & GENERAL RULES:\n${entries}`);
+  }
+
+  // Get available adjustment rules
+  if (brandId || locationId) {
+    const rulesQuery = `
+      SELECT ar.name, ar.description, ar.rule_type, ar.category, ar.rule_config,
+             b.name as brand_name, l.name as location_name
+      FROM adjustment_rules ar
+      LEFT JOIN brands b ON ar.brand_id = b.id
+      LEFT JOIN locations l ON ar.location_id = l.id
+      WHERE ar.enabled = TRUE
+        AND (ar.brand_id IS NULL OR ar.brand_id = $1)
+        AND (ar.location_id IS NULL OR ar.location_id = $2)
+        AND (ar.season_id IS NULL OR ar.season_id = $3)
+      ORDER BY ar.created_at DESC
+      LIMIT 10`;
+    const rules = await pool.query(rulesQuery, [brandId || 0, locationId || 0, seasonId || 0]);
+
+    if (rules.rows.length > 0) {
+      const entries = rules.rows.map(r => {
+        const scope = [r.brand_name, r.location_name, r.category].filter(Boolean).join(' / ') || 'All';
+        return `  - ${r.name} (${r.rule_type}, scope: ${scope}): ${r.description || 'No description'}`;
+      }).join('\n');
+      sections.push(`AVAILABLE ADJUSTMENT RULES:\n${entries}`);
+    }
+  }
+
+  // Get historical pattern summary
+  if (brandId && locationId) {
+    try {
+      const patternSummary = await pool.query(
+        `SELECT
+           COUNT(*) as total_adjustments,
+           ROUND(AVG(CASE WHEN fa.original_quantity > 0
+             THEN ((fa.adjusted_quantity - fa.original_quantity)::numeric / fa.original_quantity * 100)
+             ELSE 0 END), 1) as avg_adjustment_pct
+         FROM finalized_adjustments fa
+         WHERE fa.brand_id = $1 AND fa.location_id = $2`,
+        [brandId, locationId]
+      );
+
+      if (patternSummary.rows[0] && parseInt(patternSummary.rows[0].total_adjustments) > 0) {
+        const ps = patternSummary.rows[0];
+        sections.push(`HISTORICAL PATTERN: Across ${ps.total_adjustments} finalized items for this brand/location, the average adjustment was ${ps.avg_adjustment_pct}%.`);
+      }
+    } catch (patternErr) {
+      // Pattern data not available - that's fine
+    }
+  }
+
+  if (sections.length === 0) return null;
+
+  return `INSTITUTIONAL KNOWLEDGE (Eddie's expertise & historical patterns):\n` +
+    `Use this knowledge to inform your analysis and suggestions. These are proven patterns from experience.\n\n` +
+    sections.join('\n\n');
+}
+
 module.exports = {
   sendMessage,
   executeTool,
@@ -532,5 +670,6 @@ module.exports = {
   getConversationUsage,
   getMonthlyUsage,
   isBudgetExceeded,
+  getKnowledgeContext,
   SYSTEM_PROMPT
 };

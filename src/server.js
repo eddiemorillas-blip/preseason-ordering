@@ -49,6 +49,9 @@ const formTemplatesRoutes = require('./routes/form-templates');
 const formsRoutes = require('./routes/forms');
 const agentRoutes = require('./routes/agent');
 const scheduledRoutes = require('./routes/scheduled');
+const knowledgeRoutes = require('./routes/knowledge');
+const patternsRoutes = require('./routes/patterns');
+const batchOperationsRoutes = require('./routes/batch-operations');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -212,6 +215,9 @@ app.use('/api/form-templates', formTemplatesRoutes);
 app.use('/api/forms', formsRoutes);
 app.use('/api/agent', agentRoutes);
 app.use('/api/scheduled', scheduledRoutes);
+app.use('/api/knowledge', knowledgeRoutes);
+app.use('/api/patterns', patternsRoutes);
+app.use('/api/batch-operations', batchOperationsRoutes);
 
 // Serve static files from frontend build in production
 if (process.env.NODE_ENV === 'production') {
