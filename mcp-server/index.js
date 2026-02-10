@@ -2,6 +2,7 @@
 
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
+const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
 
 // Import all tool modules
 const ordersTools = require('./tools/orders.js');
@@ -9,6 +10,7 @@ const adjustmentsTools = require('./tools/adjustments.js');
 const knowledgeTools = require('./tools/knowledge.js');
 const patternsTools = require('./tools/patterns.js');
 const salesTools = require('./tools/sales.js');
+const shipmentsTools = require('./tools/shipments.js');
 
 // Combine all tools
 const allTools = [
@@ -16,20 +18,25 @@ const allTools = [
   ...adjustmentsTools,
   ...knowledgeTools,
   ...patternsTools,
-  ...salesTools
+  ...salesTools,
+  ...shipmentsTools
 ];
 
 // Create the MCP server
 const server = new Server({
   name: 'preseason-ordering-mcp',
   version: '1.0.0'
+}, {
+  capabilities: {
+    tools: {}
+  }
 });
 
 /**
  * Tool listing handler
  * Returns all available tools with their schemas
  */
-server.setRequestHandler('tools/list', async () => {
+server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: allTools.map(tool => ({
       name: tool.name,
@@ -43,7 +50,7 @@ server.setRequestHandler('tools/list', async () => {
  * Tool execution handler
  * Routes tool calls to the appropriate handler
  */
-server.setRequestHandler('tools/call', async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   // Find the tool

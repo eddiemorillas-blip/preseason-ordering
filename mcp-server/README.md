@@ -4,18 +4,19 @@ A Model Context Protocol (MCP) server for The Front's preseason ordering system.
 
 ## Overview
 
-The MCP server provides 20 tools organized into 5 modules:
+The MCP server provides tools organized into 6 modules:
 
 - **Orders** (5 tools): Query and analyze orders
 - **Adjustments** (5 tools): Modify order quantities with bulk operations
 - **Knowledge** (4 tools): Access institutional knowledge and adjustment rules
 - **Patterns** (3 tools): Analyze historical adjustment patterns
-- **Sales** (3 tools): Query sales data and velocity metrics
+- **Sales** (5 tools): Query sales data, velocity metrics, and live inventory
+- **Shipments** (6 tools): Track vendor shipments and receipt status
 
 ## Installation
 
 ```bash
-cd /sessions/cool-bold-bell/mnt/preseason-ordering/mcp-server
+cd preseason-ordering/mcp-server
 npm install
 ```
 
@@ -264,6 +265,88 @@ Compare current order quantities to historical 12-month sales patterns.
 - `orderId` (required): Order ID to analyze
 
 **Returns:** Comparison showing whether you're ordering more/less/similar to historical sales with recommendations
+
+#### get_stock_on_hand
+Get live inventory from BigQuery for a brand/vendor.
+
+**Parameters:**
+- `brandId` (optional): Brand ID from database
+- `vendorName` (optional): Vendor name to search directly in BigQuery
+- `locationId` (optional): Filter to specific location
+
+**Returns:** Current on-hand quantities by barcode and location
+
+#### lookup_barcodes
+Look up specific barcodes/UPCs in BigQuery inventory across all locations.
+
+**Parameters:**
+- `barcodes` (required): Array of barcode/UPC strings to look up
+
+**Returns:** Exact on-hand quantities per barcode per location
+
+#### get_zero_stock
+Find all items for a vendor with 0 or negative on-hand inventory.
+
+**Parameters:**
+- `vendorName` (required): Vendor/brand name to search
+- `shoeModels` (optional): Filter to specific product descriptions
+
+**Returns:** Compact data for identifying restock needs
+
+### Shipments Module
+
+#### update_order_decisions
+Push SHIP/CANCEL/Keep Open decisions to existing order items.
+
+**Parameters:**
+- `orderId` (required): Order ID to update
+- `decisions` (required): Array of `{orderItemId, decision, adjustedQty}`
+
+**Returns:** Summary of updated items by decision type
+
+#### create_shipment
+Record an inbound shipment from a vendor.
+
+**Parameters:**
+- `vendorName` (required): Vendor/brand name
+- `brandId`, `orderId`, `trackingNumber`, `carrier`, `shipDate` (optional)
+- `lineItems` (optional): Array of items with UPC, quantity, etc.
+- `emailMessageId` (optional): For idempotency when processing emails
+
+**Returns:** Shipment ID and matching summary
+
+#### update_receipt_status
+Mark shipment items as received or backordered.
+
+**Parameters:**
+- `shipmentId` (optional): Bulk receive all items in shipment
+- `items` (optional): Individual item updates `[{orderItemId, quantityReceived, status}]`
+
+**Returns:** Count of received and backordered items
+
+#### get_pending_shipments
+List vendor shipments awaiting receipt.
+
+**Parameters:**
+- `brandId`, `orderId`, `status` (all optional)
+
+**Returns:** List of pending/partial shipments with tracking info
+
+#### get_order_receipt_summary
+Get overview of receipt status for an order.
+
+**Parameters:**
+- `orderId` (required): Order ID
+
+**Returns:** Breakdown by receipt status and vendor decision
+
+#### check_email_processed
+Check if an Outlook email has already been processed (idempotency check).
+
+**Parameters:**
+- `emailMessageId` (required): Outlook message ID
+
+**Returns:** Processing status and linked shipment if exists
 
 ## Architecture
 

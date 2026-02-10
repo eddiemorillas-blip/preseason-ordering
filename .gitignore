@@ -48,3 +48,7 @@ credentials/
 .agent-cache/
 .vercel
 .env*.local
+
+# Data files (working spreadsheets, not for version control)
+*.xlsx
+*.xls

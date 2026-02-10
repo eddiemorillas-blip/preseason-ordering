@@ -2,9 +2,9 @@
   "mcpServers": {
     "preseason-ordering": {
       "command": "node",
-      "args": ["/sessions/cool-bold-bell/mnt/preseason-ordering/mcp-server/index.js"],
+      "args": ["/FULL/PATH/TO/preseason-ordering/mcp-server/index.js"],
       "env": {
-        "DATABASE_URL": "postgresql://user:password@localhost:5432/preseason_ordering"
+        "DATABASE_URL": "postgresql://user:password@host:port/database"
       }
     }
   }

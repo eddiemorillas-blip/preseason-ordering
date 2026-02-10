@@ -79,6 +79,14 @@ NODE_ENV=development|production
 
 BigQuery credentials go in `/credentials/` directory.
 
+## La Sportiva Ordering Rules
+- Shoe size range: **36-46** (don't restock outside this)
+- Miura VS: **NOT sold at Ogden** — only SLC and South Main
+- Kubo mens: current color is **Savana/Mountain Red** — do NOT stock Goji/Neon (old)
+- Finale & Finale Womens: fully stock all locations
+- Max 1 qty on hand per shoe size per location
+→ Full rules: memory/context/la-sportiva-ordering-rules.md
+
 ## API Conventions
 - All routes prefixed with `/api/`
 - Auth via Bearer token in Authorization header

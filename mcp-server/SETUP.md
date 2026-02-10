@@ -7,7 +7,7 @@ Complete guide to getting the Preseason Ordering MCP server running.
 ### 1. Install Dependencies
 
 ```bash
-cd /sessions/cool-bold-bell/mnt/preseason-ordering/mcp-server
+cd preseason-ordering/mcp-server
 npm install
 ```
 
@@ -94,7 +94,7 @@ Open `claude_desktop_config.json` and add the server:
   "mcpServers": {
     "preseason-ordering": {
       "command": "node",
-      "args": ["/sessions/cool-bold-bell/mnt/preseason-ordering/mcp-server/index.js"],
+      "args": ["preseason-ordering/mcp-server/index.js"],
       "env": {
         "DATABASE_URL": "postgresql://user:password@localhost:5432/preseason_ordering"
       }
@@ -110,7 +110,7 @@ Or, if your `.env.local` is properly set up in the project root:
   "mcpServers": {
     "preseason-ordering": {
       "command": "node",
-      "args": ["/sessions/cool-bold-bell/mnt/preseason-ordering/mcp-server/index.js"]
+      "args": ["preseason-ordering/mcp-server/index.js"]
     }
   }
 }
@@ -142,7 +142,7 @@ Similar configuration in Cowork's MCP settings:
 2. Add new server
 3. Name: `preseason-ordering`
 4. Command: `node`
-5. Arguments: `/sessions/cool-bold-bell/mnt/preseason-ordering/mcp-server/index.js`
+5. Arguments: `preseason-ordering/mcp-server/index.js`
 6. Environment: Set `DATABASE_URL` or ensure `.env.local` exists
 
 ## Troubleshooting
@@ -205,7 +205,7 @@ Dependencies not installed.
 
 Solution:
 ```bash
-cd /sessions/cool-bold-bell/mnt/preseason-ordering/mcp-server
+cd preseason-ordering/mcp-server
 npm install
 ```
 
@@ -214,7 +214,7 @@ npm install
 Make sure migrations have been run on your database:
 
 ```bash
-cd /sessions/cool-bold-bell/mnt/preseason-ordering
+cd preseason-ordering
 node run-initial-migration.js
 ```
 
@@ -285,7 +285,7 @@ Use PM2 to keep the server running:
 ```bash
 npm install -g pm2
 
-pm2 start index.js --name preseason-ordering --cwd /sessions/cool-bold-bell/mnt/preseason-ordering/mcp-server
+pm2 start index.js --name preseason-ordering --cwd preseason-ordering/mcp-server
 
 # Auto-restart on file changes during dev
 pm2 start index.js --watch --name preseason-ordering
@@ -432,7 +432,7 @@ module.exports = [
 - Check MCP client logs (Claude Desktop or Cowork)
 
 **Database Help:**
-- See `/sessions/cool-bold-bell/mnt/preseason-ordering/migrations/` for schema
+- See `preseason-ordering/migrations/` for schema
 - PostgreSQL docs: https://www.postgresql.org/docs/
 
 **MCP Protocol:**
@@ -452,5 +452,41 @@ mcp-server/
     ├── adjustments.js    # Quantity adjustment tools
     ├── knowledge.js      # Institutional knowledge tools
     ├── patterns.js       # Historical pattern tools
-    └── sales.js          # Sales data tools
+    ├── sales.js          # Sales data + BigQuery inventory tools
+    └── shipments.js      # Vendor shipment tracking tools
 ```
+
+## Vendor Decision Sync Script
+
+The `sync_decisions.py` script (in project root) syncs SHIP/CANCEL decisions from vendor spreadsheets to the database.
+
+### Setup
+
+```bash
+# Install Python dependencies
+pip install psycopg2-binary openpyxl python-dotenv
+```
+
+### Usage
+
+1. Place vendor spreadsheets in project root:
+   - `Scarpa_OrderReview.xlsx`
+   - `LaSportiva_REVISED.xlsx`
+
+2. Ensure `DATABASE_URL` is set in `.env.local`
+
+3. Run the sync:
+   ```bash
+   python3 sync_decisions.py
+   ```
+
+### What It Does
+
+- Reads vendor decisions (SHIP/CANCEL/Keep Open) from Excel files
+- Matches items by UPC and location
+- Updates `order_items` with:
+  - `vendor_decision`: ship, cancel, or keep_open_bo
+  - `adjusted_quantity`: 0 for cancelled items
+  - `receipt_status`: pending, cancelled, or backordered
+
+This is typically run monthly when vendor responses come back.

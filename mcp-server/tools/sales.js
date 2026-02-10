@@ -354,22 +354,27 @@ async function compareYearOverYear(args) {
  */
 async function getStockOnHand(args) {
   try {
-    const { brandId, locationId } = args;
+    const { brandId, locationId, vendorName } = args;
 
-    if (!brandId) {
-      return { content: [{ type: 'text', text: 'brandId is required' }] };
+    if (!brandId && !vendorName) {
+      return { content: [{ type: 'text', text: 'brandId or vendorName is required' }] };
     }
 
     if (!bigquery) {
-      return { content: [{ type: 'text', text: 'BigQuery is not configured. Live inventory data is unavailable. Sales data from PostgreSQL is still available via query_sales tool.' }] };
+      return { content: [{ type: 'text', text: 'BigQuery is not configured. Live inventory data is unavailable.' }] };
     }
 
-    // Get brand name
-    const brandResult = await pool.query('SELECT name FROM brands WHERE id = $1', [brandId]);
-    if (brandResult.rows.length === 0) {
-      return { content: [{ type: 'text', text: `Brand ${brandId} not found` }] };
+    // Get brand name from DB or use vendorName directly
+    let brandName;
+    if (vendorName) {
+      brandName = vendorName;
+    } else {
+      const brandResult = await pool.query('SELECT name FROM brands WHERE id = $1', [brandId]);
+      if (brandResult.rows.length === 0) {
+        return { content: [{ type: 'text', text: `Brand ${brandId} not found` }] };
+      }
+      brandName = brandResult.rows[0].name;
     }
-    const brandName = brandResult.rows[0].name;
 
     // Get location name if provided
     let locationName = 'All Locations';
@@ -379,26 +384,34 @@ async function getStockOnHand(args) {
       locationName = locResult.rows.length > 0 ? locResult.rows[0].name : `Location ${locationId}`;
       const facilityId = LOCATION_TO_FACILITY[locationId];
       if (facilityId) {
-        facilityFilter = `AND i.facility_id = '${facilityId}'`;
+        facilityFilter = `AND i.facility_id = ${facilityId}`;
       }
     }
 
+    // First: discover column names with a schema query
+    const schemaQuery = `
+      SELECT column_name
+      FROM \`front-data-production.dataform.INFORMATION_SCHEMA.COLUMNS\`
+      WHERE table_name = 'INVENTORY_on_hand_report'
+    `;
+
+    let columns = [];
+    try {
+      const [schemaRows] = await bigquery.query({ query: schemaQuery });
+      columns = schemaRows.map(r => r.column_name);
+    } catch (e) {
+      // Schema query failed, proceed with known columns
+    }
+
     const query = `
-      SELECT
-        i.barcode AS upc,
-        i.product_description AS product_name,
-        i.on_hand_qty AS stock_on_hand,
-        i.facility_id,
-        i.facility_name
+      SELECT i.*, v.VENDOR_NAME
       FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
       JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON i.barcode = p.BARCODE
       LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
       WHERE LOWER(v.VENDOR_NAME) LIKE '%${brandName.toLowerCase()}%'
-        AND i.on_hand_qty IS NOT NULL
-        AND i.on_hand_qty > 0
         ${facilityFilter}
       ORDER BY i.on_hand_qty DESC
-      LIMIT 500
+      LIMIT 5000
     `;
 
     const [rows] = await bigquery.query({ query });
@@ -406,6 +419,9 @@ async function getStockOnHand(args) {
     if (rows.length === 0) {
       return { content: [{ type: 'text', text: `No inventory found for ${brandName} at ${locationName}` }] };
     }
+
+    // Log discovered columns for debugging
+    const sampleKeys = rows.length > 0 ? Object.keys(rows[0]) : [];
 
     // Map facility IDs to location names
     const enrichedRows = rows.map(row => {
@@ -416,21 +432,29 @@ async function getStockOnHand(args) {
       };
     });
 
+    const totalOnHand = rows.reduce((s, r) => s + (parseInt(r.on_hand_qty) || 0), 0);
+
     let summary = `LIVE INVENTORY - ${brandName}\n${'='.repeat(70)}\n`;
     summary += `Location: ${locationName}\n`;
     summary += `Total SKUs with stock: ${rows.length}\n`;
-    summary += `Total units on hand: ${rows.reduce((s, r) => s + (parseInt(r.stock_on_hand) || 0), 0)}\n\n`;
+    summary += `Total units on hand: ${totalOnHand}\n`;
+    summary += `Columns found: ${sampleKeys.join(', ')}\n`;
+    if (columns.length > 0) {
+      summary += `Table schema: ${columns.join(', ')}\n`;
+    }
+    summary += '\n';
 
-    summary += 'UPC            | Product                    | Location    | On Hand\n';
+    summary += 'Barcode        | Description                | Location    | On Hand\n';
     summary += '-'.repeat(70) + '\n';
 
-    enrichedRows.slice(0, 100).forEach(row => {
-      summary += `${String(row.upc || '').padEnd(15)}| ${String((row.product_name || '').substring(0, 27)).padEnd(27)} | ` +
-                 `${String(row.location).padEnd(12)}| ${row.stock_on_hand}\n`;
+    enrichedRows.slice(0, 200).forEach(row => {
+      const desc = row.product_description || row.description || row.item_description || row.barcode || '';
+      summary += `${String(row.barcode || '').padEnd(15)}| ${String(String(desc).substring(0, 27)).padEnd(27)} | ` +
+                 `${String(row.location).padEnd(12)}| ${row.on_hand_qty}\n`;
     });
 
-    if (rows.length > 100) {
-      summary += `\n... and ${rows.length - 100} more SKUs\n`;
+    if (rows.length > 200) {
+      summary += `\n... and ${rows.length - 200} more SKUs\n`;
     }
 
     return { content: [{ type: 'text', text: summary }] };
@@ -470,12 +494,12 @@ async function getInventoryStatus(args) {
       WITH inventory AS (
         SELECT
           i.barcode AS upc,
-          i.product_description AS product_name,
+          i.barcode AS product_name,
           i.on_hand_qty AS stock_on_hand
         FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
         JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON i.barcode = p.BARCODE
         LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
-        WHERE i.facility_id = '${facilityId}'
+        WHERE i.facility_id = ${facilityId}
           AND LOWER(v.VENDOR_NAME) LIKE '%${brandName.toLowerCase()}%'
       ),
       sales AS (
@@ -487,7 +511,7 @@ async function getInventoryStatus(args) {
         JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
         JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
         WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
-          AND p.facility_id_true = '${facilityId}'
+          AND p.facility_id_true = ${facilityId}
           AND ii.QUANTITY > 0
         GROUP BY p.BARCODE
       )
@@ -590,6 +614,145 @@ async function getInventoryStatus(args) {
   }
 }
 
+/**
+ * lookup_barcodes: Query BigQuery for specific barcodes across all locations
+ */
+async function lookupBarcodes(args) {
+  try {
+    const { barcodes } = args;
+    if (!barcodes || barcodes.length === 0) {
+      return { content: [{ type: 'text', text: 'barcodes array is required' }] };
+    }
+
+    const barcodeList = barcodes.map(b => `'${b}'`).join(',');
+
+    const query = `
+      SELECT DISTINCT
+        i.facility_id,
+        i.barcode,
+        i.description,
+        i.color,
+        i.size,
+        i.on_hand_qty
+      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+      WHERE i.barcode IN (${barcodeList})
+        AND i.facility_id IN (41185, 1003, 1000)
+      ORDER BY i.barcode, i.facility_id
+    `;
+
+    const [rows] = await bigquery.query({ query });
+
+    const FACILITY_NAMES = { '41185': 'SLC', '1003': 'South Main', '1000': 'Ogden' };
+
+    // Deduplicate (same barcode+facility can appear multiple times)
+    const seen = {};
+    for (const row of rows) {
+      const key = `${row.barcode}|${row.facility_id}`;
+      if (!seen[key]) {
+        seen[key] = row;
+      }
+    }
+    const unique = Object.values(seen);
+
+    // Build JSON-like output for easy parsing
+    let output = `BARCODE_LOOKUP_RESULTS\n`;
+    output += `Queried: ${barcodes.length} barcodes | Found: ${unique.length} results\n`;
+    output += `---DATA_START---\n`;
+
+    for (const row of unique) {
+      const loc = FACILITY_NAMES[row.facility_id] || row.facility_id;
+      output += `${row.barcode}|${loc}|${row.on_hand_qty}|${row.description || ''}|${row.color || ''}|${row.size || ''}\n`;
+    }
+
+    output += `---DATA_END---\n`;
+
+    // Also show barcodes NOT found (0 stock everywhere)
+    const foundBarcodes = new Set(unique.map(r => String(r.barcode)));
+    const notFound = barcodes.filter(b => !foundBarcodes.has(String(b)));
+    output += `\nNOT IN INVENTORY (0 on hand): ${notFound.length} barcodes\n`;
+    for (const b of notFound) {
+      output += `  ${b}\n`;
+    }
+
+    return { content: [{ type: 'text', text: output }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `Error looking up barcodes: ${error.message}` }] };
+  }
+}
+
+/**
+ * get_zero_stock: Find all items for a vendor with 0 or negative on-hand at any location.
+ * Returns compact barcode|location|on_hand|description|color|size format.
+ */
+async function getZeroStock(args) {
+  try {
+    const { vendorName, shoeModels } = args;
+    if (!vendorName) {
+      return { content: [{ type: 'text', text: 'vendorName is required' }] };
+    }
+
+    // Build shoe model filter if provided
+    let modelFilter = '';
+    if (shoeModels && shoeModels.length > 0) {
+      const modelClauses = shoeModels.map(m => `LOWER(i.description) LIKE '%${m.toLowerCase()}%'`).join(' OR ');
+      modelFilter = `AND (${modelClauses})`;
+    }
+
+    const query = `
+      SELECT DISTINCT
+        i.facility_id,
+        i.barcode,
+        i.description,
+        i.color,
+        i.size,
+        i.on_hand_qty
+      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+      JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON i.barcode = p.BARCODE
+      LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
+      WHERE LOWER(v.VENDOR_NAME) LIKE '%${vendorName.toLowerCase()}%'
+        AND i.facility_id IN (41185, 1003, 1000)
+        AND i.on_hand_qty <= 0
+        ${modelFilter}
+      ORDER BY i.description, i.size, i.facility_id
+    `;
+
+    const [rows] = await bigquery.query({ query });
+    const FACILITY_NAMES = { '41185': 'SLC', '1003': 'South Main', '1000': 'Ogden' };
+
+    // Deduplicate
+    const seen = {};
+    for (const row of rows) {
+      const key = `${row.barcode}|${row.facility_id}`;
+      if (!seen[key]) seen[key] = row;
+    }
+    const unique = Object.values(seen);
+
+    let output = `ZERO_STOCK_RESULTS for ${vendorName}\n`;
+    output += `Found: ${unique.length} barcode+location combos with on_hand <= 0\n`;
+    output += `---DATA_START---\n`;
+    for (const row of unique) {
+      const loc = FACILITY_NAMES[row.facility_id] || row.facility_id;
+      output += `${row.barcode}|${loc}|${row.on_hand_qty}|${row.description || ''}|${row.color || ''}|${row.size || ''}\n`;
+    }
+    output += `---DATA_END---\n`;
+
+    // Summary by description
+    const byCat = {};
+    for (const row of unique) {
+      const d = row.description || 'Unknown';
+      byCat[d] = (byCat[d] || 0) + 1;
+    }
+    output += `\nSUMMARY BY PRODUCT:\n`;
+    for (const [desc, count] of Object.entries(byCat).sort()) {
+      output += `  ${desc}: ${count} zero-stock location combos\n`;
+    }
+
+    return { content: [{ type: 'text', text: output }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+  }
+}
+
 module.exports = [
   {
     name: 'query_sales',
@@ -638,9 +801,9 @@ module.exports = [
       type: 'object',
       properties: {
         brandId: { type: 'integer', description: 'Brand ID' },
-        locationId: { type: 'integer', description: 'Optional: filter to a specific location (1=SLC, 2=South Main, 3=Ogden)' }
-      },
-      required: ['brandId']
+        locationId: { type: 'integer', description: 'Optional: filter to a specific location (1=SLC, 2=South Main, 3=Ogden)' },
+        vendorName: { type: 'string', description: 'Optional: vendor/brand name to search directly in BigQuery (use when brand is not in the database)' }
+      }
     },
     handler: getStockOnHand
   },
@@ -657,5 +820,30 @@ module.exports = [
       required: ['brandId', 'locationId']
     },
     handler: getInventoryStatus
+  },
+  {
+    name: 'lookup_barcodes',
+    description: 'Look up specific barcodes/UPCs in BigQuery inventory across all locations. Returns exact on-hand quantities per barcode per location.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        barcodes: { type: 'array', items: { type: 'string' }, description: 'Array of barcode/UPC strings to look up' }
+      },
+      required: ['barcodes']
+    },
+    handler: lookupBarcodes
+  },
+  {
+    name: 'get_zero_stock',
+    description: 'Find all items for a vendor with 0 or negative on-hand inventory at any location. Returns compact data for identifying restock needs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vendorName: { type: 'string', description: 'Vendor/brand name to search in BigQuery' },
+        shoeModels: { type: 'array', items: { type: 'string' }, description: 'Optional: filter to specific product descriptions (e.g. ["Skwama", "Solution"])' }
+      },
+      required: ['vendorName']
+    },
+    handler: getZeroStock
   }
 ];
