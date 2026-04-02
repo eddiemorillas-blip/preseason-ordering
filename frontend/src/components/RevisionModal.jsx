@@ -17,6 +17,7 @@ const REASON_LABELS = {
   zero_stock: 'Zero stock',
   positive_stock_cancel: 'In stock',
   discontinued_product: 'Discontinued',
+  received_not_inventoried: 'Sold (not in inv)',
   flipped_back_cap: 'Flipped (cap)',
   user_override: 'Manual override',
 };
@@ -63,7 +64,7 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
     setDecisions(prev => {
       const updated = [...prev];
       const d = { ...updated[index] };
-      if (d.isDiscontinued) return prev; // Can't override discontinued
+      if (d.isDiscontinued || d.receivedNotInventoried) return prev; // Can't override these
 
       if (d.decision === 'ship') {
         d.decision = 'cancel';
@@ -338,18 +339,28 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                             <td className="px-3 py-2 text-center">
                               <button
                                 onClick={() => handleToggleDecision(realIdx)}
-                                disabled={d.isDiscontinued}
-                                className={`px-2 py-0.5 rounded text-xs font-medium ${DECISION_BADGES[d.decision]} ${d.isDiscontinued ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:opacity-80'}`}
-                                title={d.isDiscontinued ? 'Discontinued — cannot override' : 'Click to toggle ship/cancel'}
+                                disabled={d.isDiscontinued || d.receivedNotInventoried}
+                                className={`px-2 py-0.5 rounded text-xs font-medium ${DECISION_BADGES[d.decision]} ${(d.isDiscontinued || d.receivedNotInventoried) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:opacity-80'}`}
+                                title={d.isDiscontinued ? 'Discontinued — cannot override' : d.receivedNotInventoried ? 'Has sales but no inventory — likely received' : 'Click to toggle ship/cancel'}
                               >
                                 {d.decision === 'keep_open_bo' ? 'KEEP OPEN' : d.decision.toUpperCase()}
                               </button>
                             </td>
                             <td className="px-3 py-2 text-center">{d.adjustedQty}</td>
                             <td className="px-3 py-2 text-xs text-gray-500">
-                              {REASON_LABELS[d.reason] || d.reason}
+                              <span>{REASON_LABELS[d.reason] || d.reason}</span>
                               {d.wasFlipped && !d.userOverride && <span className="ml-1 text-amber-500">(flipped)</span>}
                               {d.userOverride && <span className="ml-1 text-blue-500">(modified)</span>}
+                              {d.recentSales && (
+                                <span className="ml-1 text-purple-500" title={`Last sale: ${d.recentSales.lastSale || 'N/A'}`}>
+                                  ({d.recentSales.qtySold} sold / {d.recentSales.transactions} txns)
+                                </span>
+                              )}
+                              {d.priorRevision && (
+                                <span className="ml-1 text-gray-400" title={`Prior: ${d.priorRevision.decision} on ${d.priorRevision.date ? new Date(d.priorRevision.date).toLocaleDateString() : 'N/A'}`}>
+                                  [prev: {d.priorRevision.decision}]
+                                </span>
+                              )}
                             </td>
                           </tr>
                         );

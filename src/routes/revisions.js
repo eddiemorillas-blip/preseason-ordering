@@ -104,13 +104,78 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       }
     } catch (e) { /* knowledge table may be empty */ }
 
+    // Check prior revisions for these items
+    const priorRevisionMap = {};
+    try {
+      const priorResult = await pool.query(`
+        SELECT DISTINCT ON (ah.order_item_id)
+          ah.order_item_id, ah.decision, ah.decision_reason, ah.revision_id,
+          ah.applied_at, ah.on_hand_at_revision
+        FROM adjustment_history ah
+        WHERE ah.brand_id = $1 AND ah.revision_id IS NOT NULL
+          AND ah.order_item_id = ANY($2::int[])
+        ORDER BY ah.order_item_id, ah.applied_at DESC
+      `, [brandId, items.map(i => i.order_item_id)]);
+
+      for (const row of priorResult.rows) {
+        priorRevisionMap[row.order_item_id] = {
+          decision: row.decision,
+          reason: row.decision_reason,
+          revisionId: row.revision_id,
+          date: row.applied_at,
+          onHand: row.on_hand_at_revision
+        };
+      }
+    } catch (e) { /* no prior revisions */ }
+
+    // Check sales data — items with on_hand=0 but recent sales were received but not inventoried
+    const salesMap = {};
+    try {
+      const facilityIds = [...new Set(items.map(i => LOCATION_TO_FACILITY[i.location_id]).filter(Boolean))];
+      const facList = facilityIds.join(',');
+
+      const salesQuery = `
+        SELECT
+          p.BARCODE AS upc,
+          p.facility_id_true AS facility_id,
+          SUM(ii.QUANTITY) AS qty_sold,
+          COUNT(DISTINCT i.invoice_concat) AS transaction_count,
+          MAX(DATE(i.POSTDATE)) AS last_sale
+        FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+        JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+        JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+        WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+          AND ii.QUANTITY > 0
+          AND p.BARCODE IN (${upcList})
+          AND p.facility_id_true IN (${facList})
+        GROUP BY p.BARCODE, p.facility_id_true
+      `;
+
+      const [salesRows] = await bigquery.query({ query: salesQuery });
+      for (const row of salesRows) {
+        const locationId = FACILITY_TO_LOCATION[String(row.facility_id)];
+        if (locationId) {
+          salesMap[`${row.upc}|${locationId}`] = {
+            qtySold: parseInt(row.qty_sold) || 0,
+            transactions: parseInt(row.transaction_count) || 0,
+            lastSale: row.last_sale
+          };
+        }
+      }
+    } catch (e) {
+      console.error('Sales lookup error (non-fatal):', e.message);
+    }
+
     // Apply decision logic
     const decisions = [];
     let totalOriginalQty = 0;
     let shipCount = 0, cancelCount = 0, keepOpenCount = 0;
 
     for (const item of items) {
-      const onHand = inventoryMap[`${item.upc}|${item.location_id}`] || 0;
+      const invKey = `${item.upc}|${item.location_id}`;
+      const onHand = inventoryMap[invKey] || 0;
+      const sales = salesMap[invKey] || null;
+      const priorRevision = priorRevisionMap[item.order_item_id] || null;
       totalOriginalQty += item.original_qty;
 
       const isDiscontinued = item.upc && (
@@ -118,12 +183,18 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
         discontinuedUPCs.has((item.product_name || '').toLowerCase())
       );
 
+      // Items with 0 inventory BUT recent sales → received but not inventoried → cancel
+      const hasRecentSales = sales && sales.qtySold > 0;
+      const receivedNotInventoried = onHand <= 0 && hasRecentSales;
+
       let decision, adjustedQty, reason;
 
       if (isDiscontinued) {
         decision = 'cancel'; adjustedQty = 0; reason = 'discontinued_product'; cancelCount++;
       } else if (onHand > 0) {
         decision = 'cancel'; adjustedQty = 0; reason = 'positive_stock_cancel'; cancelCount++;
+      } else if (receivedNotInventoried) {
+        decision = 'cancel'; adjustedQty = 0; reason = 'received_not_inventoried'; cancelCount++;
       } else {
         decision = 'ship'; adjustedQty = item.original_qty; reason = 'zero_stock'; shipCount++;
       }
@@ -145,7 +216,17 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
         adjustedQty,
         reason,
         wasFlipped: false,
-        isDiscontinued
+        isDiscontinued,
+        // Sales data
+        recentSales: sales ? { qtySold: sales.qtySold, transactions: sales.transactions, lastSale: sales.lastSale } : null,
+        receivedNotInventoried,
+        // Prior revision data
+        priorRevision: priorRevision ? {
+          decision: priorRevision.decision,
+          reason: priorRevision.reason,
+          date: priorRevision.date,
+          onHand: priorRevision.onHand
+        } : null
       });
     }
 
@@ -159,7 +240,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
 
     if (reductionPct > maxReduction) {
       const flippable = decisions
-        .filter(d => d.decision === 'cancel' && !d.isDiscontinued)
+        .filter(d => d.decision === 'cancel' && !d.isDiscontinued && !d.receivedNotInventoried)
         .sort((a, b) => a.onHand - b.onHand);
 
       for (const d of flippable) {

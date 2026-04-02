@@ -286,9 +286,7 @@ async function runRevision(args) {
         [brandId]
       );
       for (const row of discResult.rows) {
-        // key might be the UPC or a product identifier
         if (row.key) discontinuedUPCs.add(row.key.toLowerCase());
-        // value might contain UPCs
         if (row.value && row.value.upc) discontinuedUPCs.add(String(row.value.upc));
         if (row.value && Array.isArray(row.value.upcs)) {
           row.value.upcs.forEach(u => discontinuedUPCs.add(String(u)));
@@ -296,6 +294,62 @@ async function runRevision(args) {
       }
     } catch (e) {
       // knowledge_entries table might not have data yet, continue
+    }
+
+    // Step 2b: Check prior revisions for these items
+    const priorRevisionMap = {};
+    try {
+      const priorResult = await pool.query(`
+        SELECT DISTINCT ON (ah.order_item_id)
+          ah.order_item_id, ah.decision, ah.decision_reason, ah.revision_id,
+          ah.applied_at, ah.on_hand_at_revision
+        FROM adjustment_history ah
+        WHERE ah.brand_id = $1 AND ah.revision_id IS NOT NULL
+          AND ah.order_item_id = ANY($2::int[])
+        ORDER BY ah.order_item_id, ah.applied_at DESC
+      `, [brandId, items.map(i => i.order_item_id)]);
+      for (const row of priorResult.rows) {
+        priorRevisionMap[row.order_item_id] = {
+          decision: row.decision, reason: row.decision_reason, date: row.applied_at, onHand: row.on_hand_at_revision
+        };
+      }
+    } catch (e) { /* no prior revisions */ }
+
+    // Step 2c: Check sales data — items with 0 inventory but recent sales were received but not inventoried
+    const salesMap = {};
+    try {
+      const facilityIds = [...new Set(items.map(i => LOCATION_TO_FACILITY[i.location_id]).filter(Boolean))];
+      const facList = facilityIds.join(',');
+
+      const salesQuery = `
+        SELECT
+          p.BARCODE AS upc,
+          p.facility_id_true AS facility_id,
+          SUM(ii.QUANTITY) AS qty_sold,
+          COUNT(DISTINCT i.invoice_concat) AS transaction_count,
+          MAX(DATE(i.POSTDATE)) AS last_sale
+        FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+        JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+        JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+        WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+          AND ii.QUANTITY > 0
+          AND p.BARCODE IN (${upcList})
+          AND p.facility_id_true IN (${facList})
+        GROUP BY p.BARCODE, p.facility_id_true
+      `;
+      const [salesRows] = await bigquery.query({ query: salesQuery });
+      for (const row of salesRows) {
+        const locationId = FACILITY_TO_LOCATION[String(row.facility_id)];
+        if (locationId) {
+          salesMap[`${row.upc}|${locationId}`] = {
+            qtySold: parseInt(row.qty_sold) || 0,
+            transactions: parseInt(row.transaction_count) || 0,
+            lastSale: row.last_sale
+          };
+        }
+      }
+    } catch (e) {
+      // Sales lookup is non-fatal
     }
 
     // Step 3: Apply decision logic
@@ -308,6 +362,8 @@ async function runRevision(args) {
     for (const item of items) {
       const invKey = `${item.upc}|${item.location_id}`;
       const onHand = inventoryMap[invKey] !== undefined ? inventoryMap[invKey] : 0;
+      const sales = salesMap[invKey] || null;
+      const priorRevision = priorRevisionMap[item.order_item_id] || null;
       totalOriginalQty += item.original_qty;
 
       let decision, adjustedQty, reason;
@@ -318,19 +374,26 @@ async function runRevision(args) {
         discontinuedUPCs.has((item.product_name || '').toLowerCase())
       );
 
+      // Items with 0 inventory BUT recent sales → received but not inventoried → cancel
+      const hasRecentSales = sales && sales.qtySold > 0;
+      const receivedNotInventoried = onHand <= 0 && hasRecentSales;
+
       if (isDiscontinued) {
         decision = 'cancel';
         adjustedQty = 0;
         reason = 'discontinued_product';
         cancelCount++;
       } else if (onHand > 0) {
-        // Have stock on hand → cancel (don't need more)
         decision = 'cancel';
         adjustedQty = 0;
         reason = 'positive_stock_cancel';
         cancelCount++;
+      } else if (receivedNotInventoried) {
+        decision = 'cancel';
+        adjustedQty = 0;
+        reason = 'received_not_inventoried';
+        cancelCount++;
       } else {
-        // Zero or negative stock → ship
         decision = 'ship';
         adjustedQty = item.original_qty;
         reason = 'zero_stock';
@@ -352,7 +415,10 @@ async function runRevision(args) {
         adjustedQty,
         reason,
         wasFlipped: false,
-        isDiscontinued
+        isDiscontinued,
+        recentSales: sales ? { qtySold: sales.qtySold, transactions: sales.transactions, lastSale: sales.lastSale } : null,
+        receivedNotInventoried,
+        priorRevision
       });
     }
 
@@ -368,7 +434,7 @@ async function runRevision(args) {
       // Need to flip some cancelled items back to ship
       // Sort cancelled (non-discontinued) by on_hand ascending (lowest stock first = highest need)
       const flippable = decisions
-        .filter(d => d.decision === 'cancel' && !d.isDiscontinued)
+        .filter(d => d.decision === 'cancel' && !d.isDiscontinued && !d.receivedNotInventoried)
         .sort((a, b) => a.onHand - b.onHand);
 
       for (const d of flippable) {
