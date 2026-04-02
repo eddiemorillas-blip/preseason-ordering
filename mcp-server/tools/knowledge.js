@@ -1,96 +1,67 @@
 const { pool } = require('../db.js');
 
 /**
- * get_knowledge: Get institutional knowledge for a context
+ * get_knowledge: Get institutional knowledge entries from the database
  */
 async function getKnowledge(args) {
   try {
-    const { brandId, locationId, category, type } = args;
+    const { brandId, locationId, category, type, key } = args;
 
-    // Knowledge entries table may not exist, so we create a safe query
-    // For now, we'll return placeholder info about the data structure
-    let result = `INSTITUTIONAL KNOWLEDGE\n${'-'.repeat(80)}\n`;
+    let query = `
+      SELECT
+        ke.id, ke.type, ke.target_id, ke.target_name,
+        ke.key, ke.value, ke.description,
+        ke.season_id, ke.priority, ke.active,
+        ke.created_at, ke.updated_at
+      FROM knowledge_entries ke
+      WHERE ke.active = TRUE
+    `;
 
-    // Build knowledge from database context instead
-    let queries = [];
+    const params = [];
+    let p = 1;
 
-    // Get brand info
+    if (type) {
+      query += ` AND ke.type = $${p++}`;
+      params.push(type);
+    }
     if (brandId) {
-      const brandQuery = `
-        SELECT
-          b.id, b.name, b.vendor_code, b.contact_name, b.contact_email,
-          COUNT(DISTINCT p.id) as product_count,
-          COUNT(DISTINCT o.id) as order_count
-        FROM brands b
-        LEFT JOIN products p ON b.id = p.brand_id
-        LEFT JOIN orders o ON b.id = o.brand_id
-        WHERE b.id = $1
-        GROUP BY b.id
-      `;
-
-      const brandResult = await pool.query(brandQuery, [brandId]);
-      if (brandResult.rows.length > 0) {
-        const b = brandResult.rows[0];
-        result += `\nBRAND: ${b.name}\n${'-'.repeat(40)}\n`;
-        result += `Vendor Code: ${b.vendor_code || 'N/A'}\n`;
-        result += `Contact: ${b.contact_name || 'N/A'} (${b.contact_email || 'N/A'})\n`;
-        result += `Products: ${b.product_count} | Orders: ${b.order_count}\n`;
-      }
+      query += ` AND ke.target_id = $${p++}`;
+      params.push(brandId);
     }
-
-    // Get location info
     if (locationId) {
-      const locQuery = `
-        SELECT
-          l.id, l.name, l.code, l.address, l.city, l.state,
-          COUNT(DISTINCT o.id) as order_count
-        FROM locations l
-        LEFT JOIN orders o ON l.id = o.location_id
-        WHERE l.id = $1
-        GROUP BY l.id
-      `;
-
-      const locResult = await pool.query(locQuery, [locationId]);
-      if (locResult.rows.length > 0) {
-        const l = locResult.rows[0];
-        result += `\nLOCATION: ${l.name}\n${'-'.repeat(40)}\n`;
-        result += `Code: ${l.code || 'N/A'} | Address: ${l.address || 'N/A'}\n`;
-        result += `City: ${l.city || 'N/A'}, ${l.state || 'N/A'}\n`;
-        result += `Orders: ${l.order_count}\n`;
-      }
+      query += ` AND ke.target_id = $${p++}`;
+      params.push(locationId);
+    }
+    if (key) {
+      query += ` AND ke.key = $${p++}`;
+      params.push(key);
     }
 
-    // Get category info
-    if (category && brandId) {
-      const catQuery = `
-        SELECT
-          p.category,
-          COUNT(DISTINCT p.id) as product_count,
-          COUNT(DISTINCT p.size) as size_variants,
-          COUNT(DISTINCT p.color) as color_variants,
-          MIN(p.wholesale_cost) as min_cost,
-          MAX(p.wholesale_cost) as max_cost,
-          AVG(p.wholesale_cost) as avg_cost
-        FROM products p
-        WHERE p.brand_id = $1 AND p.category = $2
-        GROUP BY p.category
-      `;
+    query += ` ORDER BY ke.priority DESC, ke.updated_at DESC`;
 
-      const catResult = await pool.query(catQuery, [brandId, category]);
-      if (catResult.rows.length > 0) {
-        const c = catResult.rows[0];
-        result += `\nCATEGORY: ${c.category}\n${'-'.repeat(40)}\n`;
-        result += `Products: ${c.product_count} | Sizes: ${c.size_variants} | Colors: ${c.color_variants}\n`;
-        result += `Cost Range: $${parseFloat(c.min_cost).toFixed(2)} - $${parseFloat(c.max_cost).toFixed(2)} ` +
-                  `(avg: $${parseFloat(c.avg_cost).toFixed(2)})\n`;
-      }
+    const result = await pool.query(query, params);
+
+    if (result.rows.length === 0) {
+      return {
+        content: [{ type: 'text', text: 'No knowledge entries found for the specified criteria.' }]
+      };
     }
 
-    result += `\n${'-'.repeat(80)}\n`;
-    result += 'Note: Knowledge database structure ready for institutional insights.\n';
+    let output = `KNOWLEDGE ENTRIES (${result.rows.length})\n${'='.repeat(80)}\n`;
+
+    for (const row of result.rows) {
+      output += `\n${'─'.repeat(60)}\n`;
+      output += `[${row.type}] ${row.key}\n`;
+      output += `Description: ${row.description}\n`;
+      if (row.target_id) output += `Target: ${row.target_name || ''} (ID: ${row.target_id})\n`;
+      if (row.value && Object.keys(row.value).length > 0) {
+        output += `Value: ${JSON.stringify(row.value)}\n`;
+      }
+      output += `Priority: ${row.priority} | Updated: ${row.updated_at ? row.updated_at.toISOString().split('T')[0] : 'N/A'}\n`;
+    }
 
     return {
-      content: [{ type: 'text', text: result }]
+      content: [{ type: 'text', text: output }]
     };
   } catch (error) {
     return {
@@ -100,11 +71,11 @@ async function getKnowledge(args) {
 }
 
 /**
- * add_knowledge: Add a new knowledge entry
+ * add_knowledge: Add or update a knowledge entry (upsert on type+key)
  */
 async function addKnowledge(args) {
   try {
-    const { type, targetId, key, description, value } = args;
+    const { type, targetId, targetName, key, description, value, priority } = args;
 
     if (!type || !key || !description) {
       return {
@@ -115,26 +86,90 @@ async function addKnowledge(args) {
       };
     }
 
-    // Knowledge entries table may not exist, so we store as comments in the future
-    let result = `KNOWLEDGE ENTRY ADDED\n${'-'.repeat(80)}\n`;
-    result += `Type: ${type}\n`;
-    result += `Key: ${key}\n`;
-    result += `Description: ${description}\n`;
-
+    // Parse value as JSON if it's a string
+    let jsonValue = {};
     if (value) {
-      result += `Value: ${value}\n`;
+      if (typeof value === 'string') {
+        try { jsonValue = JSON.parse(value); } catch { jsonValue = { data: value }; }
+      } else {
+        jsonValue = value;
+      }
     }
 
-    if (targetId) {
-      result += `Target ID: ${targetId}\n`;
+    // Resolve target_name if targetId provided but no targetName
+    let resolvedTargetName = targetName || null;
+    if (targetId && !targetName) {
+      // Try brands first, then locations
+      const brandResult = await pool.query('SELECT name FROM brands WHERE id = $1', [targetId]);
+      if (brandResult.rows.length > 0) {
+        resolvedTargetName = brandResult.rows[0].name;
+      } else {
+        const locResult = await pool.query('SELECT name FROM locations WHERE id = $1', [targetId]);
+        if (locResult.rows.length > 0) {
+          resolvedTargetName = locResult.rows[0].name;
+        }
+      }
     }
 
-    result += `\nNote: Entry would be stored in knowledge_entries table for AI agent context.\n`;
+    // Upsert: update if same type+key exists, otherwise insert
+    const result = await pool.query(`
+      INSERT INTO knowledge_entries (type, target_id, target_name, key, value, description, priority, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+      ON CONFLICT (type, key) WHERE type IS NOT NULL AND key IS NOT NULL
+      DO UPDATE SET
+        target_id = COALESCE(EXCLUDED.target_id, knowledge_entries.target_id),
+        target_name = COALESCE(EXCLUDED.target_name, knowledge_entries.target_name),
+        value = EXCLUDED.value,
+        description = EXCLUDED.description,
+        priority = COALESCE(EXCLUDED.priority, knowledge_entries.priority),
+        active = TRUE,
+        updated_at = NOW()
+      RETURNING id, (xmax = 0) AS is_insert
+    `, [type, targetId || null, resolvedTargetName, key, JSON.stringify(jsonValue), description, priority || 0]);
+
+    const row = result.rows[0];
+    const action = row.is_insert ? 'CREATED' : 'UPDATED';
+
+    let output = `KNOWLEDGE ENTRY ${action}\n${'─'.repeat(60)}\n`;
+    output += `ID: ${row.id}\n`;
+    output += `Type: ${type} | Key: ${key}\n`;
+    output += `Description: ${description}\n`;
+    if (targetId) output += `Target: ${resolvedTargetName || ''} (ID: ${targetId})\n`;
+    if (value) output += `Value: ${JSON.stringify(jsonValue)}\n`;
 
     return {
-      content: [{ type: 'text', text: result }]
+      content: [{ type: 'text', text: output }]
     };
   } catch (error) {
+    // If the upsert fails due to missing unique index, try plain insert
+    if (error.message.includes('ON CONFLICT') || error.message.includes('constraint')) {
+      try {
+        const { type, targetId, targetName, key, description, value, priority } = args;
+        let jsonValue = {};
+        if (value) {
+          if (typeof value === 'string') {
+            try { jsonValue = JSON.parse(value); } catch { jsonValue = { data: value }; }
+          } else {
+            jsonValue = value;
+          }
+        }
+
+        const result = await pool.query(`
+          INSERT INTO knowledge_entries (type, target_id, target_name, key, value, description, priority, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+          RETURNING id
+        `, [type, targetId || null, targetName || null, key, JSON.stringify(jsonValue), description, priority || 0]);
+
+        let output = `KNOWLEDGE ENTRY CREATED\n${'─'.repeat(60)}\n`;
+        output += `ID: ${result.rows[0].id}\n`;
+        output += `Type: ${type} | Key: ${key}\n`;
+        output += `Description: ${description}\n`;
+
+        return { content: [{ type: 'text', text: output }] };
+      } catch (fallbackError) {
+        return { content: [{ type: 'text', text: `Error adding knowledge: ${fallbackError.message}` }] };
+      }
+    }
     return {
       content: [{ type: 'text', text: `Error adding knowledge: ${error.message}` }]
     };
@@ -383,14 +418,15 @@ async function getFullContext(args) {
 module.exports = [
   {
     name: 'get_knowledge',
-    description: 'Get institutional knowledge for a brand, location, or category',
+    description: 'Get institutional knowledge entries. Filter by type, brandId (target_id), key, or locationId.',
     inputSchema: {
       type: 'object',
       properties: {
-        brandId: { type: 'integer', description: 'Brand ID' },
-        locationId: { type: 'integer', description: 'Location ID' },
+        brandId: { type: 'integer', description: 'Filter by target_id (brand ID)' },
+        locationId: { type: 'integer', description: 'Filter by target_id (location ID)' },
         category: { type: 'string', description: 'Product category' },
-        type: { type: 'string', description: 'Knowledge type filter' }
+        type: { type: 'string', description: 'Knowledge type (e.g., "workflow", "discontinued_product", "sizing_preference")' },
+        key: { type: 'string', description: 'Exact key match' }
       },
       required: []
     },
@@ -398,15 +434,17 @@ module.exports = [
   },
   {
     name: 'add_knowledge',
-    description: 'Add a new institutional knowledge entry',
+    description: 'Add or update an institutional knowledge entry. Upserts on type+key — if same type+key exists, it updates the entry.',
     inputSchema: {
       type: 'object',
       properties: {
-        type: { type: 'string', description: 'Knowledge type (e.g., "sizing_preference", "demand_pattern")' },
-        targetId: { type: 'integer', description: 'Optional: Brand, Location, or Category ID' },
-        key: { type: 'string', description: 'Knowledge key/identifier' },
-        description: { type: 'string', description: 'Description of the knowledge' },
-        value: { type: 'string', description: 'Optional: Quantitative value' }
+        type: { type: 'string', description: 'Knowledge type (freeform, e.g., "workflow", "discontinued_product", "sizing_preference", "demand_pattern", "max_stock_level")' },
+        targetId: { type: 'integer', description: 'Optional: Brand ID, Location ID, or Product ID' },
+        targetName: { type: 'string', description: 'Optional: Name of the target (auto-resolved from targetId if omitted)' },
+        key: { type: 'string', description: 'Knowledge key/identifier (unique within type)' },
+        description: { type: 'string', description: 'Human-readable description of the knowledge' },
+        value: { type: 'string', description: 'Optional: JSON string or plain value for structured data' },
+        priority: { type: 'integer', description: 'Priority (higher = shown first, default 0)' }
       },
       required: ['type', 'key', 'description']
     },

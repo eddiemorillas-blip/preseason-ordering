@@ -11,6 +11,8 @@ const knowledgeTools = require('./tools/knowledge.js');
 const patternsTools = require('./tools/patterns.js');
 const salesTools = require('./tools/sales.js');
 const shipmentsTools = require('./tools/shipments.js');
+const revisionsTools = require('./tools/revisions.js');
+const vendorFormsTools = require('./tools/vendor-forms.js');
 
 // Combine all tools
 const allTools = [
@@ -19,7 +21,9 @@ const allTools = [
   ...knowledgeTools,
   ...patternsTools,
   ...salesTools,
-  ...shipmentsTools
+  ...shipmentsTools,
+  ...revisionsTools,
+  ...vendorFormsTools
 ];
 
 // Create the MCP server

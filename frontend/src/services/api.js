@@ -252,4 +252,12 @@ export const agentAPI = {
   getUsage: () => api.get('/agent/usage'),
 };
 
+// Revision API calls
+export const revisionAPI = {
+  run: (data) => api.post('/revisions/run', data),
+  apply: (data) => api.post('/revisions/apply', data),
+  getHistory: (params) => api.get('/revisions/history', { params }),
+  compare: (params) => api.get('/revisions/compare', { params }),
+};
+
 export default api;

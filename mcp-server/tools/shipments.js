@@ -1,4 +1,5 @@
 const { pool } = require('../db.js');
+const crypto = require('crypto');
 
 function formatCurrency(num) {
   if (num === null || num === undefined) return 'N/A';
@@ -7,22 +8,43 @@ function formatCurrency(num) {
 
 /**
  * update_order_decisions: Push SHIP/CANCEL/Keep Open decisions to existing order items
+ * Now logs all changes to adjustment_history and creates a revisions summary record.
  */
 async function updateOrderDecisions(args) {
   const client = await pool.connect();
   try {
-    const { orderId, decisions } = args;
+    const { orderId, decisions, revisionNotes, maxReductionPct } = args;
     if (!orderId || !decisions || !decisions.length) {
       return { content: [{ type: 'text', text: 'orderId and decisions array are required' }] };
     }
 
     await client.query('BEGIN');
 
+    // Get order metadata for revision record
+    const orderMeta = await client.query(
+      'SELECT brand_id, season_id, location_id FROM orders WHERE id = $1', [orderId]
+    );
+    const brandId = orderMeta.rows.length > 0 ? orderMeta.rows[0].brand_id : null;
+    const seasonId = orderMeta.rows.length > 0 ? orderMeta.rows[0].season_id : null;
+    const locationId = orderMeta.rows.length > 0 ? orderMeta.rows[0].location_id : null;
+
+    const revisionId = crypto.randomUUID();
     let shipped = 0, cancelled = 0, keepOpen = 0, errors = 0;
+    let originalTotalQty = 0, adjustedTotalQty = 0;
 
     for (const d of decisions) {
-      const { orderItemId, decision, adjustedQty } = d;
+      const { orderItemId, decision, adjustedQty, reason } = d;
       if (!orderItemId || !decision) { errors++; continue; }
+
+      // Snapshot current values before overwriting
+      const snapshot = await client.query(
+        `SELECT oi.quantity, oi.adjusted_quantity, oi.vendor_decision,
+                p.upc, p.name AS product_name, p.size
+         FROM order_items oi
+         JOIN products p ON oi.product_id = p.id
+         WHERE oi.id = $1 AND oi.order_id = $2`,
+        [orderItemId, orderId]
+      );
 
       const normalizedDecision = decision.toLowerCase().replace(/[^a-z_]/g, '');
       let vendorDecision, adjQty, receiptStatus;
@@ -52,20 +74,68 @@ async function updateOrderDecisions(args) {
             notes = COALESCE(notes, '') || ' [Decision: ' || $1 || ']'
         WHERE id = $4 AND order_id = $5
       `, [vendorDecision, adjQty, receiptStatus, orderItemId, orderId]);
+
+      // Log to adjustment_history
+      if (snapshot.rows.length > 0) {
+        const s = snapshot.rows[0];
+        const origQty = s.quantity || 0;
+        const newQty = adjQty !== null ? adjQty : origQty;
+        originalTotalQty += origQty;
+        adjustedTotalQty += newQty;
+
+        await client.query(`
+          INSERT INTO adjustment_history (
+            order_id, order_item_id, original_quantity, new_quantity,
+            adjustment_type, reasoning,
+            revision_id, brand_id, location_id,
+            upc, product_name, size,
+            decision, decision_reason,
+            created_by, applied_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+        `, [
+          orderId, orderItemId, origQty, newQty,
+          'revision', reason || revisionNotes || null,
+          revisionId, brandId, locationId,
+          s.upc, s.product_name, s.size,
+          vendorDecision, reason || null,
+          'ai_agent'
+        ]);
+      }
     }
 
-    // Update order status to reflect decisions made
+    // Create revisions summary record
+    const reductionPct = originalTotalQty > 0
+      ? parseFloat((((originalTotalQty - adjustedTotalQty) / originalTotalQty) * 100).toFixed(2))
+      : 0;
+
+    await client.query(`
+      INSERT INTO revisions (
+        revision_id, brand_id, season_id, revision_type,
+        total_items, ship_count, cancel_count, keep_open_count,
+        original_total_qty, adjusted_total_qty, reduction_pct,
+        max_reduction_pct, notes, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+    `, [
+      revisionId, brandId, seasonId, 'monthly_adjustment',
+      decisions.length - errors, shipped, cancelled, keepOpen,
+      originalTotalQty, adjustedTotalQty, reductionPct,
+      maxReductionPct || null, revisionNotes || null
+    ]);
+
+    // Update order timestamp
     await client.query(`UPDATE orders SET updated_at = NOW() WHERE id = $1`, [orderId]);
 
     await client.query('COMMIT');
 
     const text = `ORDER DECISIONS UPDATED\n` +
       `Order: ${orderId}\n` +
+      `Revision ID: ${revisionId}\n` +
       `Total: ${decisions.length} items\n` +
       `  Ship: ${shipped}\n` +
       `  Cancel: ${cancelled}\n` +
       `  Keep Open B/O: ${keepOpen}\n` +
-      (errors > 0 ? `  Errors: ${errors}\n` : '');
+      (errors > 0 ? `  Errors: ${errors}\n` : '') +
+      `Original Qty: ${originalTotalQty} → Adjusted: ${adjustedTotalQty} (${reductionPct}% reduction)\n`;
 
     return { content: [{ type: 'text', text }] };
   } catch (err) {
@@ -362,7 +432,7 @@ async function getOrderReceiptSummary(args) {
     let text = `ORDER RECEIPT SUMMARY\n${'='.repeat(50)}\n` +
       `Order: ${o.order_number} | ${o.brand} | ${o.location}\n` +
       `Ship Date: ${o.ship_date || 'N/A'} | Status: ${o.status}\n\n` +
-      `${'Status':<16} ${'Decision':<16} ${'Items':<8} ${'Qty':<8} ${'Value':<12}\n` +
+      `${'Status'.padEnd(16)} ${'Decision'.padEnd(16)} ${'Items'.padEnd(8)} ${'Qty'.padEnd(8)} ${'Value'.padEnd(12)}\n` +
       `${'-'.repeat(60)}\n`;
 
     for (const row of items.rows) {
@@ -433,24 +503,27 @@ async function checkEmailProcessed(args) {
 module.exports = [
   {
     name: 'update_order_decisions',
-    description: 'Push SHIP/CANCEL/Keep Open decisions to existing order items. Updates vendor_decision, adjusted_quantity, and receipt_status for each item.',
+    description: 'Push SHIP/CANCEL/Keep Open decisions to existing order items. Updates vendor_decision, adjusted_quantity, and receipt_status. Logs all changes to revision history with audit trail.',
     inputSchema: {
       type: 'object',
       properties: {
         orderId: { type: 'number', description: 'The order ID to update' },
         decisions: {
           type: 'array',
-          description: 'Array of decisions: [{orderItemId, decision ("ship"/"cancel"/"keep_open_bo"), adjustedQty}]',
+          description: 'Array of decisions: [{orderItemId, decision ("ship"/"cancel"/"keep_open_bo"), adjustedQty, reason}]',
           items: {
             type: 'object',
             properties: {
               orderItemId: { type: 'number' },
               decision: { type: 'string' },
-              adjustedQty: { type: 'number' }
+              adjustedQty: { type: 'number' },
+              reason: { type: 'string', description: 'Decision reason (e.g., "zero_stock", "positive_stock_cancel")' }
             },
             required: ['orderItemId', 'decision']
           }
-        }
+        },
+        revisionNotes: { type: 'string', description: 'Notes for this revision session' },
+        maxReductionPct: { type: 'number', description: 'Max reduction percentage used (for audit trail)' }
       },
       required: ['orderId', 'decisions']
     },

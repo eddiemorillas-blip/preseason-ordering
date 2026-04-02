@@ -52,6 +52,7 @@ const scheduledRoutes = require('./routes/scheduled');
 const knowledgeRoutes = require('./routes/knowledge');
 const patternsRoutes = require('./routes/patterns');
 const batchOperationsRoutes = require('./routes/batch-operations');
+const revisionsRoutes = require('./routes/revisions');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -218,6 +219,7 @@ app.use('/api/scheduled', scheduledRoutes);
 app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/patterns', patternsRoutes);
 app.use('/api/batch-operations', batchOperationsRoutes);
+app.use('/api/revisions', revisionsRoutes);
 
 // Serve static files from frontend build in production
 if (process.env.NODE_ENV === 'production') {

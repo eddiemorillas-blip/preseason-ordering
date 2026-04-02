@@ -753,7 +753,490 @@ async function getZeroStock(args) {
   }
 }
 
+/**
+ * find_sold_not_in_inventory: Find items that have recent sales but 0 inventory.
+ * These are items that were received but not properly added to inventory,
+ * yet have been sold through the POS and may need reordering.
+ */
+async function findSoldNotInInventory(args) {
+  try {
+    const { vendorName, orderId, days = 90, locationId } = args;
+
+    if (!vendorName && !orderId) {
+      return { content: [{ type: 'text', text: 'Either vendorName or orderId is required' }] };
+    }
+
+    if (!bigquery) {
+      return { content: [{ type: 'text', text: 'BigQuery is not configured. This tool requires BigQuery access.' }] };
+    }
+
+    let upcsToCheck = [];
+    let brandName = vendorName;
+
+    // If orderId is provided, get UPCs from that order
+    if (orderId) {
+      const orderQuery = `
+        SELECT DISTINCT p.upc, p.name, p.base_name, p.size, p.color, b.name as brand_name
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        JOIN orders o ON oi.order_id = o.id
+        JOIN brands b ON o.brand_id = b.id
+        WHERE o.id = $1 AND p.upc IS NOT NULL
+      `;
+      const orderResult = await pool.query(orderQuery, [orderId]);
+      upcsToCheck = orderResult.rows.map(r => r.upc);
+      if (orderResult.rows.length > 0) {
+        brandName = orderResult.rows[0].brand_name;
+      }
+    }
+
+    // Build facility filter
+    let facilityFilter = 'i.facility_id IN (41185, 1003, 1000)';
+    let salesFacilityFilter = 'p.facility_id_true IN (41185, 1003, 1000)';
+    if (locationId) {
+      const facilityId = LOCATION_TO_FACILITY[locationId];
+      if (facilityId) {
+        facilityFilter = `i.facility_id = ${facilityId}`;
+        salesFacilityFilter = `p.facility_id_true = ${facilityId}`;
+      }
+    }
+
+    // Query: Find items with sales in last N days but 0 or negative inventory
+    let query;
+    if (upcsToCheck.length > 0) {
+      // Query specific UPCs from the order
+      const upcList = upcsToCheck.map(u => `'${u}'`).join(',');
+      query = `
+        WITH recent_sales AS (
+          SELECT
+            p.BARCODE AS upc,
+            p.ITEM_DESCRIPTION AS description,
+            p.facility_id_true AS facility_id,
+            SUM(ii.QUANTITY) AS qty_sold,
+            COUNT(DISTINCT i.invoice_concat) AS transaction_count,
+            MIN(DATE(i.POSTDATE)) AS first_sale,
+            MAX(DATE(i.POSTDATE)) AS last_sale
+          FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+          JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+          JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+          WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${days} DAY)
+            AND ii.QUANTITY > 0
+            AND p.BARCODE IN (${upcList})
+            AND ${salesFacilityFilter}
+          GROUP BY p.BARCODE, p.ITEM_DESCRIPTION, p.facility_id_true
+        ),
+        current_inventory AS (
+          SELECT
+            i.barcode,
+            i.facility_id,
+            i.on_hand_qty,
+            i.description AS inv_description
+          FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+          WHERE i.barcode IN (${upcList})
+            AND ${facilityFilter}
+        )
+        SELECT
+          s.upc,
+          s.description,
+          s.facility_id,
+          s.qty_sold,
+          s.transaction_count,
+          s.first_sale,
+          s.last_sale,
+          COALESCE(inv.on_hand_qty, 0) AS on_hand_qty,
+          CASE WHEN inv.barcode IS NULL THEN 'NOT_IN_INVENTORY' ELSE 'IN_INVENTORY' END AS inventory_status
+        FROM recent_sales s
+        LEFT JOIN current_inventory inv ON s.upc = inv.barcode AND s.facility_id = inv.facility_id
+        WHERE COALESCE(inv.on_hand_qty, 0) <= 0
+        ORDER BY s.qty_sold DESC
+      `;
+    } else {
+      // Query by vendor name
+      query = `
+        WITH recent_sales AS (
+          SELECT
+            p.BARCODE AS upc,
+            p.ITEM_DESCRIPTION AS description,
+            p.facility_id_true AS facility_id,
+            SUM(ii.QUANTITY) AS qty_sold,
+            COUNT(DISTINCT i.invoice_concat) AS transaction_count,
+            MIN(DATE(i.POSTDATE)) AS first_sale,
+            MAX(DATE(i.POSTDATE)) AS last_sale
+          FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+          JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+          JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+          LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
+          WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${days} DAY)
+            AND ii.QUANTITY > 0
+            AND LOWER(v.VENDOR_NAME) LIKE '%${brandName.toLowerCase()}%'
+            AND ${salesFacilityFilter}
+          GROUP BY p.BARCODE, p.ITEM_DESCRIPTION, p.facility_id_true
+        ),
+        current_inventory AS (
+          SELECT
+            i.barcode,
+            i.facility_id,
+            i.on_hand_qty,
+            i.description AS inv_description
+          FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+          JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON i.barcode = p.BARCODE
+          LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
+          WHERE LOWER(v.VENDOR_NAME) LIKE '%${brandName.toLowerCase()}%'
+            AND ${facilityFilter}
+        )
+        SELECT
+          s.upc,
+          s.description,
+          s.facility_id,
+          s.qty_sold,
+          s.transaction_count,
+          s.first_sale,
+          s.last_sale,
+          COALESCE(inv.on_hand_qty, 0) AS on_hand_qty,
+          CASE WHEN inv.barcode IS NULL THEN 'NOT_IN_INVENTORY' ELSE 'IN_INVENTORY' END AS inventory_status
+        FROM recent_sales s
+        LEFT JOIN current_inventory inv ON s.upc = inv.barcode AND s.facility_id = inv.facility_id
+        WHERE COALESCE(inv.on_hand_qty, 0) <= 0
+        ORDER BY s.qty_sold DESC
+        LIMIT 500
+      `;
+    }
+
+    const [rows] = await bigquery.query({ query });
+
+    const FACILITY_NAMES = { '41185': 'SLC', '1003': 'South Main', '1000': 'Ogden' };
+
+    if (rows.length === 0) {
+      return { content: [{ type: 'text', text: `No items found with recent sales and zero inventory for ${brandName}` }] };
+    }
+
+    // Group by UPC for summary
+    const byUpc = {};
+    for (const row of rows) {
+      if (!byUpc[row.upc]) {
+        byUpc[row.upc] = { description: row.description, locations: [] };
+      }
+      byUpc[row.upc].locations.push({
+        location: FACILITY_NAMES[row.facility_id] || row.facility_id,
+        qty_sold: parseInt(row.qty_sold) || 0,
+        transactions: parseInt(row.transaction_count) || 0,
+        last_sale: row.last_sale,
+        on_hand: parseInt(row.on_hand_qty) || 0,
+        inventory_status: row.inventory_status
+      });
+    }
+
+    let output = `SOLD BUT NOT IN INVENTORY - ${brandName}\n${'='.repeat(70)}\n`;
+    output += `Period: Last ${days} days\n`;
+    output += `Found: ${Object.keys(byUpc).length} UPCs with sales but 0 inventory\n`;
+    output += `These items were sold but show 0 stock - may need reordering or inventory correction.\n\n`;
+
+    // Calculate totals
+    let totalSold = 0;
+    for (const row of rows) {
+      totalSold += parseInt(row.qty_sold) || 0;
+    }
+    output += `Total Units Sold (zero inventory items): ${totalSold}\n\n`;
+
+    output += `---DATA_START---\n`;
+    output += `UPC|Location|Qty Sold|Transactions|Last Sale|On Hand|Status\n`;
+
+    for (const row of rows) {
+      const loc = FACILITY_NAMES[row.facility_id] || row.facility_id;
+      const lastSale = row.last_sale ? row.last_sale.value || row.last_sale : 'N/A';
+      output += `${row.upc}|${loc}|${row.qty_sold}|${row.transaction_count}|${lastSale}|${row.on_hand_qty}|${row.inventory_status}\n`;
+    }
+    output += `---DATA_END---\n\n`;
+
+    // Summary by product
+    output += `SUMMARY BY PRODUCT:\n${'-'.repeat(50)}\n`;
+    const sortedUpcs = Object.entries(byUpc)
+      .map(([upc, data]) => ({
+        upc,
+        description: data.description,
+        total_sold: data.locations.reduce((sum, l) => sum + l.qty_sold, 0),
+        locations: data.locations
+      }))
+      .sort((a, b) => b.total_sold - a.total_sold);
+
+    for (const item of sortedUpcs.slice(0, 50)) {
+      const locSummary = item.locations.map(l => `${l.location}:${l.qty_sold}`).join(', ');
+      output += `${item.upc} | ${(item.description || '').substring(0, 30)} | Sold: ${item.total_sold} | ${locSummary}\n`;
+    }
+
+    if (sortedUpcs.length > 50) {
+      output += `\n... and ${sortedUpcs.length - 50} more products\n`;
+    }
+
+    output += `\n${'='.repeat(70)}\n`;
+    output += `ACTION: These items need attention - either:\n`;
+    output += `  1. Correct inventory if items are actually in stock\n`;
+    output += `  2. Add to reorder list if they truly sold out\n`;
+    output += `  3. Check receiving logs for unreceived shipments\n`;
+
+    return { content: [{ type: 'text', text: output }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `Error finding sold items: ${error.message}` }] };
+  }
+}
+
+/**
+ * get_recent_sales_by_upc: Get recent sales transactions for specific UPCs
+ * Useful for checking if newly received items have started selling
+ */
+async function getRecentSalesByUpc(args) {
+  try {
+    const { upcs, days = 30 } = args;
+
+    if (!upcs || upcs.length === 0) {
+      return { content: [{ type: 'text', text: 'upcs array is required' }] };
+    }
+
+    if (!bigquery) {
+      return { content: [{ type: 'text', text: 'BigQuery is not configured. This tool requires BigQuery access.' }] };
+    }
+
+    const upcList = upcs.map(u => `'${u}'`).join(',');
+
+    const query = `
+      SELECT
+        p.BARCODE AS upc,
+        p.ITEM_DESCRIPTION AS description,
+        p.facility_id_true AS facility_id,
+        DATE(i.POSTDATE) AS sale_date,
+        SUM(ii.QUANTITY) AS qty_sold,
+        SUM(ii.EXTENDED_AMOUNT) AS revenue
+      FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+      JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+      JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+      WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${days} DAY)
+        AND p.BARCODE IN (${upcList})
+        AND ii.QUANTITY > 0
+        AND p.facility_id_true IN (41185, 1003, 1000)
+      GROUP BY p.BARCODE, p.ITEM_DESCRIPTION, p.facility_id_true, DATE(i.POSTDATE)
+      ORDER BY p.BARCODE, DATE(i.POSTDATE) DESC
+    `;
+
+    const [rows] = await bigquery.query({ query });
+
+    const FACILITY_NAMES = { '41185': 'SLC', '1003': 'South Main', '1000': 'Ogden' };
+
+    if (rows.length === 0) {
+      return { content: [{ type: 'text', text: `No sales found for the specified UPCs in the last ${days} days` }] };
+    }
+
+    // Group by UPC
+    const byUpc = {};
+    for (const row of rows) {
+      if (!byUpc[row.upc]) {
+        byUpc[row.upc] = { description: row.description, sales: [] };
+      }
+      byUpc[row.upc].sales.push({
+        location: FACILITY_NAMES[row.facility_id] || row.facility_id,
+        date: row.sale_date ? (row.sale_date.value || row.sale_date) : 'N/A',
+        qty: parseInt(row.qty_sold) || 0,
+        revenue: parseFloat(row.revenue) || 0
+      });
+    }
+
+    let output = `RECENT SALES BY UPC\n${'='.repeat(70)}\n`;
+    output += `Period: Last ${days} days\n`;
+    output += `UPCs queried: ${upcs.length} | UPCs with sales: ${Object.keys(byUpc).length}\n\n`;
+
+    for (const [upc, data] of Object.entries(byUpc)) {
+      const totalQty = data.sales.reduce((sum, s) => sum + s.qty, 0);
+      const totalRev = data.sales.reduce((sum, s) => sum + s.revenue, 0);
+
+      output += `${upc} - ${(data.description || '').substring(0, 40)}\n`;
+      output += `  Total: ${totalQty} units | ${formatCurrency(totalRev)}\n`;
+
+      // Show last 5 sales
+      const recentSales = data.sales.slice(0, 5);
+      for (const sale of recentSales) {
+        output += `    ${sale.date} | ${sale.location} | ${sale.qty} units | ${formatCurrency(sale.revenue)}\n`;
+      }
+      if (data.sales.length > 5) {
+        output += `    ... and ${data.sales.length - 5} more transactions\n`;
+      }
+      output += '\n';
+    }
+
+    // Show UPCs with no sales
+    const noSales = upcs.filter(u => !byUpc[u]);
+    if (noSales.length > 0) {
+      output += `NO SALES FOUND FOR:\n`;
+      noSales.forEach(u => { output += `  ${u}\n`; });
+    }
+
+    return { content: [{ type: 'text', text: output }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `Error querying sales: ${error.message}` }] };
+  }
+}
+
+/**
+ * get_total_inventory_value: Sum up total retail inventory value from BigQuery
+ */
+async function getTotalInventoryValue(args) {
+  try {
+    const { locationId, vendorName, includeInactive } = args || {};
+
+    if (!bigquery) {
+      return { content: [{ type: 'text', text: 'BigQuery is not configured. Live inventory data is unavailable.' }] };
+    }
+
+    let facilityFilter = 'i.facility_id IN (41185, 1003, 1000)';
+    if (locationId) {
+      const facilityId = LOCATION_TO_FACILITY[locationId];
+      if (facilityId) {
+        facilityFilter = `i.facility_id = ${facilityId}`;
+      }
+    }
+
+    let vendorFilter = '';
+    if (vendorName) {
+      vendorFilter = `AND LOWER(v.VENDOR_NAME) LIKE '%${vendorName.toLowerCase()}%'`;
+    }
+
+    // Default: active only. Set includeInactive=true to see everything.
+    const activeFilter = includeInactive ? '' : `AND LOWER(CAST(i.active AS STRING)) IN ('true', '1', 'yes', 'y')`;
+
+    // First query: breakdown by active status and facility
+    const query = `
+      SELECT
+        CASE WHEN LOWER(CAST(i.active AS STRING)) IN ('true', '1', 'yes', 'y') THEN 'Active' ELSE 'Inactive' END as status,
+        i.facility_id,
+        SUM(i.on_hand_qty) AS total_units,
+        COUNT(DISTINCT i.barcode) AS unique_skus,
+        SUM(CASE WHEN i.unitcost IS NOT NULL AND i.unitcost > 0 THEN i.on_hand_qty * i.unitcost ELSE 0 END) AS total_value_unitcost,
+        SUM(CASE WHEN i.cost IS NOT NULL AND i.cost > 0 THEN i.cost ELSE 0 END) AS total_value_cost,
+        SUM(CASE WHEN (i.unitcost IS NULL OR i.unitcost = 0) AND (i.cost IS NULL OR i.cost = 0) THEN i.on_hand_qty ELSE 0 END) AS units_missing_cost
+      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+      LEFT JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON i.barcode = p.BARCODE
+      LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
+      WHERE ${facilityFilter}
+        AND i.on_hand_qty > 0
+        ${vendorFilter}
+      GROUP BY status, i.facility_id
+      ORDER BY status, i.facility_id
+    `;
+
+    const [rows] = await bigquery.query({ query });
+
+    if (rows.length === 0) {
+      return { content: [{ type: 'text', text: 'No inventory data found.' }] };
+    }
+
+    const FACILITY_NAMES = { '41185': 'SLC', '1003': 'South Main', '1000': 'Ogden' };
+
+    let activeUnits = 0, activeValue = 0, activeSkus = 0, activeMissing = 0;
+    let inactiveUnits = 0, inactiveValue = 0, inactiveSkus = 0, inactiveMissing = 0;
+
+    // Group rows by status
+    const activeRows = rows.filter(r => r.status === 'Active');
+    const inactiveRows = rows.filter(r => r.status === 'Inactive');
+
+    let summary = `TOTAL INVENTORY VALUE (WHOLESALE COST)${vendorName ? ' - ' + vendorName : ''}\n${'='.repeat(70)}\n`;
+
+    // Active items section
+    summary += '\nACTIVE ITEMS:\n';
+    summary += 'Location     | SKUs   | Units   | Value (cost)\n';
+    summary += '-'.repeat(55) + '\n';
+
+    for (const row of activeRows) {
+      const loc = FACILITY_NAMES[row.facility_id] || row.facility_id;
+      const units = parseInt(row.total_units) || 0;
+      const skus = parseInt(row.unique_skus) || 0;
+      const val = parseFloat(row.total_value_unitcost) || 0;
+      const missing = parseInt(row.units_missing_cost) || 0;
+      activeUnits += units; activeValue += val; activeSkus += skus; activeMissing += missing;
+      summary += `${String(loc).padEnd(13)}| ${String(skus).padEnd(7)}| ${String(units).padEnd(8)}| $${val.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
+    }
+    summary += '-'.repeat(55) + '\n';
+    summary += `${'ACTIVE TOTAL'.padEnd(13)}| ${String(activeSkus).padEnd(7)}| ${String(activeUnits).padEnd(8)}| $${activeValue.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
+
+    // Inactive items section
+    if (inactiveRows.length > 0) {
+      summary += '\nINACTIVE ITEMS:\n';
+      summary += 'Location     | SKUs   | Units   | Value (cost)\n';
+      summary += '-'.repeat(55) + '\n';
+      for (const row of inactiveRows) {
+        const loc = FACILITY_NAMES[row.facility_id] || row.facility_id;
+        const units = parseInt(row.total_units) || 0;
+        const skus = parseInt(row.unique_skus) || 0;
+        const val = parseFloat(row.total_value_unitcost) || 0;
+        const missing = parseInt(row.units_missing_cost) || 0;
+        inactiveUnits += units; inactiveValue += val; inactiveSkus += skus; inactiveMissing += missing;
+        summary += `${String(loc).padEnd(13)}| ${String(skus).padEnd(7)}| ${String(units).padEnd(8)}| $${val.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
+      }
+      summary += '-'.repeat(55) + '\n';
+      summary += `${'INACTIVE TOT'.padEnd(13)}| ${String(inactiveSkus).padEnd(7)}| ${String(inactiveUnits).padEnd(8)}| $${inactiveValue.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
+    }
+
+    // Grand total
+    const grandUnits = activeUnits + inactiveUnits;
+    const grandValue = activeValue + inactiveValue;
+    const grandSkus = activeSkus + inactiveSkus;
+    summary += `\n${'='.repeat(55)}\n`;
+    summary += `COMBINED TOTAL: ${grandSkus} SKUs | ${grandUnits} units | $${grandValue.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
+    if (activeMissing + inactiveMissing > 0) {
+      summary += `(${activeMissing + inactiveMissing} units missing cost data, not included in totals)\n`;
+    }
+
+    // Top 20 vendors by value (active only by default)
+    const vendorQuery = `
+      SELECT
+        v.VENDOR_NAME,
+        SUM(i.on_hand_qty) AS total_units,
+        COUNT(DISTINCT i.barcode) AS unique_skus,
+        SUM(CASE WHEN i.unitcost IS NOT NULL AND i.unitcost > 0 THEN i.on_hand_qty * i.unitcost ELSE 0 END) AS total_value
+      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+      LEFT JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON i.barcode = p.BARCODE
+      LEFT JOIN \`front-data-production.rgp_cleaned_zone.vendors_all\` v ON p.vendor_concat = v.vendor_concat
+      WHERE i.facility_id IN (41185, 1003, 1000)
+        AND i.on_hand_qty > 0
+        ${activeFilter}
+        ${vendorFilter}
+      GROUP BY v.VENDOR_NAME
+      ORDER BY total_value DESC
+      LIMIT 20
+    `;
+
+    try {
+      const [vendorRows] = await bigquery.query({ query: vendorQuery });
+      if (vendorRows.length > 0) {
+        summary += `\nTOP 20 VENDORS BY INVENTORY VALUE${includeInactive ? '' : ' (active only)'}:\n`;
+        summary += 'Vendor                         | SKUs  | Units  | Value\n';
+        summary += '-'.repeat(70) + '\n';
+        for (const vr of vendorRows) {
+          const val = parseFloat(vr.total_value) || 0;
+          summary += `${String(vr.VENDOR_NAME || 'Unknown').substring(0, 30).padEnd(31)}| ${String(vr.unique_skus).padEnd(6)}| ${String(vr.total_units).padEnd(7)}| $${val.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
+        }
+      }
+    } catch (e) {
+      // vendor breakdown failed, no big deal
+    }
+
+    return { content: [{ type: 'text', text: summary }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `Error calculating inventory value: ${error.message}` }] };
+  }
+}
+
 module.exports = [
+  {
+    name: 'get_total_inventory_value',
+    description: 'Calculate total dollar value of retail inventory currently on hand from BigQuery. Breaks down by location and top vendors. Can optionally filter by location or vendor.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        locationId: { type: 'integer', description: 'Optional: filter to a specific location (1=SLC, 2=South Main, 3=Ogden)' },
+        vendorName: { type: 'string', description: 'Optional: filter to a specific vendor/brand name' },
+        includeInactive: { type: 'boolean', description: 'If true, include inactive products in results. By default, only active products are shown.' }
+      }
+    },
+    handler: getTotalInventoryValue
+  },
   {
     name: 'query_sales',
     description: 'Query historical sales data for a brand from PostgreSQL sales table',
@@ -845,5 +1328,32 @@ module.exports = [
       required: ['vendorName']
     },
     handler: getZeroStock
+  },
+  {
+    name: 'find_sold_not_in_inventory',
+    description: 'Find items that have recent sales but show 0 or negative inventory. These are items that may have been received but not properly added to inventory, yet have been sold through POS. Use this to identify items needing reorder or inventory correction.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vendorName: { type: 'string', description: 'Vendor/brand name to search (e.g., "La Sportiva")' },
+        orderId: { type: 'integer', description: 'Optional: check specific UPCs from this order' },
+        days: { type: 'integer', description: 'Number of days to look back for sales (default: 90)' },
+        locationId: { type: 'integer', description: 'Optional: filter to specific location (1=SLC, 2=South Main, 3=Ogden)' }
+      }
+    },
+    handler: findSoldNotInInventory
+  },
+  {
+    name: 'get_recent_sales_by_upc',
+    description: 'Get recent sales transactions for specific UPCs. Useful for checking if newly received items have started selling, or verifying sales activity for items being considered for reorder.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        upcs: { type: 'array', items: { type: 'string' }, description: 'Array of UPC/barcode strings to check' },
+        days: { type: 'integer', description: 'Number of days to look back (default: 30)' }
+      },
+      required: ['upcs']
+    },
+    handler: getRecentSalesByUpc
   }
 ];

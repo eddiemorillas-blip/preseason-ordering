@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import api, { brandTemplateAPI } from '../services/api';
 import Layout from '../components/Layout';
+import RevisionModal from '../components/RevisionModal';
+import RevisionHistoryPanel from '../components/RevisionHistoryPanel';
 import { useAuth } from '../context/AuthContext';
 
 // Simple SVG Pie Chart Component
@@ -102,6 +104,8 @@ const OrderManager = () => {
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const [showBulkStatusDropdown, setShowBulkStatusDropdown] = useState(false);
   const [updatingBulkStatus, setUpdatingBulkStatus] = useState(false);
+  const [showRevisionModal, setShowRevisionModal] = useState(false);
+  const [showRevisionHistory, setShowRevisionHistory] = useState(false);
 
   const [newSeason, setNewSeason] = useState({
     name: '',
@@ -696,6 +700,14 @@ const OrderManager = () => {
                   {(isAdmin() || isBuyer()) && (
                     <>
                       <button
+                        onClick={() => setShowRevisionHistory(true)}
+                        disabled={!selectedBrandId}
+                        className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={selectedBrandId ? 'View revision history' : 'Select a brand to view revision history'}
+                      >
+                        Revisions
+                      </button>
+                      <button
                         onClick={() => setShowBudgetModal(true)}
                         className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200"
                       >
@@ -838,6 +850,15 @@ const OrderManager = () => {
                           </div>
                         )}
                       </div>
+                      {(isAdmin() || isBuyer()) && !hasMultipleBrands && (
+                        <button
+                          onClick={() => setShowRevisionModal(true)}
+                          className="px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700"
+                          title="Run revision workflow on selected orders"
+                        >
+                          Revise
+                        </button>
+                      )}
                     </>
                   )}
                   {orders.length > 0 && (
@@ -1069,6 +1090,26 @@ const OrderManager = () => {
             brands={brands}
             locations={locations}
             onClose={() => { setShowBudgetModal(false); }}
+          />
+        )}
+
+        {showRevisionModal && selectedOrders.size > 0 && (
+          <RevisionModal
+            selectedOrders={Array.from(selectedOrders).map(id => orders.find(o => o.id === id)).filter(Boolean)}
+            brandId={selectedBrandIds.length === 1 ? selectedBrandIds[0] : parseInt(selectedBrandId)}
+            brandName={selectedOrderBrand?.name || brands.find(b => b.id === parseInt(selectedBrandId))?.name}
+            seasonId={parseInt(selectedSeasonId)}
+            onClose={() => setShowRevisionModal(false)}
+            onComplete={() => { setShowRevisionModal(false); fetchOrdersAndBreakdown(); setSelectedOrders(new Set()); }}
+          />
+        )}
+
+        {showRevisionHistory && (
+          <RevisionHistoryPanel
+            brandId={parseInt(selectedBrandId) || selectedBrandIds[0]}
+            seasonId={parseInt(selectedSeasonId)}
+            brandName={brands.find(b => b.id === parseInt(selectedBrandId))?.name}
+            onClose={() => setShowRevisionHistory(false)}
           />
         )}
 
