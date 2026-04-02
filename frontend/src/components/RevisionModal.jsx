@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { revisionAPI } from '../services/api';
+import VendorTemplateEditor from './VendorTemplateEditor';
 
 const DECISION_COLORS = {
   ship: 'bg-green-50 text-green-800',
@@ -40,6 +41,7 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
   const [spreadsheetSummary, setSpreadsheetSummary] = useState(null);
   const [spreadsheetDecisions, setSpreadsheetDecisions] = useState([]);
   const [downloading, setDownloading] = useState(false);
+  const [showTemplateEditor, setShowTemplateEditor] = useState(false);
   const [decisionFilter, setDecisionFilter] = useState('');
 
   const orderIds = selectedOrders.map(o => o.id);
@@ -271,7 +273,22 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                       The app will use the saved column template for {brandName || 'this brand'} to find UPCs and fill in decisions.
                     </p>
                   </div>
+                  <button
+                    onClick={() => setShowTemplateEditor(true)}
+                    className="text-sm text-blue-600 hover:text-blue-800"
+                  >
+                    Configure column mapping for {brandName || 'this brand'}
+                  </button>
                 </div>
+              )}
+
+              {showTemplateEditor && (
+                <VendorTemplateEditor
+                  brandId={brandId}
+                  brandName={brandName}
+                  onSave={() => setShowTemplateEditor(false)}
+                  onClose={() => setShowTemplateEditor(false)}
+                />
               )}
 
               {mode === 'orders' && (<>

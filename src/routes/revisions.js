@@ -551,6 +551,129 @@ router.get('/compare', async (req, res) => {
 });
 
 /**
+ * GET /api/revisions/templates
+ */
+router.get('/templates', async (req, res) => {
+  try {
+    const { brandId } = req.query;
+    let query = 'SELECT * FROM brand_order_templates WHERE active = true';
+    const params = [];
+    if (brandId) { query += ' AND brand_id = $1'; params.push(brandId); }
+    query += ' ORDER BY brand_id, name';
+    const result = await pool.query(query, params);
+    res.json({ templates: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/revisions/templates
+ */
+router.post('/templates', authorizeRoles('admin', 'buyer'), async (req, res) => {
+  try {
+    const { brand_id, name, sheet_name, header_row, data_start_row,
+            column_mappings, dropdown_options, fill_rules, po_pattern,
+            location_mapping, notes } = req.body;
+    if (!brand_id || !name) return res.status(400).json({ error: 'brand_id and name are required' });
+
+    const result = await pool.query(`
+      INSERT INTO brand_order_templates (
+        brand_id, name, sheet_name, header_row, data_start_row,
+        column_mappings, dropdown_options, fill_rules, po_pattern,
+        location_mapping, notes, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+      ON CONFLICT (brand_id, name) DO UPDATE SET
+        sheet_name=EXCLUDED.sheet_name, header_row=EXCLUDED.header_row,
+        data_start_row=EXCLUDED.data_start_row, column_mappings=EXCLUDED.column_mappings,
+        dropdown_options=EXCLUDED.dropdown_options, fill_rules=EXCLUDED.fill_rules,
+        po_pattern=EXCLUDED.po_pattern, location_mapping=EXCLUDED.location_mapping,
+        notes=EXCLUDED.notes, updated_at=NOW()
+      RETURNING id
+    `, [brand_id, name, sheet_name || null, header_row || null, data_start_row || 2,
+        JSON.stringify(column_mappings || {}), JSON.stringify(dropdown_options || {}),
+        JSON.stringify(fill_rules || {}), po_pattern || null,
+        JSON.stringify(location_mapping || {}), notes || null]);
+
+    res.json({ id: result.rows[0].id });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * PUT /api/revisions/templates/:id
+ */
+router.put('/templates/:id', authorizeRoles('admin', 'buyer'), async (req, res) => {
+  try {
+    const { name, sheet_name, header_row, data_start_row,
+            column_mappings, dropdown_options, fill_rules, po_pattern,
+            location_mapping, notes } = req.body;
+
+    await pool.query(`
+      UPDATE brand_order_templates SET
+        name=$1, sheet_name=$2, header_row=$3, data_start_row=$4,
+        column_mappings=$5, dropdown_options=$6, fill_rules=$7,
+        po_pattern=$8, location_mapping=$9, notes=$10, updated_at=NOW()
+      WHERE id = $11
+    `, [name, sheet_name || null, header_row || null, data_start_row || 2,
+        JSON.stringify(column_mappings || {}), JSON.stringify(dropdown_options || {}),
+        JSON.stringify(fill_rules || {}), po_pattern || null,
+        JSON.stringify(location_mapping || {}), notes || null, req.params.id]);
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/revisions/templates/:id
+ */
+router.delete('/templates/:id', authorizeRoles('admin', 'buyer'), async (req, res) => {
+  try {
+    await pool.query('UPDATE brand_order_templates SET active = false WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/revisions/template-preview
+ * Upload a sample file to detect sheets and headers
+ */
+router.post('/template-preview', authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'File is required' });
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheets = workbook.SheetNames;
+
+    // Get headers from first sheet (or specified sheet)
+    const sheetName = req.body.sheetName || sheets[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+
+    // Try to find header row (first row with multiple non-empty cells)
+    let headerRowIdx = 0;
+    for (let i = 0; i < Math.min(data.length, 15); i++) {
+      const nonEmpty = (data[i] || []).filter(c => c !== '' && c != null).length;
+      if (nonEmpty >= 3) { headerRowIdx = i; break; }
+    }
+
+    const headers = (data[headerRowIdx] || []).map(h => h != null ? String(h) : '');
+    const sampleRows = data.slice(headerRowIdx + 1, headerRowIdx + 4).map(row =>
+      row.map(c => c != null ? String(c) : '')
+    );
+
+    res.json({ sheets, headers, sampleRows, detectedHeaderRow: headerRowIdx + 1 });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/revisions/spreadsheet
  * Upload a vendor spreadsheet, run revision logic, fill in decisions, return modified file.
  * Also returns a JSON summary for the UI preview.
