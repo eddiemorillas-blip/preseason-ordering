@@ -701,9 +701,9 @@ const OrderManager = () => {
                     <>
                       <button
                         onClick={() => setShowRevisionHistory(true)}
-                        disabled={!selectedBrandId}
+                        disabled={!selectedBrandId && selectedBrandIds.length !== 1}
                         className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={selectedBrandId ? 'View revision history' : 'Select a brand to view revision history'}
+                        title={selectedBrandId || selectedBrandIds.length === 1 ? 'View revision history' : 'Select a brand or orders from one brand'}
                       >
                         Revisions
                       </button>
