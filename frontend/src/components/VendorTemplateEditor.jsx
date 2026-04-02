@@ -1,6 +1,29 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
 
+// Convert column letter to number: A=1, B=2, ..., Z=26, AA=27
+const colLetterToNum = (letter) => {
+  if (!letter) return null;
+  letter = letter.toUpperCase().trim();
+  let num = 0;
+  for (let i = 0; i < letter.length; i++) {
+    num = num * 26 + (letter.charCodeAt(i) - 64);
+  }
+  return num;
+};
+
+// Convert column number to letter: 1=A, 2=B, ..., 26=Z, 27=AA
+const colNumToLetter = (num) => {
+  if (!num) return '';
+  let letter = '';
+  while (num > 0) {
+    const mod = (num - 1) % 26;
+    letter = String.fromCharCode(65 + mod) + letter;
+    num = Math.floor((num - 1) / 26);
+  }
+  return letter;
+};
+
 const VendorTemplateEditor = ({ brandId, brandName, onSave, onClose }) => {
   const [templates, setTemplates] = useState([]);
   const [editing, setEditing] = useState(null); // null = list view, object = editing
@@ -116,9 +139,10 @@ const VendorTemplateEditor = ({ brandId, brandName, onSave, onClose }) => {
   };
 
   const updateColumn = (key, value) => {
+    const num = value === '' ? undefined : colLetterToNum(value);
     setEditing(prev => ({
       ...prev,
-      column_mappings: { ...prev.column_mappings, [key]: value === '' ? undefined : parseInt(value) || value }
+      column_mappings: { ...prev.column_mappings, [key]: num }
     }));
   };
 
@@ -306,25 +330,28 @@ const VendorTemplateEditor = ({ brandId, brandName, onSave, onClose }) => {
               {/* Detected Headers */}
               {previewHeaders.length > 0 && (
                 <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
-                  <p className="text-xs font-medium text-blue-700 mb-2">Detected columns (click to copy number):</p>
+                  <p className="text-xs font-medium text-blue-700 mb-2">Detected columns (click to copy letter):</p>
                   <div className="flex flex-wrap gap-1">
-                    {previewHeaders.map((h, i) => (
-                      <button
-                        key={i}
-                        onClick={() => navigator.clipboard.writeText(String(i + 1))}
-                        className="text-xs px-2 py-1 bg-white border border-blue-200 rounded hover:bg-blue-100"
-                        title={`Column ${i + 1}`}
-                      >
-                        <span className="font-mono text-blue-600">{i + 1}:</span> {h || '(empty)'}
-                      </button>
-                    ))}
+                    {previewHeaders.map((h, i) => {
+                      const letter = colNumToLetter(i + 1);
+                      return (
+                        <button
+                          key={i}
+                          onClick={() => navigator.clipboard.writeText(letter)}
+                          className="text-xs px-2 py-1 bg-white border border-blue-200 rounded hover:bg-blue-100"
+                          title={`Column ${letter}`}
+                        >
+                          <span className="font-mono text-blue-600">{letter}:</span> {h || '(empty)'}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
 
               {/* Column Mappings */}
               <div>
-                <h3 className="text-sm font-medium text-gray-700 mb-2">Column Mappings (column numbers, 1-indexed)</h3>
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Column Mappings (Excel column letters)</h3>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                   {COLUMN_FIELDS.map(f => (
                     <div key={f.key}>
@@ -332,11 +359,12 @@ const VendorTemplateEditor = ({ brandId, brandName, onSave, onClose }) => {
                         {f.label} {f.required && <span className="text-red-500">*</span>}
                       </label>
                       <input
-                        type="number" min="1"
-                        value={editing.column_mappings[f.key] || ''}
+                        type="text"
+                        maxLength="3"
+                        value={colNumToLetter(editing.column_mappings[f.key]) || ''}
                         onChange={e => updateColumn(f.key, e.target.value)}
-                        className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
-                        placeholder="Col #"
+                        className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm font-mono uppercase"
+                        placeholder="e.g. A, B, AA"
                       />
                     </div>
                   ))}
