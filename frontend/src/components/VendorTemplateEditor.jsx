@@ -70,18 +70,7 @@ const VendorTemplateEditor = ({ brandId, brandName, onSave, onClose }) => {
 
   const handlePreviewFile = (file) => {
     setPreviewFile(file);
-    // Read the file to extract headers
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const XLSX = window.XLSX; // loaded via CDN or we parse server-side
-        // We'll send to server for parsing instead
-        uploadForPreview(file);
-      } catch {
-        uploadForPreview(file);
-      }
-    };
-    reader.readAsArrayBuffer(file);
+    uploadForPreview(file);
   };
 
   const uploadForPreview = async (file) => {
@@ -96,9 +85,42 @@ const VendorTemplateEditor = ({ brandId, brandName, onSave, onClose }) => {
       setPreviewHeaders(res.data.headers || []);
       setPreviewRows(res.data.sampleRows || []);
 
-      // Auto-fill sheet name if only one sheet or if editing
-      if (editing && !editing.sheet_name && res.data.sheets?.length > 0) {
-        setEditing(prev => ({ ...prev, sheet_name: res.data.sheets[0] }));
+      // Auto-populate detected values into the editing form
+      if (editing) {
+        setEditing(prev => {
+          const updated = { ...prev };
+
+          // Only set values that aren't already configured
+          if (res.data.suggestedSheet && !prev.sheet_name) {
+            updated.sheet_name = res.data.suggestedSheet;
+          }
+          if (res.data.detectedHeaderRow && !prev.header_row) {
+            updated.header_row = res.data.detectedHeaderRow;
+          }
+          if (res.data.detectedDataStartRow && !prev.data_start_row) {
+            updated.data_start_row = res.data.detectedDataStartRow;
+          }
+
+          // Merge detected columns (don't overwrite existing mappings)
+          if (res.data.detectedColumns) {
+            const merged = { ...prev.column_mappings };
+            for (const [field, colNum] of Object.entries(res.data.detectedColumns)) {
+              if (!merged[field]) merged[field] = colNum;
+            }
+            updated.column_mappings = merged;
+          }
+
+          // Merge detected dropdowns
+          if (res.data.detectedDropdowns) {
+            const merged = { ...prev.dropdown_options };
+            for (const [field, values] of Object.entries(res.data.detectedDropdowns)) {
+              if (!merged[field] || merged[field].length === 0) merged[field] = values;
+            }
+            updated.dropdown_options = merged;
+          }
+
+          return updated;
+        });
       }
     } catch (err) {
       setError('Failed to preview file: ' + (err.response?.data?.error || err.message));

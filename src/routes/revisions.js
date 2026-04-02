@@ -667,7 +667,59 @@ router.post('/template-preview', authorizeRoles('admin', 'buyer'), upload.single
       row.map(c => c != null ? String(c) : '')
     );
 
-    res.json({ sheets, headers, sampleRows, detectedHeaderRow: headerRowIdx + 1 });
+    // Auto-detect column mappings from header names
+    const detectedColumns = {};
+    const patterns = {
+      upc: /\bupc\b|barcode|ean/i,
+      ship_to_location: /ship.?to|location|dealer.?name/i,
+      purchase_order: /purchase.?order|po\b|p\.o\./i,
+      so_number: /\bso\b|sales.?order/i,
+      item_name: /item.?name|product.?name|description|style/i,
+      color_name: /color/i,
+      vpn: /vpn|vendor.?product|style.?number|item.?number/i,
+      ordered: /\bordered\b|order.?qty|qty.?ordered/i,
+      committed: /commit|confirmed/i,
+      backorder: /back.?order|b\.?o\.?\b/i,
+      eta: /\beta\b|ship.?date|expected|arrival/i,
+      quantity_adjustment: /qty.?adj|quantity.?adj|revised.?qty|new.?qty|adjustment/i,
+      ship_cancel: /ship.*cancel|cancel.*ship|action|decision|disposition/i,
+    };
+
+    for (const [field, regex] of Object.entries(patterns)) {
+      const idx = headers.findIndex(h => h && regex.test(h));
+      if (idx >= 0) detectedColumns[field] = idx + 1; // 1-indexed
+    }
+
+    // Detect dropdown values from data in ship_cancel column
+    let detectedDropdowns = {};
+    if (detectedColumns.ship_cancel) {
+      const colIdx = detectedColumns.ship_cancel - 1;
+      const values = new Set();
+      for (let i = headerRowIdx + 1; i < Math.min(data.length, 200); i++) {
+        const val = data[i]?.[colIdx];
+        if (val && String(val).trim()) values.add(String(val).trim());
+      }
+      if (values.size > 0 && values.size <= 10) {
+        detectedDropdowns.ship_cancel = [...values].sort();
+      }
+    }
+
+    // Detect sheet name that looks like a revision sheet
+    let suggestedSheet = sheetName;
+    for (const s of sheets) {
+      if (/revis|adjust|order|edit/i.test(s)) { suggestedSheet = s; break; }
+    }
+
+    res.json({
+      sheets,
+      headers,
+      sampleRows,
+      detectedHeaderRow: headerRowIdx + 1,
+      detectedDataStartRow: headerRowIdx + 2,
+      detectedColumns,
+      detectedDropdowns,
+      suggestedSheet
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
