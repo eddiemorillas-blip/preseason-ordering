@@ -1110,7 +1110,7 @@ const OrderManager = () => {
           />
         )}
 
-        {showRevisionModal && selectedOrders.size > 0 && (
+        {showRevisionModal && (
           <RevisionModal
             selectedOrders={Array.from(selectedOrders).map(id => orders.find(o => o.id === id)).filter(Boolean)}
             brandId={selectedBrandIds.length === 1 ? selectedBrandIds[0] : parseInt(selectedBrandId)}
