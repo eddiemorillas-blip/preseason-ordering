@@ -291,6 +291,15 @@ const OrderManager = () => {
     return acc;
   }, {});
 
+  // Sort orders within each group by ship date
+  for (const group of Object.values(groupedOrders)) {
+    group.orders.sort((a, b) => {
+      const dateA = a.ship_date ? new Date(a.ship_date) : new Date('9999-12-31');
+      const dateB = b.ship_date ? new Date(b.ship_date) : new Date('9999-12-31');
+      return dateA - dateB;
+    });
+  }
+
   // Sort groups
   const sortedGroups = Object.entries(groupedOrders).sort((a, b) => {
     if (orderGroupBy === 'shipDate') {
