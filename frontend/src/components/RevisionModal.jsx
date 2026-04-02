@@ -23,6 +23,7 @@ const REASON_LABELS = {
 };
 
 const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, onComplete }) => {
+  const [mode, setMode] = useState('orders'); // orders | spreadsheet
   const [step, setStep] = useState('configure'); // configure | preview | applying | done
   const [maxReductionPct, setMaxReductionPct] = useState(20);
   const [revisionNotes, setRevisionNotes] = useState('');
@@ -33,6 +34,12 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
   const [revisionId, setRevisionId] = useState(null);
   const [searchFilter, setSearchFilter] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
+
+  // Spreadsheet mode state
+  const [spreadsheetFile, setSpreadsheetFile] = useState(null);
+  const [spreadsheetSummary, setSpreadsheetSummary] = useState(null);
+  const [spreadsheetDecisions, setSpreadsheetDecisions] = useState([]);
+  const [downloading, setDownloading] = useState(false);
   const [decisionFilter, setDecisionFilter] = useState('');
 
   const orderIds = selectedOrders.map(o => o.id);
@@ -134,6 +141,55 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
     }
   };
 
+  // Spreadsheet handlers
+  const handleSpreadsheetPreview = async () => {
+    if (!spreadsheetFile) return;
+    setLoading(true);
+    setError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', spreadsheetFile);
+      formData.append('brandId', brandId);
+      formData.append('dryRun', 'true');
+      const res = await revisionAPI.spreadsheetPreview(formData);
+      setSpreadsheetDecisions(res.data.decisions || []);
+      setSpreadsheetSummary(res.data.summary);
+      setStep('preview');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to process spreadsheet');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSpreadsheetDownload = async () => {
+    if (!spreadsheetFile) return;
+    setDownloading(true);
+    setError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', spreadsheetFile);
+      formData.append('brandId', brandId);
+      formData.append('dryRun', 'false');
+      const res = await revisionAPI.spreadsheetDownload(formData);
+      const blob = new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const date = new Date().toISOString().split('T')[0];
+      a.download = `${(brandName || 'brand').replace(/[^a-zA-Z0-9]/g, '_')}_revised_${date}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setStep('done');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to download revised spreadsheet');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   // Filtered decisions for display
   const filteredDecisions = useMemo(() => {
     return decisions.filter(d => {
@@ -185,6 +241,40 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
           {/* STEP: Configure */}
           {step === 'configure' && (
             <div className="space-y-6">
+              {/* Mode Tabs */}
+              <div className="flex border-b">
+                <button
+                  onClick={() => setMode('orders')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${mode === 'orders' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+                >
+                  From Orders
+                </button>
+                <button
+                  onClick={() => setMode('spreadsheet')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${mode === 'spreadsheet' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+                >
+                  From Spreadsheet
+                </button>
+              </div>
+
+              {mode === 'spreadsheet' && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Upload Vendor Spreadsheet</label>
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls,.csv"
+                      onChange={e => setSpreadsheetFile(e.target.files[0])}
+                      className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">
+                      The app will use the saved column template for {brandName || 'this brand'} to find UPCs and fill in decisions.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {mode === 'orders' && (<>
               <div>
                 <h3 className="text-sm font-medium text-gray-700 mb-3">Selected Orders</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -230,11 +320,83 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                   placeholder="e.g., Monthly revision for April 2026"
                 />
               </div>
+              </>)}
             </div>
           )}
 
-          {/* STEP: Preview */}
-          {step === 'preview' && liveSummary && (
+          {/* STEP: Preview (spreadsheet mode) */}
+          {step === 'preview' && mode === 'spreadsheet' && spreadsheetSummary && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-gray-50 rounded-lg p-3 text-center">
+                  <p className="text-xs text-gray-500">Total Items</p>
+                  <p className="text-xl font-semibold">{spreadsheetSummary.totalItems}</p>
+                </div>
+                <div className="bg-green-50 rounded-lg p-3 text-center">
+                  <p className="text-xs text-green-600">Ship</p>
+                  <p className="text-xl font-semibold text-green-700">{spreadsheetSummary.ship}</p>
+                </div>
+                <div className="bg-red-50 rounded-lg p-3 text-center">
+                  <p className="text-xs text-red-600">Cancel</p>
+                  <p className="text-xl font-semibold text-red-700">{spreadsheetSummary.cancel}</p>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-3 text-center">
+                  <p className="text-xs text-blue-600">Cancel Rate</p>
+                  <p className="text-xl font-semibold text-blue-700">{spreadsheetSummary.reductionPct}%</p>
+                </div>
+              </div>
+
+              <div className="border rounded-lg overflow-hidden">
+                <div className="max-h-[45vh] overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">UPC</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Ordered</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">On Hand</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Decision</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Adj Qty</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {spreadsheetDecisions.map((d, idx) => (
+                        <tr key={idx} className={`border-t ${DECISION_COLORS[d.decision] || ''}`}>
+                          <td className="px-3 py-2 font-mono text-xs">{d.upc}</td>
+                          <td className="px-3 py-2 text-xs">{d.location || '-'}</td>
+                          <td className="px-3 py-2 text-center">{d.orderedQty}</td>
+                          <td className="px-3 py-2 text-center">
+                            <span className={d.onHand > 0 ? 'text-green-600' : d.onHand < 0 ? 'text-red-600' : 'text-gray-500'}>
+                              {d.onHand}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <span className={`px-2 py-0.5 rounded text-xs font-medium ${DECISION_BADGES[d.decision]}`}>
+                              {d.decision.toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-center">{d.adjustedQty}</td>
+                          <td className="px-3 py-2 text-xs text-gray-500">
+                            {REASON_LABELS[d.reason] || d.reason}
+                            {d.recentSales && (
+                              <span className="ml-1 text-purple-500">({d.recentSales.qtySold} sold)</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="bg-gray-50 px-3 py-2 text-xs text-gray-500 border-t">
+                  {spreadsheetDecisions.length} items from spreadsheet
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* STEP: Preview (orders mode) */}
+          {step === 'preview' && mode === 'orders' && liveSummary && (
             <div className="space-y-4">
               {/* Summary Stats */}
               <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
@@ -424,7 +586,7 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
           <div>
             {step === 'preview' && (
               <button
-                onClick={() => { setStep('configure'); setDecisions([]); setSummary(null); }}
+                onClick={() => { setStep('configure'); setDecisions([]); setSummary(null); setSpreadsheetDecisions([]); setSpreadsheetSummary(null); }}
                 className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
               >
                 Back to Configure
@@ -441,7 +603,7 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
               </button>
             )}
 
-            {step === 'configure' && (
+            {step === 'configure' && mode === 'orders' && (
               <button
                 onClick={handleRunPreview}
                 disabled={loading}
@@ -451,12 +613,32 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
               </button>
             )}
 
-            {step === 'preview' && (
+            {step === 'configure' && mode === 'spreadsheet' && (
+              <button
+                onClick={handleSpreadsheetPreview}
+                disabled={loading || !spreadsheetFile}
+                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
+              >
+                {loading ? 'Processing...' : 'Preview Revisions'}
+              </button>
+            )}
+
+            {step === 'preview' && mode === 'orders' && (
               <button
                 onClick={handleApply}
                 className="px-4 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700"
               >
                 Apply Revision
+              </button>
+            )}
+
+            {step === 'preview' && mode === 'spreadsheet' && (
+              <button
+                onClick={handleSpreadsheetDownload}
+                disabled={downloading}
+                className="px-4 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400"
+              >
+                {downloading ? 'Generating...' : 'Download Revised Spreadsheet'}
               </button>
             )}
 

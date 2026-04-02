@@ -2,8 +2,15 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const pool = require('../config/database');
+const XLSX = require('xlsx');
+const multer = require('multer');
 const { bigquery, FACILITY_TO_LOCATION, LOCATION_TO_FACILITY } = require('../services/bigquery');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 
 // All revision routes require authentication
 router.use(authenticateToken);
@@ -539,6 +546,274 @@ router.get('/compare', async (req, res) => {
     res.json({ revisions: result.rows });
   } catch (error) {
     console.error('Compare revisions error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/revisions/spreadsheet
+ * Upload a vendor spreadsheet, run revision logic, fill in decisions, return modified file.
+ * Also returns a JSON summary for the UI preview.
+ */
+router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
+  try {
+    const { brandId, templateId, dryRun } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'File is required' });
+    }
+    if (!brandId) {
+      return res.status(400).json({ error: 'brandId is required' });
+    }
+    if (!bigquery) {
+      return res.status(503).json({ error: 'BigQuery is not available' });
+    }
+
+    // Load template for this brand
+    let template = null;
+    if (templateId) {
+      const tRes = await pool.query('SELECT * FROM brand_order_templates WHERE id = $1', [templateId]);
+      if (tRes.rows.length > 0) template = tRes.rows[0];
+    }
+    if (!template) {
+      const tRes = await pool.query(
+        'SELECT * FROM brand_order_templates WHERE brand_id = $1 AND active = true ORDER BY updated_at DESC LIMIT 1',
+        [brandId]
+      );
+      if (tRes.rows.length > 0) template = tRes.rows[0];
+    }
+
+    // Parse the uploaded Excel
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+
+    // Find the right sheet
+    let sheetName = workbook.SheetNames[0];
+    if (template && template.sheet_name) {
+      const match = workbook.SheetNames.find(s => s.toLowerCase() === template.sheet_name.toLowerCase());
+      if (match) sheetName = match;
+    }
+    const worksheet = workbook.Sheets[sheetName];
+    const allData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+
+    // Determine column positions from template or auto-detect
+    const columns = template?.column_mappings || {};
+    const fillRules = template?.fill_rules || {};
+    const dropdownOpts = template?.dropdown_options || {};
+    const headerRow = (template?.header_row || 1) - 1; // Convert to 0-indexed
+    const dataStartRow = (template?.data_start_row || 2) - 1;
+    const headers = allData[headerRow] || [];
+
+    // Find UPC column
+    let upcCol = columns.upc != null ? columns.upc - 1 : -1; // template columns are 1-indexed
+    if (upcCol < 0) {
+      upcCol = headers.findIndex(h => h && /upc|barcode|ean/i.test(h.toString()));
+    }
+    if (upcCol < 0) {
+      return res.status(400).json({ error: 'Could not find UPC column', headers: headers.filter(Boolean), sheetNames: workbook.SheetNames });
+    }
+
+    // Find location column (optional)
+    let locationCol = columns.ship_to_location != null ? columns.ship_to_location - 1 : -1;
+    if (locationCol < 0) {
+      locationCol = headers.findIndex(h => h && /location|ship.?to|dealer/i.test(h.toString()));
+    }
+
+    // Find quantity/decision columns to fill
+    let qtyAdjCol = columns.quantity_adjustment != null ? columns.quantity_adjustment - 1 : -1;
+    let shipCancelCol = columns.ship_cancel != null ? columns.ship_cancel - 1 : -1;
+    let orderedCol = columns.ordered != null ? columns.ordered - 1 : -1;
+    let committedCol = columns.committed != null ? columns.committed - 1 : -1;
+
+    // Collect all UPCs from the spreadsheet
+    const rowUPCs = [];
+    for (let r = dataStartRow; r < allData.length; r++) {
+      const row = allData[r];
+      const upc = row[upcCol]?.toString().trim();
+      if (!upc) continue;
+      const location = locationCol >= 0 ? row[locationCol]?.toString().trim() : null;
+      const orderedQty = orderedCol >= 0 ? parseInt(row[orderedCol]) || 0 : 0;
+      const committedQty = committedCol >= 0 ? parseInt(row[committedCol]) || 0 : 0;
+      rowUPCs.push({ rowIndex: r, upc, location, orderedQty, committedQty });
+    }
+
+    if (rowUPCs.length === 0) {
+      return res.status(400).json({ error: 'No data rows with UPCs found in the spreadsheet' });
+    }
+
+    // Bulk fetch on-hand from BigQuery
+    const uniqueUPCs = [...new Set(rowUPCs.map(r => r.upc))];
+    const upcList = uniqueUPCs.map(u => `'${u}'`).join(',');
+
+    const [bqRows] = await bigquery.query({
+      query: `
+        SELECT DISTINCT i.barcode AS upc, i.facility_id, i.on_hand_qty
+        FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+        WHERE i.barcode IN (${upcList}) AND i.facility_id IN (41185, 1003, 1000)
+      `
+    });
+
+    const inventoryMap = {};
+    for (const row of bqRows) {
+      const locId = FACILITY_TO_LOCATION[String(row.facility_id)];
+      if (locId) inventoryMap[`${row.upc}|${locId}`] = parseInt(row.on_hand_qty) || 0;
+    }
+
+    // Fetch sales data (last 90 days)
+    const salesMap = {};
+    try {
+      const [salesRows] = await bigquery.query({
+        query: `
+          SELECT p.BARCODE AS upc, p.facility_id_true AS facility_id,
+            SUM(ii.QUANTITY) AS qty_sold, COUNT(DISTINCT i.invoice_concat) AS txns
+          FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+          JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+          JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+          WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+            AND ii.QUANTITY > 0 AND p.BARCODE IN (${upcList})
+            AND p.facility_id_true IN (41185, 1003, 1000)
+          GROUP BY p.BARCODE, p.facility_id_true
+        `
+      });
+      for (const row of salesRows) {
+        const locId = FACILITY_TO_LOCATION[String(row.facility_id)];
+        if (locId) salesMap[`${row.upc}|${locId}`] = { qtySold: parseInt(row.qty_sold) || 0, txns: parseInt(row.txns) || 0 };
+      }
+    } catch (e) { /* non-fatal */ }
+
+    // Get discontinued products
+    const discontinuedUPCs = new Set();
+    try {
+      const discResult = await pool.query(
+        `SELECT key, value FROM knowledge_entries WHERE type = 'discontinued_product' AND active = TRUE AND ($1::int IS NULL OR target_id = $1)`,
+        [brandId]
+      );
+      for (const row of discResult.rows) {
+        if (row.key) discontinuedUPCs.add(row.key.toLowerCase());
+        if (row.value?.upc) discontinuedUPCs.add(String(row.value.upc));
+        if (row.value?.upcs) row.value.upcs.forEach(u => discontinuedUPCs.add(String(u)));
+      }
+    } catch (e) { /* */ }
+
+    // Location name → ID mapping (from template or defaults)
+    const locationMapping = template?.location_mapping || {};
+    const resolveLocationId = (locName) => {
+      if (!locName) return null;
+      if (locationMapping[locName]) return locationMapping[locName];
+      const lower = locName.toLowerCase();
+      if (lower.includes('salt lake') || lower.includes('slc')) return 1;
+      if (lower.includes('south main') || lower.includes('millcreek')) return 2;
+      if (lower.includes('ogden')) return 3;
+      return null;
+    };
+
+    // Get dropdown values from template
+    const shipCancelOptions = dropdownOpts.ship_cancel || [];
+    const getShipValue = () => shipCancelOptions.find(o => /ship.*asap/i.test(o)) || 'Ship Product(s) ASAP';
+    const getKeepOpenValue = () => shipCancelOptions.find(o => /keep.*open|b.*o/i.test(o)) || 'Keep Open - B/O';
+    const getCancelValue = () => shipCancelOptions.find(o => /cancel/i.test(o)) || 'Cancel Product(s)';
+
+    // Process each row
+    const decisions = [];
+    let shipCount = 0, cancelCount = 0;
+
+    for (const item of rowUPCs) {
+      const locId = resolveLocationId(item.location);
+      const invKey = locId ? `${item.upc}|${locId}` : null;
+      const onHand = invKey ? (inventoryMap[invKey] || 0) : 0;
+      const sales = invKey ? (salesMap[invKey] || null) : null;
+      const isDiscontinued = discontinuedUPCs.has(item.upc.toLowerCase());
+      const hasRecentSales = sales && sales.qtySold > 0;
+      const receivedNotInventoried = onHand <= 0 && hasRecentSales;
+
+      let decision, adjustedQty, reason, shipCancelValue;
+
+      if (isDiscontinued) {
+        decision = 'cancel'; adjustedQty = 0; reason = 'discontinued_product';
+        shipCancelValue = getCancelValue(); cancelCount++;
+      } else if (onHand > 0) {
+        decision = 'cancel'; adjustedQty = 0; reason = 'positive_stock_cancel';
+        shipCancelValue = getCancelValue(); cancelCount++;
+      } else if (receivedNotInventoried) {
+        decision = 'cancel'; adjustedQty = 0; reason = 'received_not_inventoried';
+        shipCancelValue = getCancelValue(); cancelCount++;
+      } else {
+        decision = 'ship'; adjustedQty = item.committedQty || item.orderedQty || 1; reason = 'zero_stock';
+        shipCancelValue = item.committedQty > 0 ? getShipValue() : getKeepOpenValue(); shipCount++;
+      }
+
+      decisions.push({
+        rowIndex: item.rowIndex,
+        upc: item.upc,
+        location: item.location,
+        locationId: locId,
+        orderedQty: item.orderedQty,
+        committedQty: item.committedQty,
+        onHand,
+        decision,
+        adjustedQty,
+        reason,
+        shipCancelValue,
+        recentSales: sales,
+        isDiscontinued,
+        receivedNotInventoried
+      });
+
+      // Fill the worksheet cells
+      if (qtyAdjCol >= 0) {
+        const cell = XLSX.utils.encode_cell({ r: item.rowIndex, c: qtyAdjCol });
+        worksheet[cell] = { t: 'n', v: adjustedQty };
+      }
+      if (shipCancelCol >= 0) {
+        const cell = XLSX.utils.encode_cell({ r: item.rowIndex, c: shipCancelCol });
+        worksheet[cell] = { t: 's', v: shipCancelValue };
+      }
+    }
+
+    // Update the sheet range if we added cells
+    if (qtyAdjCol >= 0 || shipCancelCol >= 0) {
+      const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+      const maxCol = Math.max(range.e.c, qtyAdjCol, shipCancelCol);
+      const maxRow = Math.max(range.e.r, ...rowUPCs.map(r => r.rowIndex));
+      worksheet['!ref'] = XLSX.utils.encode_range({ s: range.s, e: { r: maxRow, c: maxCol } });
+    }
+
+    const isDryRun = dryRun === 'true' || dryRun === true;
+
+    if (isDryRun) {
+      // Return JSON preview only
+      return res.json({
+        dryRun: true,
+        sheetName,
+        template: template ? { id: template.id, name: template.name } : null,
+        columnsDetected: { upc: upcCol + 1, location: locationCol + 1, qtyAdj: qtyAdjCol + 1, shipCancel: shipCancelCol + 1 },
+        summary: {
+          totalItems: decisions.length,
+          ship: shipCount,
+          cancel: cancelCount,
+          reductionPct: decisions.length > 0 ? parseFloat(((cancelCount / decisions.length) * 100).toFixed(1)) : 0
+        },
+        decisions
+      });
+    }
+
+    // Generate the modified Excel buffer
+    const outputBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    // Build filename
+    const brand = await pool.query('SELECT name FROM brands WHERE id = $1', [brandId]);
+    const brandName = brand.rows[0]?.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'brand';
+    const date = new Date().toISOString().split('T')[0];
+    const filename = `${brandName}_revised_${date}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('X-Revision-Summary', JSON.stringify({
+      totalItems: decisions.length, ship: shipCount, cancel: cancelCount
+    }));
+    res.send(Buffer.from(outputBuffer));
+
+  } catch (error) {
+    console.error('Spreadsheet revision error:', error);
     res.status(500).json({ error: error.message });
   }
 });

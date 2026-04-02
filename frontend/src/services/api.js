@@ -258,6 +258,13 @@ export const revisionAPI = {
   apply: (data) => api.post('/revisions/apply', data),
   getHistory: (params) => api.get('/revisions/history', { params }),
   compare: (params) => api.get('/revisions/compare', { params }),
+  spreadsheetPreview: (formData) => api.post('/revisions/spreadsheet', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
+  spreadsheetDownload: (formData) => api.post('/revisions/spreadsheet', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    responseType: 'blob'
+  }),
 };
 
 export default api;
