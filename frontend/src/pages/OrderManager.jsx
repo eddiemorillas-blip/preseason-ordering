@@ -709,22 +709,6 @@ const OrderManager = () => {
                   {(isAdmin() || isBuyer()) && (
                     <>
                       <button
-                        onClick={() => {
-                          // Select all orders for the current brand and open revision modal
-                          const brandOrders = selectedBrandId
-                            ? orders.filter(o => o.brand_id === parseInt(selectedBrandId))
-                            : orders;
-                          const ids = new Set(brandOrders.map(o => o.id));
-                          setSelectedOrders(ids);
-                          setShowRevisionModal(true);
-                        }}
-                        disabled={!selectedBrandId}
-                        className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={selectedBrandId ? 'Run revision on all orders for this brand' : 'Select a brand first'}
-                      >
-                        Revise
-                      </button>
-                      <button
                         onClick={() => setShowBudgetModal(true)}
                         className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200"
                       >
@@ -867,9 +851,9 @@ const OrderManager = () => {
                           </div>
                         )}
                       </div>
-                      {(isAdmin() || isBuyer()) && !hasMultipleBrands && (
+                      {!hasMultipleBrands && (
                         <button
-                          onClick={() => setShowRevisionModal(true)}
+                          onClick={() => { console.log('Revise clicked, orders:', selectedOrders.size); setShowRevisionModal(true); }}
                           className="px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700"
                           title="Run revision workflow on selected orders"
                         >
