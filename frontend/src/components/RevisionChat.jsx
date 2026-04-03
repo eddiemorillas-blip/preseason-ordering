@@ -1,5 +1,15 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '../services/api';
+
+const THINKING_MESSAGES = [
+  'Thinking...',
+  'Querying database...',
+  'Checking inventory...',
+  'Analyzing data...',
+  'Running tools...',
+  'Processing results...',
+  'Almost there...',
+];
 
 const RevisionChat = ({ brandId, seasonId, orderIds, brandName }) => {
   const [conversationId, setConversationId] = useState(null);
@@ -8,6 +18,8 @@ const RevisionChat = ({ brandId, seasonId, orderIds, brandName }) => {
   const [sending, setSending] = useState(false);
   const [model, setModel] = useState('sonnet');
   const [collapsed, setCollapsed] = useState(false);
+  const [thinkingMsg, setThinkingMsg] = useState(0);
+  const thinkingInterval = useRef(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -37,6 +49,10 @@ const RevisionChat = ({ brandId, seasonId, orderIds, brandName }) => {
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setSending(true);
+    setThinkingMsg(0);
+    thinkingInterval.current = setInterval(() => {
+      setThinkingMsg(prev => (prev + 1) % THINKING_MESSAGES.length);
+    }, 3000);
 
     try {
       const res = await api.post(`/revisions/chat/conversations/${conversationId}/messages`, {
@@ -64,6 +80,7 @@ const RevisionChat = ({ brandId, seasonId, orderIds, brandName }) => {
       setMessages(prev => [...prev, errorMsg]);
     } finally {
       setSending(false);
+      clearInterval(thinkingInterval.current);
       inputRef.current?.focus();
     }
   };
@@ -182,10 +199,13 @@ const RevisionChat = ({ brandId, seasonId, orderIds, brandName }) => {
         {sending && (
           <div className="flex justify-start">
             <div className="bg-gray-100 rounded-lg px-3 py-2">
-              <div className="flex gap-1">
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+              <div className="flex items-center gap-2">
+                <div className="flex gap-1">
+                  <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                  <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                  <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                </div>
+                <span className="text-xs text-gray-500 transition-opacity">{THINKING_MESSAGES[thinkingMsg]}</span>
               </div>
             </div>
           </div>
