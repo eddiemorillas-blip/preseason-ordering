@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const pool = require('../config/database');
 const XLSX = require('xlsx');
+const XlsxPopulate = require('xlsx-populate');
 const multer = require('multer');
 const { bigquery, FACILITY_TO_LOCATION, LOCATION_TO_FACILITY } = require('../services/bigquery');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
@@ -1107,23 +1108,6 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
         receivedNotInventoried
       });
 
-      // Fill the worksheet cells
-      if (qtyAdjCol >= 0) {
-        const cell = XLSX.utils.encode_cell({ r: item.rowIndex, c: qtyAdjCol });
-        worksheet[cell] = { t: 'n', v: adjustedQty };
-      }
-      if (shipCancelCol >= 0) {
-        const cell = XLSX.utils.encode_cell({ r: item.rowIndex, c: shipCancelCol });
-        worksheet[cell] = { t: 's', v: shipCancelValue };
-      }
-    }
-
-    // Update the sheet range if we added cells
-    if (qtyAdjCol >= 0 || shipCancelCol >= 0) {
-      const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
-      const maxCol = Math.max(range.e.c, qtyAdjCol, shipCancelCol);
-      const maxRow = Math.max(range.e.r, ...rowUPCs.map(r => r.rowIndex));
-      worksheet['!ref'] = XLSX.utils.encode_range({ s: range.s, e: { r: maxRow, c: maxCol } });
     }
 
     const isDryRun = dryRun === 'true' || dryRun === true;
@@ -1145,14 +1129,33 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
       });
     }
 
-    // Generate the modified Excel buffer
-    const outputBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    // Use xlsx-populate to modify the original file (preserves all formatting)
+    const popWorkbook = await XlsxPopulate.fromDataAsync(req.file.buffer);
 
-    // Build filename
-    const brand = await pool.query('SELECT name FROM brands WHERE id = $1', [brandId]);
-    const brandName = brand.rows[0]?.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'brand';
-    const date = new Date().toISOString().split('T')[0];
-    const filename = `${brandName}_revised_${date}.xlsx`;
+    // Find the right sheet
+    let popSheet = popWorkbook.sheets()[0];
+    if (template?.sheet_name) {
+      const match = popWorkbook.sheets().find(s => s.name().toLowerCase() === template.sheet_name.toLowerCase());
+      if (match) popSheet = match;
+    }
+
+    // Write decisions into the specific cells only
+    for (const d of decisions) {
+      // xlsx-populate uses 1-based row/col indexing
+      const row = d.rowIndex + 1; // rowIndex is 0-based from SheetJS
+      if (qtyAdjCol >= 0) {
+        popSheet.cell(row, qtyAdjCol + 1).value(d.adjustedQty);
+      }
+      if (shipCancelCol >= 0) {
+        popSheet.cell(row, shipCancelCol + 1).value(d.shipCancelValue);
+      }
+    }
+
+    const outputBuffer = await popWorkbook.outputAsync();
+
+    // Use original filename
+    const originalName = req.file.originalname || 'revised.xlsx';
+    const filename = originalName.replace(/\.xlsx?$/i, '_revised.xlsx');
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
