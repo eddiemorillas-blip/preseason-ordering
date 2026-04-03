@@ -60,6 +60,12 @@ Be concise and direct. USE THE TOOLS — don't just explain what to do.`;
 
 router.use(authenticateToken);
 
+// Debug: log all requests to this router
+router.use((req, res, next) => {
+  console.log('CHAT ROUTER HIT:', req.method, req.path);
+  next();
+});
+
 /**
  * POST /api/revisions/chat/conversations
  * Create a new chat conversation
@@ -77,6 +83,7 @@ router.post('/conversations', async (req, res) => {
 
     res.json({ conversationId: result.rows[0].id });
   } catch (error) {
+    console.error('CHAT CONV CREATE ERROR:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
