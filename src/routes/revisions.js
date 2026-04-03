@@ -1025,6 +1025,24 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
       }
     } catch (e) { /* non-fatal */ }
 
+    // Match UPCs to internal order items
+    const orderItemMap = {};
+    if (uniqueUPCs.length > 0) {
+      const upcPlaceholders = uniqueUPCs.map((_, i) => `$${i + 2}`).join(',');
+      const oiResult = await pool.query(
+        `SELECT oi.id AS order_item_id, oi.order_id, oi.quantity, p.upc, o.location_id
+         FROM order_items oi
+         JOIN products p ON oi.product_id = p.id
+         JOIN orders o ON oi.order_id = o.id
+         WHERE o.brand_id = $1 AND p.upc IN (${upcPlaceholders})`,
+        [brandId, ...uniqueUPCs]
+      );
+      for (const row of oiResult.rows) {
+        const key = `${row.upc}|${row.location_id}`;
+        if (!orderItemMap[key]) orderItemMap[key] = row;
+      }
+    }
+
     // Get discontinued products
     const discontinuedUPCs = new Set();
     try {
@@ -1087,9 +1105,13 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
       }
 
       const product = productMap[item.upc] || {};
+      const oiKey = locId ? `${item.upc}|${locId}` : null;
+      const orderItem = oiKey ? (orderItemMap[oiKey] || null) : null;
 
       decisions.push({
         rowIndex: item.rowIndex,
+        orderItemId: orderItem?.order_item_id || null,
+        orderId: orderItem?.order_id || null,
         upc: item.upc,
         productName: product.name || null,
         color: product.color || null,
