@@ -270,13 +270,25 @@ const Revisions = () => {
     setLoading(true);
     setError('');
     try {
-      const formData = new FormData();
-      formData.append('file', spreadsheetFile);
-      formData.append('brandId', selectedBrandId);
-      formData.append('dryRun', 'true');
-      const res = await revisionAPI.spreadsheetPreview(formData);
-      setSpreadsheetDecisions(res.data.decisions || []);
-      setSpreadsheetSummary(res.data.summary);
+      // Run both comparison and revision in parallel
+      const formData1 = new FormData();
+      formData1.append('file', spreadsheetFile);
+      formData1.append('brandId', selectedBrandId);
+      formData1.append('dryRun', 'true');
+
+      const formData2 = new FormData();
+      formData2.append('file', spreadsheetFile);
+      formData2.append('brandId', selectedBrandId);
+      formData2.append('seasonId', selectedSeasonId);
+
+      const [revisionRes, compareRes] = await Promise.all([
+        revisionAPI.spreadsheetPreview(formData1),
+        api.post('/revisions/compare-spreadsheet', formData2, { headers: { 'Content-Type': 'multipart/form-data' } })
+      ]);
+
+      setSpreadsheetDecisions(revisionRes.data.decisions || []);
+      setSpreadsheetSummary(revisionRes.data.summary);
+      setCompareResults(compareRes.data);
       setStep('preview');
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to process spreadsheet');
@@ -504,20 +516,12 @@ const Revisions = () => {
                   </button>
                 )}
                 {step === 'idle' && (
-                  <div className={`space-y-2 ${selectedOrders.size > 0 ? 'mt-2' : ''}`}>
-                    <button
-                      onClick={() => { setMode('spreadsheet'); setStep('configure'); }}
-                      className="w-full px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
-                    >
-                      Upload Spreadsheet
-                    </button>
-                    <button
-                      onClick={() => { setMode('compare'); setStep('configure'); }}
-                      className="w-full px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
-                    >
-                      Compare to Vendor
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => { setMode('spreadsheet'); setStep('configure'); }}
+                    className={`w-full px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 ${selectedOrders.size > 0 ? 'mt-2' : ''}`}
+                  >
+                    Upload Spreadsheet
+                  </button>
                 )}
                 {step !== 'idle' && (
                   <button
@@ -693,187 +697,6 @@ const Revisions = () => {
                   </div>
                 )}
 
-                {/* CONFIGURE — COMPARE MODE */}
-                {step === 'configure' && mode === 'compare' && (
-                  <div className="max-w-2xl space-y-6">
-                    <h3 className="text-lg font-bold text-gray-900">Compare Vendor Form to System</h3>
-                    <p className="text-sm text-gray-500">
-                      Upload the vendor's spreadsheet to compare their line items against what's in your orders.
-                      Shows mismatches in quantities, items they have that you don't, and items you have that they dropped.
-                    </p>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Vendor Spreadsheet</label>
-                      <input
-                        type="file"
-                        accept=".xlsx,.xls,.csv"
-                        onChange={e => setCompareFile(e.target.files[0])}
-                        className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                      />
-                    </div>
-                    <div className="flex gap-2 pt-4">
-                      <button onClick={resetWorkflow} className="px-4 py-2 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">Cancel</button>
-                      <button onClick={handleCompare} disabled={compareLoading || !compareFile}
-                        className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400">
-                        {compareLoading ? 'Comparing...' : 'Compare'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* PREVIEW — COMPARE MODE */}
-                {step === 'preview' && mode === 'compare' && compareResults && (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-bold text-gray-900">Vendor Comparison</h3>
-                      <button onClick={resetWorkflow} className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800">Back</button>
-                    </div>
-
-                    {/* Summary Stats */}
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                      <div className="bg-gray-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-gray-500">Vendor Items</p>
-                        <p className="text-xl font-semibold">{compareResults.summary?.vendorItems || 0}</p>
-                      </div>
-                      <div className="bg-blue-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-blue-600">Matched</p>
-                        <p className="text-xl font-semibold text-blue-700">{compareResults.summary?.matched || 0}</p>
-                      </div>
-                      <div className="bg-amber-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-amber-600">Qty Mismatches</p>
-                        <p className="text-xl font-semibold text-amber-700">{compareResults.summary?.qtyMismatches || 0}</p>
-                      </div>
-                      <div className="bg-green-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-green-600">Vendor Only</p>
-                        <p className="text-xl font-semibold text-green-700">{compareResults.summary?.vendorOnly || 0}</p>
-                      </div>
-                      <div className="bg-red-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-red-600">System Only</p>
-                        <p className="text-xl font-semibold text-red-700">{compareResults.summary?.systemOnly || 0}</p>
-                      </div>
-                    </div>
-
-                    {/* Qty Mismatches */}
-                    {compareResults.qtyMismatches?.length > 0 && (
-                      <div>
-                        <h4 className="text-sm font-medium text-amber-700 mb-2">Quantity Mismatches</h4>
-                        <div className="border rounded-lg overflow-hidden">
-                          <div className="max-h-[30vh] overflow-y-auto">
-                            <table className="w-full text-sm">
-                              <thead className="bg-amber-50 sticky top-0">
-                                <tr>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Product</th>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Size</th>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
-                                  <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Vendor Qty</th>
-                                  <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">System Qty</th>
-                                  <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Diff</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {compareResults.qtyMismatches.map((d, i) => (
-                                  <tr key={i} className="border-t">
-                                    <td className="px-3 py-2">
-                                      <div className="font-medium truncate max-w-[200px]">{d.productName || 'Unknown'}</div>
-                                      <div className="text-xs text-gray-400 font-mono">{d.upc}</div>
-                                    </td>
-                                    <td className="px-3 py-2">{d.size || '-'}</td>
-                                    <td className="px-3 py-2 text-xs">{d.location || '-'}</td>
-                                    <td className="px-3 py-2 text-center">{d.vendorQty}</td>
-                                    <td className="px-3 py-2 text-center">{d.systemQty}</td>
-                                    <td className="px-3 py-2 text-center font-medium">
-                                      <span className={d.diff > 0 ? 'text-green-600' : 'text-red-600'}>
-                                        {d.diff > 0 ? '+' : ''}{d.diff}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Vendor Only */}
-                    {compareResults.vendorOnly?.length > 0 && (
-                      <div>
-                        <h4 className="text-sm font-medium text-green-700 mb-2">In Vendor Form Only (not in your orders)</h4>
-                        <div className="border rounded-lg overflow-hidden">
-                          <div className="max-h-[25vh] overflow-y-auto">
-                            <table className="w-full text-sm">
-                              <thead className="bg-green-50 sticky top-0">
-                                <tr>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Product</th>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Size</th>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
-                                  <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Vendor Qty</th>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">UPC</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {compareResults.vendorOnly.map((d, i) => (
-                                  <tr key={i} className="border-t">
-                                    <td className="px-3 py-2 font-medium">{d.productName || d.upc}</td>
-                                    <td className="px-3 py-2">{d.size || '-'}</td>
-                                    <td className="px-3 py-2 text-xs">{d.location || '-'}</td>
-                                    <td className="px-3 py-2 text-center">{d.vendorQty}</td>
-                                    <td className="px-3 py-2 text-xs font-mono text-gray-400">{d.upc}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* System Only */}
-                    {compareResults.systemOnly?.length > 0 && (
-                      <div>
-                        <h4 className="text-sm font-medium text-red-700 mb-2">In Your Orders Only (not in vendor form)</h4>
-                        <div className="border rounded-lg overflow-hidden">
-                          <div className="max-h-[25vh] overflow-y-auto">
-                            <table className="w-full text-sm">
-                              <thead className="bg-red-50 sticky top-0">
-                                <tr>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Product</th>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Size</th>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Color</th>
-                                  <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
-                                  <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">System Qty</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {compareResults.systemOnly.map((d, i) => (
-                                  <tr key={i} className="border-t">
-                                    <td className="px-3 py-2 font-medium">{d.productName}</td>
-                                    <td className="px-3 py-2">{d.size || '-'}</td>
-                                    <td className="px-3 py-2 text-xs">{d.color || '-'}</td>
-                                    <td className="px-3 py-2 text-xs">{d.location || '-'}</td>
-                                    <td className="px-3 py-2 text-center">{d.systemQty}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {compareResults.summary?.matched > 0 && compareResults.summary?.qtyMismatches === 0 &&
-                     compareResults.summary?.vendorOnly === 0 && compareResults.summary?.systemOnly === 0 && (
-                      <div className="text-center py-8">
-                        <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-green-100 mb-3">
-                          <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        </div>
-                        <p className="text-green-700 font-medium">Everything matches!</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 {/* PREVIEW — ORDERS MODE */}
                 {step === 'preview' && mode === 'orders' && liveSummary && (
                   <div className="space-y-4">
@@ -1005,7 +828,7 @@ const Revisions = () => {
                 {step === 'preview' && mode === 'spreadsheet' && spreadsheetSummary && (
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-bold text-gray-900">Spreadsheet Preview</h3>
+                      <h3 className="text-lg font-bold text-gray-900">Spreadsheet Analysis</h3>
                       <div className="flex gap-2">
                         <button onClick={() => { setStep('configure'); setSpreadsheetDecisions([]); setSpreadsheetSummary(null); }}
                           className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800">Back</button>
@@ -1016,6 +839,117 @@ const Revisions = () => {
                       </div>
                     </div>
 
+                    {/* Vendor Comparison */}
+                    {compareResults && (
+                      <div className="space-y-3">
+                        <h4 className="text-sm font-medium text-gray-700">Vendor vs System Comparison</h4>
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                          <div className="bg-gray-50 rounded-lg p-2 text-center">
+                            <p className="text-xs text-gray-500">Vendor Items</p>
+                            <p className="text-lg font-semibold">{compareResults.summary?.vendorItems || 0}</p>
+                          </div>
+                          <div className="bg-blue-50 rounded-lg p-2 text-center">
+                            <p className="text-xs text-blue-600">Matched</p>
+                            <p className="text-lg font-semibold text-blue-700">{compareResults.summary?.matched || 0}</p>
+                          </div>
+                          <div className="bg-amber-50 rounded-lg p-2 text-center">
+                            <p className="text-xs text-amber-600">Qty Diff</p>
+                            <p className="text-lg font-semibold text-amber-700">{compareResults.summary?.qtyMismatches || 0}</p>
+                          </div>
+                          <div className="bg-green-50 rounded-lg p-2 text-center">
+                            <p className="text-xs text-green-600">Vendor Only</p>
+                            <p className="text-lg font-semibold text-green-700">{compareResults.summary?.vendorOnly || 0}</p>
+                          </div>
+                          <div className="bg-red-50 rounded-lg p-2 text-center">
+                            <p className="text-xs text-red-600">System Only</p>
+                            <p className="text-lg font-semibold text-red-700">{compareResults.summary?.systemOnly || 0}</p>
+                          </div>
+                        </div>
+
+                        {compareResults.qtyMismatches?.length > 0 && (
+                          <details className="border rounded-lg">
+                            <summary className="px-3 py-2 text-sm font-medium text-amber-700 cursor-pointer hover:bg-amber-50">
+                              {compareResults.qtyMismatches.length} Quantity Mismatch{compareResults.qtyMismatches.length !== 1 ? 'es' : ''}
+                            </summary>
+                            <div className="max-h-40 overflow-y-auto border-t">
+                              <table className="w-full text-xs">
+                                <thead className="bg-amber-50 sticky top-0">
+                                  <tr>
+                                    <th className="text-left px-3 py-1.5">Product</th>
+                                    <th className="text-left px-3 py-1.5">Size</th>
+                                    <th className="text-left px-3 py-1.5">Location</th>
+                                    <th className="text-center px-3 py-1.5">Vendor</th>
+                                    <th className="text-center px-3 py-1.5">System</th>
+                                    <th className="text-center px-3 py-1.5">Diff</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {compareResults.qtyMismatches.map((d, i) => (
+                                    <tr key={i} className="border-t">
+                                      <td className="px-3 py-1 truncate max-w-[150px]">{d.productName || d.upc}</td>
+                                      <td className="px-3 py-1">{d.size || '-'}</td>
+                                      <td className="px-3 py-1">{d.location || '-'}</td>
+                                      <td className="px-3 py-1 text-center">{d.vendorQty}</td>
+                                      <td className="px-3 py-1 text-center">{d.systemQty}</td>
+                                      <td className="px-3 py-1 text-center font-medium">
+                                        <span className={d.diff > 0 ? 'text-green-600' : 'text-red-600'}>{d.diff > 0 ? '+' : ''}{d.diff}</span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </details>
+                        )}
+
+                        {compareResults.vendorOnly?.length > 0 && (
+                          <details className="border rounded-lg">
+                            <summary className="px-3 py-2 text-sm font-medium text-green-700 cursor-pointer hover:bg-green-50">
+                              {compareResults.vendorOnly.length} item{compareResults.vendorOnly.length !== 1 ? 's' : ''} in vendor form only
+                            </summary>
+                            <div className="max-h-40 overflow-y-auto border-t">
+                              <table className="w-full text-xs">
+                                <tbody>
+                                  {compareResults.vendorOnly.map((d, i) => (
+                                    <tr key={i} className="border-t">
+                                      <td className="px-3 py-1">{d.productName || d.upc}</td>
+                                      <td className="px-3 py-1">{d.size || '-'}</td>
+                                      <td className="px-3 py-1">{d.location || '-'}</td>
+                                      <td className="px-3 py-1 text-center">{d.vendorQty}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </details>
+                        )}
+
+                        {compareResults.systemOnly?.length > 0 && (
+                          <details className="border rounded-lg">
+                            <summary className="px-3 py-2 text-sm font-medium text-red-700 cursor-pointer hover:bg-red-50">
+                              {compareResults.systemOnly.length} item{compareResults.systemOnly.length !== 1 ? 's' : ''} in your orders only
+                            </summary>
+                            <div className="max-h-40 overflow-y-auto border-t">
+                              <table className="w-full text-xs">
+                                <tbody>
+                                  {compareResults.systemOnly.map((d, i) => (
+                                    <tr key={i} className="border-t">
+                                      <td className="px-3 py-1">{d.productName}</td>
+                                      <td className="px-3 py-1">{d.size || '-'}</td>
+                                      <td className="px-3 py-1">{d.location || '-'}</td>
+                                      <td className="px-3 py-1 text-center">{d.systemQty}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </details>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Revision Stats */}
+                    <h4 className="text-sm font-medium text-gray-700">Revision Decisions</h4>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                       <div className="bg-gray-50 rounded-lg p-3 text-center">
                         <p className="text-xs text-gray-500">Total</p>
