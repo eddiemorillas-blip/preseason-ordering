@@ -175,18 +175,12 @@ router.post('/conversations/:id/messages', async (req, res) => {
         }
       }
 
-      revisionDataMessage = data;
+      // Append full revision data to system prompt — Anthropic supports large system prompts
+      systemPrompt += '\n\n' + data;
     }
 
     // Build messages
     const messages = [];
-
-    // Inject revision data as first user/assistant exchange so it's always in context
-    if (revisionDataMessage) {
-      messages.push({ role: 'user', content: revisionDataMessage });
-      messages.push({ role: 'assistant', content: 'I have the complete revision data loaded. I can see all items, their decisions, quantities, and inventory levels. What would you like to do?' });
-    }
-
     historyResult.rows.forEach(msg => {
       if (msg.content && msg.content.trim()) {
         messages.push({ role: msg.role, content: msg.content });
