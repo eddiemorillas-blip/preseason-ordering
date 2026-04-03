@@ -135,6 +135,11 @@ router.post('/conversations/:id/messages', async (req, res) => {
       let data = `[REVISION DATA — This is the complete current revision state. Use this data to answer questions and take actions. DO NOT ask for order IDs — they are listed here.]\n`;
       data += `Mode: ${rc.mode || 'none'} | Step: ${rc.step || 'idle'}\n`;
 
+      if (rc.selectedOrderIds && rc.selectedOrderIds.length > 0) {
+        data += `Selected Order IDs: ${rc.selectedOrderIds.join(', ')}\n`;
+        data += `Use get_order_details with these IDs if you need item-level data and no decisions are loaded below.\n`;
+      }
+
       if (rc.summary) {
         data += `Summary: ${rc.summary.totalItems || 0} items | Ship: ${rc.summary.ship || 0} | Cancel: ${rc.summary.cancel || 0} | Reduction: ${rc.summary.reductionPct || 0}%\n`;
       }
