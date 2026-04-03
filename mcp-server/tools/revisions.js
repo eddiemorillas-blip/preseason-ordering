@@ -422,38 +422,13 @@ async function runRevision(args) {
       });
     }
 
-    // Step 4: Check reduction cap
+    // Step 4: Calculate reduction (no auto-flip — user decides what to add via chat)
     let totalAdjustedQty = decisions.reduce((s, d) => s + d.adjustedQty, 0);
     let reductionPct = totalOriginalQty > 0
       ? (totalOriginalQty - totalAdjustedQty) / totalOriginalQty
       : 0;
 
-    let flippedBack = 0;
-
-    if (reductionPct > maxReduction) {
-      // Need to flip some cancelled items back to ship
-      // Sort cancelled (non-discontinued) by on_hand ascending (lowest stock first = highest need)
-      const flippable = decisions
-        .filter(d => d.decision === 'cancel' && !d.isDiscontinued && !d.receivedNotInventoried)
-        .sort((a, b) => a.onHand - b.onHand);
-
-      for (const d of flippable) {
-        if (reductionPct <= maxReduction) break;
-
-        d.decision = 'ship';
-        d.adjustedQty = d.originalQty;
-        d.reason = 'flipped_back_20pct_cap';
-        d.wasFlipped = true;
-        flippedBack++;
-        cancelCount--;
-        shipCount++;
-
-        totalAdjustedQty += d.originalQty;
-        reductionPct = totalOriginalQty > 0
-          ? (totalOriginalQty - totalAdjustedQty) / totalOriginalQty
-          : 0;
-      }
-    }
+    const exceedsCap = reductionPct > maxReduction;
 
     // Step 5: Propose additions if still over cap and requested
     let additionsProposed = 0;
@@ -606,7 +581,7 @@ async function runRevision(args) {
       originalTotalQty: totalOriginalQty,
       adjustedTotalQty: totalAdjustedQty,
       reductionPct: parseFloat((reductionPct * 100).toFixed(1)),
-      flippedBack,
+      exceedsCap,
       additionsProposed
     };
 
@@ -620,7 +595,7 @@ async function runRevision(args) {
     output += `Ship: ${summary.ship} | Cancel: ${summary.cancel} | Keep Open: ${summary.keepOpen}\n`;
     output += `Original Qty: ${summary.originalTotalQty} → Adjusted: ${summary.adjustedTotalQty}\n`;
     output += `Reduction: ${summary.reductionPct}%\n`;
-    if (flippedBack > 0) output += `Flipped back (cap enforcement): ${flippedBack}\n`;
+    if (exceedsCap) output += `⚠ EXCEEDS ${(maxReduction * 100).toFixed(0)}% CAP — consider adding items or increasing stock on key products\n`;
     if (additionsProposed > 0) output += `Additions proposed: ${additionsProposed}\n`;
 
     output += `\nDECISIONS\n${'─'.repeat(80)}\n`;

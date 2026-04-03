@@ -237,33 +237,13 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       });
     }
 
-    // Check reduction cap
+    // Calculate reduction
     let totalAdjustedQty = decisions.reduce((s, d) => s + d.adjustedQty, 0);
     let reductionPct = totalOriginalQty > 0
       ? (totalOriginalQty - totalAdjustedQty) / totalOriginalQty
       : 0;
 
-    let flippedBack = 0;
-
-    if (reductionPct > maxReduction) {
-      const flippable = decisions
-        .filter(d => d.decision === 'cancel' && !d.isDiscontinued && !d.receivedNotInventoried)
-        .sort((a, b) => a.onHand - b.onHand);
-
-      for (const d of flippable) {
-        if (reductionPct <= maxReduction) break;
-        d.decision = 'ship';
-        d.adjustedQty = d.originalQty;
-        d.reason = 'flipped_back_cap';
-        d.wasFlipped = true;
-        flippedBack++;
-        cancelCount--;
-        shipCount++;
-        totalAdjustedQty += d.originalQty;
-        reductionPct = totalOriginalQty > 0
-          ? (totalOriginalQty - totalAdjustedQty) / totalOriginalQty : 0;
-      }
-    }
+    const exceedsCap = reductionPct > maxReduction;
 
     // If not dry run, commit
     let revisionId = null;
@@ -350,7 +330,8 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
         originalTotalQty: totalOriginalQty,
         adjustedTotalQty: totalAdjustedQty,
         reductionPct: parseFloat((reductionPct * 100).toFixed(1)),
-        flippedBack
+        exceedsCap,
+        maxReductionPct: parseFloat((maxReduction * 100).toFixed(0))
       },
       decisions
     });

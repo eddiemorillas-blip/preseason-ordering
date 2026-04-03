@@ -23,7 +23,6 @@ const REASON_LABELS = {
   positive_stock_cancel: 'In stock',
   discontinued_product: 'Discontinued',
   received_not_inventoried: 'Sold (not in inv)',
-  flipped_back_cap: 'Flipped (cap)',
   user_override: 'Manual override',
 };
 
@@ -230,8 +229,7 @@ const Revisions = () => {
     const totalAdjustedQty = decisions.reduce((s, d) => s + d.adjustedQty, 0);
     const reductionPct = totalOriginalQty > 0
       ? parseFloat((((totalOriginalQty - totalAdjustedQty) / totalOriginalQty) * 100).toFixed(1)) : 0;
-    const flippedBack = decisions.filter(d => d.wasFlipped).length;
-    return { totalItems: decisions.length, ship, cancel, keepOpen, totalOriginalQty, totalAdjustedQty, reductionPct, flippedBack };
+    return { totalItems: decisions.length, ship, cancel, keepOpen, totalOriginalQty, totalAdjustedQty, reductionPct };
   }, [decisions, summary]);
 
   const handleApply = async () => {
@@ -699,9 +697,9 @@ const Revisions = () => {
                       </div>
                     </div>
 
-                    {liveSummary.flippedBack > 0 && (
+                    {liveSummary.reductionPct > maxReductionPct && (
                       <p className="text-sm text-amber-600 bg-amber-50 rounded px-3 py-2">
-                        {liveSummary.flippedBack} item{liveSummary.flippedBack !== 1 ? 's' : ''} flipped back to ship to stay within {maxReductionPct}% cap.
+                        Reduction of {liveSummary.reductionPct}% exceeds {maxReductionPct}% target. Use the AI chat to discuss which items to add or increase.
                       </p>
                     )}
 
@@ -768,7 +766,6 @@ const Revisions = () => {
                                   <td className="px-3 py-2 text-center">{d.adjustedQty}</td>
                                   <td className="px-3 py-2 text-xs text-gray-500">
                                     {REASON_LABELS[d.reason] || d.reason}
-                                    {d.wasFlipped && !d.userOverride && <span className="ml-1 text-amber-500">(flipped)</span>}
                                     {d.userOverride && <span className="ml-1 text-blue-500">(modified)</span>}
                                     {d.recentSales && <span className="ml-1 text-purple-500">({d.recentSales.qtySold} sold)</span>}
                                     {d.priorRevision && <span className="ml-1 text-gray-400">[prev: {d.priorRevision.decision}]</span>}
