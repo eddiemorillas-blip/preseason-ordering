@@ -2,8 +2,6 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import api, { brandTemplateAPI } from '../services/api';
 import Layout from '../components/Layout';
-import RevisionModal from '../components/RevisionModal';
-import RevisionHistoryPanel from '../components/RevisionHistoryPanel';
 import { useAuth } from '../context/AuthContext';
 
 // Simple SVG Pie Chart Component
@@ -104,9 +102,6 @@ const OrderManager = () => {
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const [showBulkStatusDropdown, setShowBulkStatusDropdown] = useState(false);
   const [updatingBulkStatus, setUpdatingBulkStatus] = useState(false);
-  const [showRevisionModal, setShowRevisionModal] = useState(false);
-  const [showRevisionHistory, setShowRevisionHistory] = useState(false);
-
   const [newSeason, setNewSeason] = useState({
     name: '',
     start_date: '',
@@ -853,9 +848,12 @@ const OrderManager = () => {
                       </div>
                       {!hasMultipleBrands && (
                         <button
-                          onClick={() => { console.log('Revise clicked, orders:', selectedOrders.size); setShowRevisionModal(true); }}
+                          onClick={() => {
+                            const brandId = selectedBrandIds[0] || selectedBrandId;
+                            navigate(`/revisions?season=${selectedSeasonId}&brand=${brandId}`);
+                          }}
                           className="px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700"
-                          title="Run revision workflow on selected orders"
+                          title="Open revision workflow"
                         >
                           Revise
                         </button>
@@ -1091,26 +1089,6 @@ const OrderManager = () => {
             brands={brands}
             locations={locations}
             onClose={() => { setShowBudgetModal(false); }}
-          />
-        )}
-
-        {showRevisionModal && (
-          <RevisionModal
-            selectedOrders={Array.from(selectedOrders).map(id => orders.find(o => o.id === id)).filter(Boolean)}
-            brandId={selectedBrandIds.length === 1 ? selectedBrandIds[0] : parseInt(selectedBrandId)}
-            brandName={selectedOrderBrand?.name || brands.find(b => b.id === parseInt(selectedBrandId))?.name}
-            seasonId={parseInt(selectedSeasonId)}
-            onClose={() => setShowRevisionModal(false)}
-            onComplete={() => { setShowRevisionModal(false); fetchOrdersAndBreakdown(); setSelectedOrders(new Set()); }}
-          />
-        )}
-
-        {showRevisionHistory && (
-          <RevisionHistoryPanel
-            brandId={parseInt(selectedBrandId) || selectedBrandIds[0]}
-            seasonId={parseInt(selectedSeasonId)}
-            brandName={brands.find(b => b.id === parseInt(selectedBrandId))?.name}
-            onClose={() => setShowRevisionHistory(false)}
           />
         )}
 

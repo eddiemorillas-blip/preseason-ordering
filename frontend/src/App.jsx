@@ -23,6 +23,7 @@ import ExportCenter from './pages/ExportCenter';
 import Help from './pages/Help';
 import FormTemplateManager from './pages/FormTemplateManager';
 import AIAssistant from './pages/AIAssistant';
+import Revisions from './pages/Revisions';
 
 function App() {
   return (
@@ -154,6 +155,14 @@ function App() {
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <BudgetManagement />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/revisions"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <Revisions />
               </ProtectedRoute>
             }
           />
