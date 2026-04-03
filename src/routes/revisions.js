@@ -815,8 +815,21 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
       return res.status(400).json({ error: 'No data rows with UPCs found in the spreadsheet' });
     }
 
-    // Bulk fetch on-hand from BigQuery
+    // Look up product details by UPC
     const uniqueUPCs = [...new Set(rowUPCs.map(r => r.upc))];
+    const productMap = {};
+    if (uniqueUPCs.length > 0) {
+      const upcPlaceholders = uniqueUPCs.map((_, i) => `$${i + 1}`).join(',');
+      const prodResult = await pool.query(
+        `SELECT upc, name, color, size FROM products WHERE upc IN (${upcPlaceholders})`,
+        uniqueUPCs
+      );
+      for (const row of prodResult.rows) {
+        if (row.upc) productMap[row.upc] = { name: row.name, color: row.color, size: row.size };
+      }
+    }
+
+    // Bulk fetch on-hand from BigQuery
     const upcList = uniqueUPCs.map(u => `'${u}'`).join(',');
 
     const [bqRows] = await bigquery.query({
@@ -916,9 +929,14 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
         shipCancelValue = item.committedQty > 0 ? getShipValue() : getKeepOpenValue(); shipCount++;
       }
 
+      const product = productMap[item.upc] || {};
+
       decisions.push({
         rowIndex: item.rowIndex,
         upc: item.upc,
+        productName: product.name || null,
+        color: product.color || null,
+        size: product.size || null,
         location: item.location,
         locationId: locId,
         orderedQty: item.orderedQty,

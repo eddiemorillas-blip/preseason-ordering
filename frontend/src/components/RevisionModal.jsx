@@ -368,7 +368,9 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50 sticky top-0">
                       <tr>
-                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">UPC</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Product</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Size</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Color</th>
                         <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Ordered</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">On Hand</th>
@@ -380,7 +382,12 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                     <tbody>
                       {spreadsheetDecisions.map((d, idx) => (
                         <tr key={idx} className={`border-t ${DECISION_COLORS[d.decision] || ''}`}>
-                          <td className="px-3 py-2 font-mono text-xs">{d.upc}</td>
+                          <td className="px-3 py-2">
+                            <div className="font-medium truncate max-w-[200px]">{d.productName || 'Unknown'}</div>
+                            <div className="text-xs text-gray-400 font-mono">{d.upc}</div>
+                          </td>
+                          <td className="px-3 py-2">{d.size || '-'}</td>
+                          <td className="px-3 py-2 text-xs">{d.color || '-'}</td>
                           <td className="px-3 py-2 text-xs">{d.location || '-'}</td>
                           <td className="px-3 py-2 text-center">{d.orderedQty}</td>
                           <td className="px-3 py-2 text-center">
@@ -490,6 +497,7 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                       <tr>
                         <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Product</th>
                         <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Size</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Color</th>
                         <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Orig Qty</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">On Hand</th>
@@ -508,6 +516,7 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                               <div className="text-xs text-gray-400">{d.upc}</div>
                             </td>
                             <td className="px-3 py-2">{d.size || '-'}</td>
+                            <td className="px-3 py-2 text-xs">{d.color || '-'}</td>
                             <td className="px-3 py-2 text-xs">{d.location}</td>
                             <td className="px-3 py-2 text-center">{d.originalQty}</td>
                             <td className="px-3 py-2 text-center font-medium">
