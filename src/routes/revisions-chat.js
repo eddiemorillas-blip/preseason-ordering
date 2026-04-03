@@ -294,8 +294,9 @@ router.post('/conversations/:id/messages', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Revision chat error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Revision chat error:', error?.status, error?.message, error?.error?.message);
+    const errMsg = error?.error?.message || error?.message || 'Unknown error';
+    res.status(error?.status || 500).json({ error: errMsg });
   }
 });
 

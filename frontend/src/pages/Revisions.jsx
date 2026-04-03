@@ -1076,10 +1076,25 @@ const Revisions = () => {
                 revisionContext={{
                   mode,
                   step,
-                  decisions: step === 'preview' && mode === 'orders' ? decisions : undefined,
-                  spreadsheetDecisions: step === 'preview' && mode === 'spreadsheet' ? spreadsheetDecisions : undefined,
+                  decisions: step === 'preview' && mode === 'orders' ? decisions.map(d => ({
+                    orderItemId: d.orderItemId, orderId: d.orderId, upc: d.upc,
+                    productName: d.productName, size: d.size, color: d.color,
+                    location: d.location, locationId: d.locationId,
+                    originalQty: d.originalQty, adjustedQty: d.adjustedQty,
+                    onHand: d.onHand, decision: d.decision, reason: d.reason
+                  })) : undefined,
+                  spreadsheetDecisions: step === 'preview' && mode === 'spreadsheet' ? spreadsheetDecisions.map(d => ({
+                    upc: d.upc, productName: d.productName, size: d.size, color: d.color,
+                    location: d.location, orderedQty: d.orderedQty, adjustedQty: d.adjustedQty,
+                    onHand: d.onHand, decision: d.decision, reason: d.reason
+                  })) : undefined,
                   summary: step === 'preview' ? (mode === 'spreadsheet' ? spreadsheetSummary : liveSummary) : undefined,
-                  compareResults: compareResults || undefined,
+                  compareResults: compareResults ? {
+                    summary: compareResults.summary,
+                    qtyMismatches: compareResults.qtyMismatches?.slice(0, 50),
+                    vendorOnly: compareResults.vendorOnly?.slice(0, 30),
+                    systemOnly: compareResults.systemOnly?.slice(0, 30),
+                  } : undefined,
                 }}
               />
             )}
