@@ -366,7 +366,7 @@ const Revisions = () => {
   const formatDate = (d) => d ? new Date(d).toLocaleDateString() : '-';
 
   return (
-    <Layout>
+    <Layout fullWidth>
       <div className="flex flex-col h-[calc(100vh-64px)]">
         {/* Top Bar: Season + Brand */}
         <div className="bg-white border-b px-4 py-3 flex items-center gap-4 flex-shrink-0">

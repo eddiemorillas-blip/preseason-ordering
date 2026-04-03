@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
-const Layout = ({ children }) => {
+const Layout = ({ children, fullWidth }) => {
   const { user, logout, isAdmin, isBuyer } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -178,7 +178,7 @@ const Layout = ({ children }) => {
       )}
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className={fullWidth ? '' : 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'}>
         {children}
       </main>
 
