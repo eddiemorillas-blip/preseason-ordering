@@ -1091,9 +1091,9 @@ const Revisions = () => {
                   summary: step === 'preview' ? (mode === 'spreadsheet' ? spreadsheetSummary : liveSummary) : undefined,
                   compareResults: compareResults ? {
                     summary: compareResults.summary,
-                    qtyMismatches: compareResults.qtyMismatches?.slice(0, 50),
-                    vendorOnly: compareResults.vendorOnly?.slice(0, 30),
-                    systemOnly: compareResults.systemOnly?.slice(0, 30),
+                    qtyMismatches: compareResults.qtyMismatches,
+                    vendorOnly: compareResults.vendorOnly,
+                    systemOnly: compareResults.systemOnly,
                   } : undefined,
                 }}
               />

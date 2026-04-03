@@ -126,61 +126,67 @@ router.post('/conversations/:id/messages', async (req, res) => {
         systemPrompt += `\n\nCURRENT CONTEXT:\n${contextParts.join('\n')}`;
       }
 
-      // Inject revision state if available
-      if (context.revisionContext) {
-        const rc = context.revisionContext;
-        let revisionInfo = '\n\nACTIVE REVISION STATE:';
-        revisionInfo += `\nMode: ${rc.mode || 'none'} | Step: ${rc.step || 'idle'}`;
+    }
 
-        if (rc.summary) {
-          revisionInfo += `\nSummary: ${rc.summary.totalItems || 0} items | Ship: ${rc.summary.ship || 0} | Cancel: ${rc.summary.cancel || 0} | Reduction: ${rc.summary.reductionPct || 0}%`;
-        }
+    // Build revision context as a separate data block (not in system prompt — too large)
+    let revisionDataMessage = null;
+    if (context?.revisionContext) {
+      const rc = context.revisionContext;
+      let data = `[REVISION DATA — This is the complete current revision state. Use this data to answer questions and take actions. DO NOT ask for order IDs — they are listed here.]\n`;
+      data += `Mode: ${rc.mode || 'none'} | Step: ${rc.step || 'idle'}\n`;
 
-        if (rc.compareResults?.summary) {
-          const cs = rc.compareResults.summary;
-          revisionInfo += `\nVendor Comparison: ${cs.vendorItems} vendor items | ${cs.matched} matched | ${cs.qtyMismatches} qty mismatches | ${cs.vendorOnly} vendor-only | ${cs.systemOnly} system-only`;
-        }
-
-        // Include decision details (truncated for context window)
-        const decisions = rc.decisions || rc.spreadsheetDecisions;
-        if (decisions && decisions.length > 0) {
-          revisionInfo += `\n\nDECISION DETAILS (${decisions.length} items):`;
-          const sample = decisions.slice(0, 100); // Cap at 100 to avoid huge prompts
-          for (const d of sample) {
-            revisionInfo += `\n  ${d.upc || '?'} | ${(d.productName || '').substring(0, 30)} | Size: ${d.size || '-'} | Location: ${d.location || '-'} | OnHand: ${d.onHand ?? '?'} | Decision: ${d.decision} | Qty: ${d.originalQty || d.orderedQty || '?'}→${d.adjustedQty ?? '?'} | Reason: ${d.reason || '-'}`;
-          }
-          if (decisions.length > 100) {
-            revisionInfo += `\n  ... and ${decisions.length - 100} more items`;
-          }
-        }
-
-        if (rc.compareResults?.qtyMismatches?.length > 0) {
-          revisionInfo += `\n\nQTY MISMATCHES:`;
-          for (const m of rc.compareResults.qtyMismatches.slice(0, 50)) {
-            revisionInfo += `\n  ${m.upc || '?'} | ${(m.productName || '').substring(0, 30)} | Vendor: ${m.vendorQty} | System: ${m.systemQty} | Diff: ${m.diff > 0 ? '+' : ''}${m.diff}`;
-          }
-        }
-
-        if (rc.compareResults?.vendorOnly?.length > 0) {
-          revisionInfo += `\n\nVENDOR-ONLY ITEMS (not in system):`;
-          for (const v of rc.compareResults.vendorOnly.slice(0, 30)) {
-            revisionInfo += `\n  ${v.upc || '?'} | ${(v.productName || '').substring(0, 30)} | Qty: ${v.vendorQty}`;
-          }
-        }
-
-        if (rc.compareResults?.systemOnly?.length > 0) {
-          revisionInfo += `\n\nSYSTEM-ONLY ITEMS (not in vendor form):`;
-          for (const s of rc.compareResults.systemOnly.slice(0, 30)) {
-            revisionInfo += `\n  ${s.upc || '?'} | ${(s.productName || '').substring(0, 30)} | Qty: ${s.systemQty}`;
-          }
-        }
-
-        systemPrompt += revisionInfo;
+      if (rc.summary) {
+        data += `Summary: ${rc.summary.totalItems || 0} items | Ship: ${rc.summary.ship || 0} | Cancel: ${rc.summary.cancel || 0} | Reduction: ${rc.summary.reductionPct || 0}%\n`;
       }
+
+      if (rc.compareResults?.summary) {
+        const cs = rc.compareResults.summary;
+        data += `Vendor Comparison: ${cs.vendorItems} vendor items | ${cs.matched} matched | ${cs.qtyMismatches} qty mismatches | ${cs.vendorOnly} vendor-only | ${cs.systemOnly} system-only\n`;
+      }
+
+      // ALL decision details — no cap
+      const decisions = rc.decisions || rc.spreadsheetDecisions;
+      if (decisions && decisions.length > 0) {
+        data += `\nALL ITEMS (${decisions.length}):\n`;
+        data += `orderItemId|orderId|UPC|Product|Size|Color|Location|LocationID|OnHand|Decision|OrigQty|AdjQty|Reason\n`;
+        for (const d of decisions) {
+          data += `${d.orderItemId || '-'}|${d.orderId || '-'}|${d.upc || '?'}|${(d.productName || '').substring(0, 35)}|${d.size || '-'}|${d.color || '-'}|${d.location || '-'}|${d.locationId || '-'}|${d.onHand ?? '?'}|${d.decision}|${d.originalQty || d.orderedQty || '?'}|${d.adjustedQty ?? '?'}|${d.reason || '-'}\n`;
+        }
+      }
+
+      if (rc.compareResults?.qtyMismatches?.length > 0) {
+        data += `\nQTY MISMATCHES:\n`;
+        for (const m of rc.compareResults.qtyMismatches) {
+          data += `${m.upc || '?'}|${(m.productName || '').substring(0, 35)}|Vendor:${m.vendorQty}|System:${m.systemQty}|Diff:${m.diff > 0 ? '+' : ''}${m.diff}\n`;
+        }
+      }
+
+      if (rc.compareResults?.vendorOnly?.length > 0) {
+        data += `\nVENDOR-ONLY (not in system):\n`;
+        for (const v of rc.compareResults.vendorOnly) {
+          data += `${v.upc || '?'}|${(v.productName || '').substring(0, 35)}|Qty:${v.vendorQty}\n`;
+        }
+      }
+
+      if (rc.compareResults?.systemOnly?.length > 0) {
+        data += `\nSYSTEM-ONLY (not in vendor form):\n`;
+        for (const s of rc.compareResults.systemOnly) {
+          data += `${s.upc || '?'}|${(s.productName || '').substring(0, 35)}|Qty:${s.systemQty}\n`;
+        }
+      }
+
+      revisionDataMessage = data;
     }
 
     // Build messages
     const messages = [];
+
+    // Inject revision data as first user/assistant exchange so it's always in context
+    if (revisionDataMessage) {
+      messages.push({ role: 'user', content: revisionDataMessage });
+      messages.push({ role: 'assistant', content: 'I have the complete revision data loaded. I can see all items, their decisions, quantities, and inventory levels. What would you like to do?' });
+    }
+
     historyResult.rows.forEach(msg => {
       if (msg.content && msg.content.trim()) {
         messages.push({ role: msg.role, content: msg.content });
