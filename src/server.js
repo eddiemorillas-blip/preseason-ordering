@@ -220,8 +220,8 @@ app.use('/api/scheduled', scheduledRoutes);
 app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/patterns', patternsRoutes);
 app.use('/api/batch-operations', batchOperationsRoutes);
-app.use('/api/revisions', revisionsRoutes);
 app.use('/api/revisions/chat', revisionsChatRoutes);
+app.use('/api/revisions', revisionsRoutes);
 
 // Serve static files from frontend build in production
 if (process.env.NODE_ENV === 'production') {
