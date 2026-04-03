@@ -202,6 +202,8 @@ router.post('/conversations/:id/messages', async (req, res) => {
     // Get MCP tool definitions
     const tools = getAnthropicToolDefinitions();
 
+    console.log('CHAT DEBUG: model=', model, 'messages=', messages.length, 'tools=', tools.length, 'systemPromptLen=', systemPrompt.length);
+
     // Call Anthropic
     let response = await anthropic.messages.create({
       model,
@@ -299,7 +301,13 @@ router.post('/conversations/:id/messages', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Revision chat error:', error?.status, error?.message, error?.error?.message);
+    console.error('CHAT ERROR FULL:', JSON.stringify({
+      status: error?.status,
+      message: error?.message,
+      errorMsg: error?.error?.message,
+      errorType: error?.error?.type,
+      stack: error?.stack?.split('\n').slice(0, 3)
+    }));
     const errMsg = error?.error?.message || error?.message || 'Unknown error';
     res.status(error?.status || 500).json({ error: errMsg });
   }
