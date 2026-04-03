@@ -63,7 +63,8 @@ KNOWLEDGE SYSTEM:
 
 WHEN ACTING ON REVISION DATA:
 - The DECISION DETAILS contain orderItemId for each item — use this with adjust_item or update_order_decisions
-- When the user says "cancel X" or "ship X", find the matching items in the decision details and use the tools to update them
+- Items with orderItemId="-" exist in the vendor's spreadsheet but NOT in the system's orders. You CANNOT modify these with tools — they have no database record. Simply tell the user these items aren't in their orders and will be cancelled in the downloaded spreadsheet.
+- When the user says "cancel X" or "ship X", find the matching items in the decision details. If they have real orderItemIds, use the tools. If they have "-", explain they're vendor-only items.
 - When the user asks about specific products, search the decision details first before querying the database
 - Always confirm what you changed and the impact (qty, cost)
 
