@@ -707,6 +707,181 @@ router.post('/template-preview', authorizeRoles('admin', 'buyer'), upload.single
 });
 
 /**
+ * POST /api/revisions/compare-spreadsheet
+ * Upload a vendor spreadsheet and compare against internal orders
+ */
+router.post('/compare-spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
+  try {
+    const { brandId, seasonId } = req.body;
+
+    if (!req.file) return res.status(400).json({ error: 'File is required' });
+    if (!brandId) return res.status(400).json({ error: 'brandId is required' });
+
+    // Load template
+    let template = null;
+    const tRes = await pool.query(
+      'SELECT * FROM brand_order_templates WHERE brand_id = $1 AND active = true ORDER BY updated_at DESC LIMIT 1',
+      [brandId]
+    );
+    if (tRes.rows.length > 0) template = tRes.rows[0];
+
+    // Parse Excel
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    let sheetName = workbook.SheetNames[0];
+    if (template?.sheet_name) {
+      const match = workbook.SheetNames.find(s => s.toLowerCase() === template.sheet_name.toLowerCase());
+      if (match) sheetName = match;
+    }
+    const worksheet = workbook.Sheets[sheetName];
+    const allData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+
+    const columns = template?.column_mappings || {};
+    const headerRow = (template?.header_row || 1) - 1;
+    const dataStartRow = (template?.data_start_row || 2) - 1;
+    const headers = allData[headerRow] || [];
+
+    // Find UPC column
+    let upcCol = columns.upc != null ? columns.upc - 1 : -1;
+    if (upcCol < 0) upcCol = headers.findIndex(h => h && /upc|barcode|ean/i.test(h.toString()));
+    if (upcCol < 0) return res.status(400).json({ error: 'Could not find UPC column', headers: headers.filter(Boolean) });
+
+    // Find location + qty columns
+    let locationCol = columns.ship_to_location != null ? columns.ship_to_location - 1 : -1;
+    if (locationCol < 0) locationCol = headers.findIndex(h => h && /location|ship.?to|dealer/i.test(h.toString()));
+    let orderedCol = columns.ordered != null ? columns.ordered - 1 : -1;
+    let committedCol = columns.committed != null ? columns.committed - 1 : -1;
+
+    // Location mapping
+    const locationMapping = template?.location_mapping || {};
+    const resolveLocationId = (locName) => {
+      if (!locName) return null;
+      if (locationMapping[locName]) return locationMapping[locName];
+      const lower = locName.toLowerCase();
+      if (lower.includes('salt lake') || lower.includes('slc')) return 1;
+      if (lower.includes('south main') || lower.includes('millcreek')) return 2;
+      if (lower.includes('ogden')) return 3;
+      return null;
+    };
+
+    // Parse vendor items
+    const vendorItems = [];
+    for (let r = dataStartRow; r < allData.length; r++) {
+      const row = allData[r];
+      const upc = row[upcCol]?.toString().trim();
+      if (!upc) continue;
+      const location = locationCol >= 0 ? row[locationCol]?.toString().trim() : null;
+      const locationId = resolveLocationId(location);
+      const vendorQty = committedCol >= 0 ? (parseInt(row[committedCol]) || 0) : (orderedCol >= 0 ? (parseInt(row[orderedCol]) || 0) : 0);
+      vendorItems.push({ upc, location, locationId, vendorQty });
+    }
+
+    // Get system order items for this brand/season
+    let systemQuery = `
+      SELECT oi.id, p.upc, p.name AS product_name, p.size, p.color,
+             oi.quantity, COALESCE(oi.adjusted_quantity, oi.quantity) AS current_qty,
+             oi.vendor_decision, o.location_id, l.name AS location_name
+      FROM order_items oi
+      JOIN products p ON oi.product_id = p.id
+      JOIN orders o ON oi.order_id = o.id
+      JOIN locations l ON o.location_id = l.id
+      WHERE o.brand_id = $1
+    `;
+    const params = [brandId];
+    if (seasonId) { systemQuery += ' AND o.season_id = $2'; params.push(seasonId); }
+
+    const systemResult = await pool.query(systemQuery, params);
+
+    // Build system lookup: upc+locationId -> item
+    const systemMap = {};
+    for (const item of systemResult.rows) {
+      const key = `${item.upc}|${item.location_id}`;
+      if (!systemMap[key]) systemMap[key] = item;
+    }
+
+    // Look up product details for vendor UPCs
+    const vendorUPCs = [...new Set(vendorItems.map(v => v.upc))];
+    const productMap = {};
+    if (vendorUPCs.length > 0) {
+      const placeholders = vendorUPCs.map((_, i) => `$${i + 1}`).join(',');
+      const prodRes = await pool.query(`SELECT upc, name, size, color FROM products WHERE upc IN (${placeholders})`, vendorUPCs);
+      for (const p of prodRes.rows) { if (p.upc) productMap[p.upc] = p; }
+    }
+
+    // Compare
+    const matched = [];
+    const qtyMismatches = [];
+    const vendorOnly = [];
+    const vendorSeen = new Set();
+
+    for (const v of vendorItems) {
+      const key = v.locationId ? `${v.upc}|${v.locationId}` : null;
+      const systemItem = key ? systemMap[key] : null;
+      const product = productMap[v.upc] || {};
+
+      if (systemItem) {
+        vendorSeen.add(key);
+        const systemQty = systemItem.current_qty;
+        if (v.vendorQty !== systemQty) {
+          qtyMismatches.push({
+            upc: v.upc,
+            productName: systemItem.product_name || product.name,
+            size: systemItem.size || product.size,
+            location: v.location || systemItem.location_name,
+            vendorQty: v.vendorQty,
+            systemQty,
+            diff: v.vendorQty - systemQty,
+            vendorDecision: systemItem.vendor_decision
+          });
+        } else {
+          matched.push({ upc: v.upc, productName: systemItem.product_name, qty: systemQty });
+        }
+      } else {
+        vendorOnly.push({
+          upc: v.upc,
+          productName: product.name || null,
+          size: product.size || null,
+          location: v.location,
+          vendorQty: v.vendorQty
+        });
+      }
+    }
+
+    // System items not in vendor form
+    const systemOnly = [];
+    for (const [key, item] of Object.entries(systemMap)) {
+      if (!vendorSeen.has(key) && item.current_qty > 0) {
+        systemOnly.push({
+          upc: item.upc,
+          productName: item.product_name,
+          size: item.size,
+          color: item.color,
+          location: item.location_name,
+          systemQty: item.current_qty,
+          vendorDecision: item.vendor_decision
+        });
+      }
+    }
+
+    res.json({
+      summary: {
+        vendorItems: vendorItems.length,
+        matched: matched.length,
+        qtyMismatches: qtyMismatches.length,
+        vendorOnly: vendorOnly.length,
+        systemOnly: systemOnly.length
+      },
+      matched,
+      qtyMismatches,
+      vendorOnly,
+      systemOnly
+    });
+  } catch (error) {
+    console.error('Compare spreadsheet error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/revisions/spreadsheet
  * Upload a vendor spreadsheet, run revision logic, fill in decisions, return modified file.
  * Also returns a JSON summary for the UI preview.
