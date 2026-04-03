@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import api, { revisionAPI } from '../services/api';
 import Layout from '../components/Layout';
 import VendorTemplateEditor from '../components/VendorTemplateEditor';
+import RevisionChat from '../components/RevisionChat';
 import { useAuth } from '../context/AuthContext';
 
 const DECISION_COLORS = {
@@ -915,6 +916,16 @@ const Revisions = () => {
                 )}
               </div>
             </div>
+
+            {/* CHAT PANEL */}
+            {selectedBrandId && (
+              <RevisionChat
+                brandId={parseInt(selectedBrandId)}
+                seasonId={parseInt(selectedSeasonId)}
+                orderIds={orderIds}
+                brandName={selectedBrand?.name}
+              />
+            )}
           </div>
         )}
       </div>
