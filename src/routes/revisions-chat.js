@@ -3,7 +3,18 @@ const router = express.Router();
 const Anthropic = require('@anthropic-ai/sdk');
 const pool = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
-const { getAnthropicToolDefinitions, executeTool } = require('../services/mcpToolBridge');
+
+let getAnthropicToolDefinitions, executeTool;
+try {
+  const bridge = require('../services/mcpToolBridge');
+  getAnthropicToolDefinitions = bridge.getAnthropicToolDefinitions;
+  executeTool = bridge.executeTool;
+  console.log('MCP Tool Bridge loaded successfully, tools:', bridge.allMcpTools.length);
+} catch (err) {
+  console.error('FAILED TO LOAD MCP TOOL BRIDGE:', err.message, err.stack);
+  getAnthropicToolDefinitions = () => [];
+  executeTool = async () => 'MCP tools not available';
+}
 
 const anthropic = process.env.ANTHROPIC_API_KEY
   ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
