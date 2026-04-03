@@ -1073,6 +1073,14 @@ const Revisions = () => {
                 seasonId={parseInt(selectedSeasonId)}
                 orderIds={orderIds}
                 brandName={selectedBrand?.name}
+                revisionContext={{
+                  mode,
+                  step,
+                  decisions: step === 'preview' && mode === 'orders' ? decisions : undefined,
+                  spreadsheetDecisions: step === 'preview' && mode === 'spreadsheet' ? spreadsheetDecisions : undefined,
+                  summary: step === 'preview' ? (mode === 'spreadsheet' ? spreadsheetSummary : liveSummary) : undefined,
+                  compareResults: compareResults || undefined,
+                }}
               />
             )}
           </div>

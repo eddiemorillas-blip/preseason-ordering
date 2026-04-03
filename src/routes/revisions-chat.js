@@ -118,6 +118,58 @@ router.post('/conversations/:id/messages', async (req, res) => {
       if (contextParts.length > 0) {
         systemPrompt += `\n\nCURRENT CONTEXT:\n${contextParts.join('\n')}`;
       }
+
+      // Inject revision state if available
+      if (context.revisionContext) {
+        const rc = context.revisionContext;
+        let revisionInfo = '\n\nACTIVE REVISION STATE:';
+        revisionInfo += `\nMode: ${rc.mode || 'none'} | Step: ${rc.step || 'idle'}`;
+
+        if (rc.summary) {
+          revisionInfo += `\nSummary: ${rc.summary.totalItems || 0} items | Ship: ${rc.summary.ship || 0} | Cancel: ${rc.summary.cancel || 0} | Reduction: ${rc.summary.reductionPct || 0}%`;
+        }
+
+        if (rc.compareResults?.summary) {
+          const cs = rc.compareResults.summary;
+          revisionInfo += `\nVendor Comparison: ${cs.vendorItems} vendor items | ${cs.matched} matched | ${cs.qtyMismatches} qty mismatches | ${cs.vendorOnly} vendor-only | ${cs.systemOnly} system-only`;
+        }
+
+        // Include decision details (truncated for context window)
+        const decisions = rc.decisions || rc.spreadsheetDecisions;
+        if (decisions && decisions.length > 0) {
+          revisionInfo += `\n\nDECISION DETAILS (${decisions.length} items):`;
+          const sample = decisions.slice(0, 100); // Cap at 100 to avoid huge prompts
+          for (const d of sample) {
+            revisionInfo += `\n  ${d.upc || '?'} | ${(d.productName || '').substring(0, 30)} | Size: ${d.size || '-'} | Location: ${d.location || '-'} | OnHand: ${d.onHand ?? '?'} | Decision: ${d.decision} | Qty: ${d.originalQty || d.orderedQty || '?'}→${d.adjustedQty ?? '?'} | Reason: ${d.reason || '-'}`;
+          }
+          if (decisions.length > 100) {
+            revisionInfo += `\n  ... and ${decisions.length - 100} more items`;
+          }
+        }
+
+        if (rc.compareResults?.qtyMismatches?.length > 0) {
+          revisionInfo += `\n\nQTY MISMATCHES:`;
+          for (const m of rc.compareResults.qtyMismatches.slice(0, 50)) {
+            revisionInfo += `\n  ${m.upc || '?'} | ${(m.productName || '').substring(0, 30)} | Vendor: ${m.vendorQty} | System: ${m.systemQty} | Diff: ${m.diff > 0 ? '+' : ''}${m.diff}`;
+          }
+        }
+
+        if (rc.compareResults?.vendorOnly?.length > 0) {
+          revisionInfo += `\n\nVENDOR-ONLY ITEMS (not in system):`;
+          for (const v of rc.compareResults.vendorOnly.slice(0, 30)) {
+            revisionInfo += `\n  ${v.upc || '?'} | ${(v.productName || '').substring(0, 30)} | Qty: ${v.vendorQty}`;
+          }
+        }
+
+        if (rc.compareResults?.systemOnly?.length > 0) {
+          revisionInfo += `\n\nSYSTEM-ONLY ITEMS (not in vendor form):`;
+          for (const s of rc.compareResults.systemOnly.slice(0, 30)) {
+            revisionInfo += `\n  ${s.upc || '?'} | ${(s.productName || '').substring(0, 30)} | Qty: ${s.systemQty}`;
+          }
+        }
+
+        systemPrompt += revisionInfo;
+      }
     }
 
     // Build messages

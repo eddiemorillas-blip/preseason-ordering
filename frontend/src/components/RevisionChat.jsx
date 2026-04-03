@@ -11,7 +11,7 @@ const THINKING_MESSAGES = [
   'Almost there...',
 ];
 
-const RevisionChat = ({ brandId, seasonId, orderIds, brandName }) => {
+const RevisionChat = ({ brandId, seasonId, orderIds, brandName, revisionContext }) => {
   const [conversationId, setConversationId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -58,7 +58,7 @@ const RevisionChat = ({ brandId, seasonId, orderIds, brandName }) => {
       const res = await api.post(`/revisions/chat/conversations/${conversationId}/messages`, {
         message: text,
         model,
-        context: { brandId, seasonId, orderIds }
+        context: { brandId, seasonId, orderIds, revisionContext }
       });
 
       const assistantMsg = {
