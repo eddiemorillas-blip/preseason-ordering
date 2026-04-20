@@ -65,6 +65,7 @@ const Revisions = () => {
   const [reconcileApplied, setReconcileApplied] = useState(false);
   const [reconcilePaste, setReconcilePaste] = useState('');
   const [reconcileInputMode, setReconcileInputMode] = useState('paste'); // paste | file
+  const [pasteColumns, setPasteColumns] = useState({ upc: '', location: '', qty: '' }); // user-selected column indices (0-based) or ''
 
   // Spreadsheet state
   const [spreadsheetFile, setSpreadsheetFile] = useState(null);
@@ -235,6 +236,15 @@ const Revisions = () => {
     formData.append('seasonId', selectedSeasonId);
     formData.append('orderIds', JSON.stringify(orderIds));
     formData.append('dryRun', isDryRun ? 'true' : 'false');
+    // Send user-selected column overrides if any are set
+    const hasOverrides = pasteColumns.upc !== '' || pasteColumns.location !== '' || pasteColumns.qty !== '';
+    if (hasOverrides) {
+      formData.append('columnOverrides', JSON.stringify({
+        upc: pasteColumns.upc !== '' ? parseInt(pasteColumns.upc) : null,
+        location: pasteColumns.location !== '' ? parseInt(pasteColumns.location) : null,
+        qty: pasteColumns.qty !== '' ? parseInt(pasteColumns.qty) : null,
+      }));
+    }
     return formData;
   };
 
@@ -496,6 +506,7 @@ const Revisions = () => {
     setCompareResults(null);
     setReconcileFile(null);
     setReconcilePaste('');
+    setPasteColumns({ upc: '', location: '', qty: '' });
     setReconcileResults(null);
     setReconcileApplied(false);
     setReconcileInputMode('paste');
@@ -803,13 +814,83 @@ const Revisions = () => {
                             {' '}If quantities differ, the brand's order takes precedence.
                           </p>
                           {reconcileInputMode === 'paste' ? (
-                            <textarea
-                              value={reconcilePaste}
-                              onChange={e => setReconcilePaste(e.target.value)}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono"
-                              rows={6}
-                              placeholder={"8020647637812\tSLC\t2\n8020647637829\tOgden\t1\n8020647637836\tSouth Main\t3"}
-                            />
+                            <>
+                              <textarea
+                                value={reconcilePaste}
+                                onChange={e => { setReconcilePaste(e.target.value); setPasteColumns({ upc: '', location: '', qty: '' }); }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono"
+                                rows={6}
+                                placeholder={"8020647637812\tSLC\t2\n8020647637829\tOgden\t1\n8020647637836\tSouth Main\t3"}
+                              />
+                              {/* Column mapper — shows preview of pasted data with column assignment */}
+                              {reconcilePaste.trim() && (() => {
+                                const previewLines = reconcilePaste.trim().split(/\r?\n/).slice(0, 5);
+                                const previewRows = previewLines.map(l => l.split(/\t|(?:\s{2,})|\|/).map(s => s.trim()).filter(Boolean));
+                                const maxCols = Math.max(...previewRows.map(r => r.length), 0);
+                                if (maxCols === 0) return null;
+                                return (
+                                  <div className="mt-3 border rounded-lg overflow-hidden">
+                                    <div className="bg-gray-50 px-3 py-1.5 border-b flex items-center justify-between">
+                                      <span className="text-xs font-medium text-gray-600">Column Mapping</span>
+                                      <span className="text-xs text-gray-400">Assign columns or leave on Auto</span>
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="bg-gray-50 border-b">
+                                            {Array.from({ length: maxCols }, (_, i) => (
+                                              <th key={i} className="px-2 py-1.5 text-center">
+                                                <select
+                                                  value={
+                                                    pasteColumns.upc === String(i) ? 'upc' :
+                                                    pasteColumns.location === String(i) ? 'location' :
+                                                    pasteColumns.qty === String(i) ? 'qty' : ''
+                                                  }
+                                                  onChange={e => {
+                                                    const role = e.target.value;
+                                                    setPasteColumns(prev => {
+                                                      const next = { ...prev };
+                                                      // Clear this column from any previous role
+                                                      for (const k of ['upc', 'location', 'qty']) {
+                                                        if (next[k] === String(i)) next[k] = '';
+                                                      }
+                                                      // Assign new role
+                                                      if (role) next[role] = String(i);
+                                                      return next;
+                                                    });
+                                                  }}
+                                                  className="w-full px-1 py-0.5 border border-gray-300 rounded text-xs bg-white"
+                                                >
+                                                  <option value="">Auto</option>
+                                                  <option value="upc">UPC</option>
+                                                  <option value="location">Location</option>
+                                                  <option value="qty">Qty</option>
+                                                </select>
+                                              </th>
+                                            ))}
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {previewRows.map((row, ri) => (
+                                            <tr key={ri} className="border-t">
+                                              {Array.from({ length: maxCols }, (_, ci) => (
+                                                <td key={ci} className={`px-2 py-1 font-mono ${
+                                                  pasteColumns.upc === String(ci) ? 'bg-blue-50 text-blue-700' :
+                                                  pasteColumns.location === String(ci) ? 'bg-green-50 text-green-700' :
+                                                  pasteColumns.qty === String(ci) ? 'bg-amber-50 text-amber-700' : 'text-gray-600'
+                                                }`}>
+                                                  {row[ci] || ''}
+                                                </td>
+                                              ))}
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            </>
                           ) : (
                             <input
                               type="file"

@@ -930,7 +930,7 @@ router.post('/compare-spreadsheet', authorizeRoles('admin', 'buyer'), upload.sin
  */
 router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
   try {
-    const { brandId, seasonId, orderIds: orderIdsRaw, dryRun, pastedText } = req.body;
+    const { brandId, seasonId, orderIds: orderIdsRaw, dryRun, pastedText, columnOverrides: columnOverridesRaw } = req.body;
 
     if (!req.file && !pastedText) return res.status(400).json({ error: 'File or pasted text is required' });
     if (!brandId) return res.status(400).json({ error: 'brandId is required' });
@@ -965,46 +965,85 @@ router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'
 
     if (isPaste) {
       // --- Pasted text parsing ---
-      // Split on newlines, tokenize each line by tabs, pipes, commas, or 2+ spaces
+      // Priority: user column overrides > brand template > auto-detect
+      const overrides = columnOverridesRaw ? JSON.parse(columnOverridesRaw) : {};
+      const columns = template?.column_mappings || {};
+
+      // User overrides are already 0-based; template values are 1-based
+      const tplUpcCol = overrides.upc != null ? overrides.upc : (columns.upc != null ? columns.upc - 1 : -1);
+      const tplLocCol = overrides.location != null ? overrides.location : (columns.ship_to_location != null ? columns.ship_to_location - 1 : -1);
+      const tplQtyCol = overrides.qty != null ? overrides.qty : (columns.committed != null ? columns.committed - 1 : (columns.ordered != null ? columns.ordered - 1 : -1));
+      const hasColumns = tplUpcCol >= 0;
+      const dataStartRow = (template?.data_start_row || 1) - 1;
+
+      // Split on newlines, tokenize each line by tabs, pipes, or 2+ spaces
       const lines = pastedText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
       const tokenize = (line) => line.split(/\t|(?:\s{2,})|\|/).map(s => s.trim()).filter(Boolean);
 
-      for (const line of lines) {
-        const tokens = tokenize(line);
-        // Find UPC token (8-14 digits)
+      for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        // Skip header rows if template says data starts later
+        if (hasColumns && lineIdx < dataStartRow) continue;
+
+        const tokens = tokenize(lines[lineIdx]);
         let upc = null, upcTokenIdx = -1;
-        for (let i = 0; i < tokens.length; i++) {
-          const cleaned = tokens[i].replace(/[^0-9]/g, '');
-          if (/^\d{8,14}$/.test(cleaned)) {
-            upc = cleaned; upcTokenIdx = i; break;
-          }
-        }
-        if (!upc) continue;
-
-        // Find location
         let location = null;
-        for (let i = 0; i < tokens.length; i++) {
-          if (i === upcTokenIdx) continue;
-          const lower = tokens[i].toLowerCase();
-          if (lower.includes('slc') || lower.includes('salt lake') ||
-              lower.includes('south main') || lower.includes('millcreek') ||
-              lower.includes('ogden')) {
-            location = tokens[i]; break;
+        let qty = 0;
+
+        if (hasColumns) {
+          // Use template column positions
+          if (tplUpcCol >= 0 && tplUpcCol < tokens.length) {
+            const cleaned = tokens[tplUpcCol].replace(/[^0-9]/g, '');
+            if (/^\d{8,14}$/.test(cleaned)) { upc = cleaned; upcTokenIdx = tplUpcCol; }
+          }
+          if (!upc) continue;
+
+          if (tplLocCol >= 0 && tplLocCol < tokens.length) {
+            location = tokens[tplLocCol];
+          }
+          if (tplQtyCol >= 0 && tplQtyCol < tokens.length) {
+            qty = parseInt(tokens[tplQtyCol]) || 0;
+          }
+        } else {
+          // Auto-detect: find UPC token (8-14 digits)
+          for (let i = 0; i < tokens.length; i++) {
+            const cleaned = tokens[i].replace(/[^0-9]/g, '');
+            if (/^\d{8,14}$/.test(cleaned)) {
+              upc = cleaned; upcTokenIdx = i; break;
+            }
+          }
+          if (!upc) continue;
+
+          // Auto-detect location
+          for (let i = 0; i < tokens.length; i++) {
+            if (i === upcTokenIdx) continue;
+            const lower = tokens[i].toLowerCase();
+            if (lower.includes('slc') || lower.includes('salt lake') ||
+                lower.includes('south main') || lower.includes('millcreek') ||
+                lower.includes('ogden')) {
+              location = tokens[i]; break;
+            }
+          }
+
+          // Auto-detect qty: last small numeric token that isn't the UPC
+          for (let i = tokens.length - 1; i >= 0; i--) {
+            if (i === upcTokenIdx) continue;
+            const num = parseInt(tokens[i]);
+            if (!isNaN(num) && num >= 0 && num < 10000 && tokens[i].trim().length <= 5) {
+              qty = num; break;
+            }
           }
         }
 
-        // Find qty: last small numeric token that isn't the UPC
-        let qty = 0;
-        for (let i = tokens.length - 1; i >= 0; i--) {
-          if (i === upcTokenIdx) continue;
-          const num = parseInt(tokens[i]);
-          if (!isNaN(num) && num >= 0 && num < 10000 && tokens[i].trim().length <= 5) {
-            qty = num; break;
+        // Also check location against template's location_mapping keys
+        if (!location) {
+          for (let i = 0; i < tokens.length; i++) {
+            if (i === upcTokenIdx) continue;
+            if (locationMapping[tokens[i]]) { location = tokens[i]; break; }
           }
         }
 
         const locationId = resolveLocationId(location);
-        brandItems.push({ upc, location, locationId, qty, rowIndex: lines.indexOf(line) });
+        brandItems.push({ upc, location, locationId, qty, rowIndex: lineIdx });
       }
 
       if (brandItems.length === 0) {
