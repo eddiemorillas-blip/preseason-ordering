@@ -1049,7 +1049,7 @@ const Revisions = () => {
                     {reconcileResults.brandOnly?.length > 0 && (
                       <details className="border border-purple-200 rounded-lg">
                         <summary className="px-4 py-2 text-sm font-medium text-purple-800 cursor-pointer hover:bg-purple-50">
-                          {reconcileResults.brandOnly.length} item{reconcileResults.brandOnly.length !== 1 ? 's' : ''} in brand order but not in your system
+                          {reconcileResults.brandOnly.length} item{reconcileResults.brandOnly.length !== 1 ? 's' : ''} in brand order but not in your system — will be added
                         </summary>
                         <div className="max-h-40 overflow-y-auto border-t">
                           <table className="w-full text-xs">
@@ -1070,7 +1070,7 @@ const Revisions = () => {
 
                     {/* Action buttons */}
                     <div className="flex gap-2 pt-2">
-                      {(reconcileResults.summary?.qtyChanges > 0 || reconcileResults.summary?.systemOnly > 0) ? (
+                      {(reconcileResults.summary?.qtyChanges > 0 || reconcileResults.summary?.systemOnly > 0 || reconcileResults.summary?.brandOnly > 0) ? (
                         <>
                           <button onClick={handleSkipReconcile} disabled={loading}
                             className="px-4 py-2 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-50">
@@ -1107,7 +1107,7 @@ const Revisions = () => {
                     {/* Reconcile banner */}
                     {reconcileApplied && reconcileResults?.applied && (
                       <div className="bg-blue-50 border border-blue-200 rounded-md px-3 py-2 text-sm text-blue-800">
-                        Brand order synced: {reconcileResults.applied.qtyUpdated} quantities updated, {reconcileResults.applied.systemItemsCancelled} items cancelled to match brand.
+                        Brand order synced: {reconcileResults.applied.qtyUpdated} quantities updated, {reconcileResults.applied.itemsAdded || 0} items added, {reconcileResults.applied.systemItemsCancelled} items cancelled.
                       </div>
                     )}
 

@@ -1311,8 +1311,38 @@ router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'
     }
 
     // If not dry run, apply brand's order as source of truth
-    const applied = { qtyUpdated: 0, systemItemsCancelled: 0 };
+    const applied = { qtyUpdated: 0, systemItemsCancelled: 0, itemsAdded: 0 };
     if (!isDryRun) {
+      // Build order lookup by location for inserting brand-only items
+      const orderByLocation = {};
+      for (const item of systemResult.rows) {
+        if (!orderByLocation[item.location_id]) {
+          orderByLocation[item.location_id] = item.order_id;
+        }
+      }
+      // Fallback: if we have selected orderIds, map them to locations
+      if (orderIds.length > 0 && Object.keys(orderByLocation).length === 0) {
+        const orderLocRes = await pool.query(
+          `SELECT id, location_id FROM orders WHERE id = ANY($1::int[])`, [orderIds]
+        );
+        for (const row of orderLocRes.rows) {
+          orderByLocation[row.location_id] = row.id;
+        }
+      }
+      const fallbackOrderId = orderIds[0] || Object.values(orderByLocation)[0];
+
+      // Get product prices for brand-only items we need to insert
+      const brandOnlyProductIds = brandOnly.filter(b => b.productId).map(b => b.productId);
+      const priceMap = {};
+      if (brandOnlyProductIds.length > 0) {
+        const pricePlaceholders = brandOnlyProductIds.map((_, i) => `$${i + 1}`).join(',');
+        const priceRes = await pool.query(
+          `SELECT id, wholesale_cost FROM products WHERE id IN (${pricePlaceholders})`,
+          brandOnlyProductIds
+        );
+        for (const p of priceRes.rows) priceMap[p.id] = parseFloat(p.wholesale_cost) || 0;
+      }
+
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -1335,10 +1365,28 @@ router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'
           applied.systemItemsCancelled++;
         }
 
+        // Add brand-only items as new order_items (if product exists in our system)
+        for (const item of brandOnly) {
+          if (!item.productId || item.brandQty <= 0) continue;
+          const targetOrderId = (item.locationId && orderByLocation[item.locationId])
+            ? orderByLocation[item.locationId]
+            : fallbackOrderId;
+          if (!targetOrderId) continue;
+
+          const unitCost = priceMap[item.productId] || 0;
+          await client.query(
+            `INSERT INTO order_items (order_id, product_id, quantity, adjusted_quantity, unit_cost, line_total)
+             VALUES ($1, $2, $3, $3, $4, $5)`,
+            [targetOrderId, item.productId, item.brandQty, unitCost, unitCost * item.brandQty]
+          );
+          applied.itemsAdded++;
+        }
+
         // Update order timestamps
         const affectedOrderIds = new Set([
           ...qtyChanges.map(c => c.orderId),
           ...systemOnly.map(s => s.orderId),
+          ...(applied.itemsAdded > 0 ? Object.values(orderByLocation) : []),
         ]);
         for (const oid of affectedOrderIds) {
           await client.query('UPDATE orders SET updated_at = NOW() WHERE id = $1', [oid]);
