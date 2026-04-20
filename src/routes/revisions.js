@@ -930,15 +930,16 @@ router.post('/compare-spreadsheet', authorizeRoles('admin', 'buyer'), upload.sin
  */
 router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
   try {
-    const { brandId, seasonId, orderIds: orderIdsRaw, dryRun } = req.body;
+    const { brandId, seasonId, orderIds: orderIdsRaw, dryRun, pastedText } = req.body;
 
-    if (!req.file) return res.status(400).json({ error: 'File is required' });
+    if (!req.file && !pastedText) return res.status(400).json({ error: 'File or pasted text is required' });
     if (!brandId) return res.status(400).json({ error: 'brandId is required' });
 
     const orderIds = orderIdsRaw ? JSON.parse(orderIdsRaw) : [];
     const isDryRun = dryRun === 'false' ? false : true;
-    const isPdf = req.file.originalname.toLowerCase().endsWith('.pdf') ||
-                  req.file.mimetype === 'application/pdf';
+    const isPdf = req.file && (req.file.originalname.toLowerCase().endsWith('.pdf') ||
+                  req.file.mimetype === 'application/pdf');
+    const isPaste = !req.file && !!pastedText;
 
     // Load template
     let template = null;
@@ -962,7 +963,58 @@ router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'
 
     let brandItems = [];
 
-    if (isPdf) {
+    if (isPaste) {
+      // --- Pasted text parsing ---
+      // Split on newlines, tokenize each line by tabs, pipes, commas, or 2+ spaces
+      const lines = pastedText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const tokenize = (line) => line.split(/\t|(?:\s{2,})|\|/).map(s => s.trim()).filter(Boolean);
+
+      for (const line of lines) {
+        const tokens = tokenize(line);
+        // Find UPC token (8-14 digits)
+        let upc = null, upcTokenIdx = -1;
+        for (let i = 0; i < tokens.length; i++) {
+          const cleaned = tokens[i].replace(/[^0-9]/g, '');
+          if (/^\d{8,14}$/.test(cleaned)) {
+            upc = cleaned; upcTokenIdx = i; break;
+          }
+        }
+        if (!upc) continue;
+
+        // Find location
+        let location = null;
+        for (let i = 0; i < tokens.length; i++) {
+          if (i === upcTokenIdx) continue;
+          const lower = tokens[i].toLowerCase();
+          if (lower.includes('slc') || lower.includes('salt lake') ||
+              lower.includes('south main') || lower.includes('millcreek') ||
+              lower.includes('ogden')) {
+            location = tokens[i]; break;
+          }
+        }
+
+        // Find qty: last small numeric token that isn't the UPC
+        let qty = 0;
+        for (let i = tokens.length - 1; i >= 0; i--) {
+          if (i === upcTokenIdx) continue;
+          const num = parseInt(tokens[i]);
+          if (!isNaN(num) && num >= 0 && num < 10000 && tokens[i].trim().length <= 5) {
+            qty = num; break;
+          }
+        }
+
+        const locationId = resolveLocationId(location);
+        brandItems.push({ upc, location, locationId, qty, rowIndex: lines.indexOf(line) });
+      }
+
+      if (brandItems.length === 0) {
+        return res.status(400).json({
+          error: 'Could not find UPC numbers in pasted text. Paste rows containing UPCs, locations, and quantities.',
+          lineCount: lines.length,
+          sampleLines: lines.slice(0, 5),
+        });
+      }
+    } else if (isPdf) {
       // --- PDF parsing ---
       const parsed = await parsePdfToRows(req.file.buffer);
 

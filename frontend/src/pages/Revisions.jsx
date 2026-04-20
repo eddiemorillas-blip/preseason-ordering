@@ -63,6 +63,8 @@ const Revisions = () => {
   const [reconcileFile, setReconcileFile] = useState(null);
   const [reconcileResults, setReconcileResults] = useState(null);
   const [reconcileApplied, setReconcileApplied] = useState(false);
+  const [reconcilePaste, setReconcilePaste] = useState('');
+  const [reconcileInputMode, setReconcileInputMode] = useState('paste'); // paste | file
 
   // Spreadsheet state
   const [spreadsheetFile, setSpreadsheetFile] = useState(null);
@@ -190,18 +192,25 @@ const Revisions = () => {
 
   // ---- Reconcile handlers (brand order comparison) ----
 
+  const buildReconcileFormData = (isDryRun) => {
+    const formData = new FormData();
+    if (reconcileFile) formData.append('file', reconcileFile);
+    if (reconcilePaste.trim()) formData.append('pastedText', reconcilePaste.trim());
+    formData.append('brandId', selectedBrandId);
+    formData.append('seasonId', selectedSeasonId);
+    formData.append('orderIds', JSON.stringify(orderIds));
+    formData.append('dryRun', isDryRun ? 'true' : 'false');
+    return formData;
+  };
+
+  const hasReconcileInput = reconcileFile || reconcilePaste.trim();
+
   const handleReconcilePreview = async () => {
-    if (!reconcileFile) return;
+    if (!hasReconcileInput) return;
     setLoading(true);
     setError('');
     try {
-      const formData = new FormData();
-      formData.append('file', reconcileFile);
-      formData.append('brandId', selectedBrandId);
-      formData.append('seasonId', selectedSeasonId);
-      formData.append('orderIds', JSON.stringify(orderIds));
-      formData.append('dryRun', 'true');
-      const res = await revisionAPI.reconcile(formData);
+      const res = await revisionAPI.reconcile(buildReconcileFormData(true));
       setReconcileResults(res.data);
       setStep('reconcile');
     } catch (err) {
@@ -215,13 +224,7 @@ const Revisions = () => {
     setLoading(true);
     setError('');
     try {
-      const formData = new FormData();
-      formData.append('file', reconcileFile);
-      formData.append('brandId', selectedBrandId);
-      formData.append('seasonId', selectedSeasonId);
-      formData.append('orderIds', JSON.stringify(orderIds));
-      formData.append('dryRun', 'false');
-      const res = await revisionAPI.reconcile(formData);
+      const res = await revisionAPI.reconcile(buildReconcileFormData(false));
       setReconcileResults(res.data);
       setReconcileApplied(true);
       // Proceed directly to revision preview after syncing
@@ -457,8 +460,10 @@ const Revisions = () => {
     setCompareFile(null);
     setCompareResults(null);
     setReconcileFile(null);
+    setReconcilePaste('');
     setReconcileResults(null);
     setReconcileApplied(false);
+    setReconcileInputMode('paste');
   };
 
   const formatDate = (d) => d ? new Date(d).toLocaleDateString() : '-';
@@ -729,17 +734,41 @@ const Revisions = () => {
 
                         {/* Brand Order Comparison (optional) */}
                         <div className="border border-blue-200 rounded-lg p-4 bg-blue-50/50">
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Brand Order File (recommended)</label>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-sm font-medium text-gray-700">Brand Order (recommended)</label>
+                            <div className="flex gap-1 text-xs">
+                              <button onClick={() => setReconcileInputMode('paste')}
+                                className={`px-2 py-0.5 rounded ${reconcileInputMode === 'paste' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>
+                                Paste
+                              </button>
+                              <button onClick={() => setReconcileInputMode('file')}
+                                className={`px-2 py-0.5 rounded ${reconcileInputMode === 'file' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>
+                                File
+                              </button>
+                            </div>
+                          </div>
                           <p className="text-xs text-gray-500 mb-3">
-                            Upload the brand's order confirmation to compare against your system.
-                            If quantities differ, the brand's order takes precedence.
+                            {reconcileInputMode === 'paste'
+                              ? 'Paste the order lines from the brand — just the rows with UPCs, locations, and quantities.'
+                              : 'Upload the brand\'s order confirmation file.'}
+                            {' '}If quantities differ, the brand's order takes precedence.
                           </p>
-                          <input
-                            type="file"
-                            accept=".xlsx,.xls,.csv,.pdf"
-                            onChange={e => setReconcileFile(e.target.files[0])}
-                            className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                          />
+                          {reconcileInputMode === 'paste' ? (
+                            <textarea
+                              value={reconcilePaste}
+                              onChange={e => setReconcilePaste(e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono"
+                              rows={6}
+                              placeholder={"8020647637812\tSLC\t2\n8020647637829\tOgden\t1\n8020647637836\tSouth Main\t3"}
+                            />
+                          ) : (
+                            <input
+                              type="file"
+                              accept=".xlsx,.xls,.csv,.pdf"
+                              onChange={e => setReconcileFile(e.target.files[0])}
+                              className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                            />
+                          )}
                         </div>
 
                         <div>
@@ -760,7 +789,7 @@ const Revisions = () => {
                         </div>
                         <div className="flex gap-2 pt-4">
                           <button onClick={resetWorkflow} className="px-4 py-2 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">Cancel</button>
-                          {reconcileFile ? (
+                          {hasReconcileInput ? (
                             <button onClick={handleReconcilePreview} disabled={loading}
                               className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400">
                               {loading ? 'Comparing...' : 'Compare Brand Order'}
