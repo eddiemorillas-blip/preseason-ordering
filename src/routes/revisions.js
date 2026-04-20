@@ -67,9 +67,24 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       pastedBrandOrder, columnOverrides
     } = req.body;
 
-    if (!brandId || !orderIds || orderIds.length === 0) {
-      return res.status(400).json({ error: 'brandId and orderIds are required' });
+    if (!brandId) {
+      return res.status(400).json({ error: 'brandId is required' });
     }
+
+    // If brand order is pasted without selected orders, auto-find orders for brand/season
+    if ((!orderIds || orderIds.length === 0) && !pastedBrandOrder) {
+      return res.status(400).json({ error: 'Select orders or paste a brand order' });
+    }
+    if ((!orderIds || orderIds.length === 0) && pastedBrandOrder) {
+      const seasonId = req.body.seasonId;
+      if (seasonId) {
+        const autoOrders = await pool.query(
+          'SELECT id FROM orders WHERE brand_id = $1 AND season_id = $2', [brandId, seasonId]
+        );
+        req.body.orderIds = autoOrders.rows.map(r => r.id);
+      }
+    }
+    const resolvedOrderIds = req.body.orderIds || orderIds || [];
 
     if (!bigquery) {
       return res.status(503).json({ error: 'BigQuery is not available. Revision requires live inventory data.' });
@@ -171,7 +186,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       // Get order→location mapping from selected orders
       const orderLocRes = await pool.query(
         `SELECT o.id, o.location_id, l.name AS location_name FROM orders o JOIN locations l ON o.location_id = l.id WHERE o.id = ANY($1::int[])`,
-        [orderIds]
+        [resolvedOrderIds]
       );
       const orderByLocation = {};
       const locationNames = {};
@@ -189,7 +204,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
         JOIN products p ON oi.product_id = p.id
         JOIN orders o ON oi.order_id = o.id
         WHERE oi.order_id = ANY($1::int[]) AND p.upc = ANY($2::text[])
-      `, [orderIds, brandUPCs]);
+      `, [resolvedOrderIds, brandUPCs]);
       const existingMap = {};
       for (const row of existingRes.rows) {
         existingMap[`${row.upc}|${row.location_id}`] = row;
@@ -208,7 +223,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
           const existing = existingMap[`${pi.upc}|${locId}`];
           items.push({
             order_item_id: existing?.order_item_id || null,
-            order_id: existing?.order_id || orderByLocation[locId] || orderIds[0],
+            order_id: existing?.order_id || orderByLocation[locId] || resolvedOrderIds[0],
             product_id: product.id,
             original_qty: pi.qty,
             current_qty: pi.qty,
@@ -230,7 +245,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       }
     } else {
       // ---- Normal mode: use system order_items ----
-      const orderPlaceholders = orderIds.map((_, i) => `$${i + 1}`).join(',');
+      const orderPlaceholders = resolvedOrderIds.map((_, i) => `$${i + 1}`).join(',');
       const itemsResult = await pool.query(`
         SELECT
           oi.id AS order_item_id,
@@ -254,7 +269,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
         WHERE oi.order_id IN (${orderPlaceholders})
           AND COALESCE(oi.adjusted_quantity, oi.quantity) > 0
         ORDER BY o.location_id, p.name, p.size
-      `, orderIds);
+      `, resolvedOrderIds);
 
       if (itemsResult.rows.length === 0) {
         return res.json({ summary: { totalItems: 0 }, decisions: [] });
@@ -448,7 +463,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       try {
         await client.query('BEGIN');
 
-        const seasonResult = await client.query('SELECT season_id FROM orders WHERE id = $1', [orderIds[0]]);
+        const seasonResult = await client.query('SELECT season_id FROM orders WHERE id = $1', [resolvedOrderIds[0]]);
         const seasonId = seasonResult.rows.length > 0 ? seasonResult.rows[0].season_id : null;
 
         await client.query(`
@@ -499,7 +514,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
           `, [vendorDecision, d.adjustedQty, receiptStatus, d.orderItemId]);
         }
 
-        for (const oid of orderIds) {
+        for (const oid of resolvedOrderIds) {
           await client.query('UPDATE orders SET updated_at = NOW() WHERE id = $1', [oid]);
         }
 

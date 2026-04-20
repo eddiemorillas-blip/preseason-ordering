@@ -227,12 +227,13 @@ const Revisions = () => {
   // ---- Revision handlers ----
 
   const handleRunPreview = async () => {
-    if (orderIds.length === 0) { setError('Select at least one order'); return; }
+    if (!hasBrandPaste && orderIds.length === 0) { setError('Select at least one order or paste a brand order'); return; }
     setLoading(true);
     setError('');
     try {
       const payload = {
         brandId: parseInt(selectedBrandId),
+        seasonId: parseInt(selectedSeasonId),
         orderIds,
         maxReductionPct: maxReductionPct / 100,
         dryRun: true,
@@ -579,19 +580,19 @@ const Revisions = () => {
               </div>
 
               {/* Sidebar Footer */}
-              <div className="p-3 border-t bg-white">
-                {selectedOrders.size > 0 && step === 'idle' && (
+              <div className="p-3 border-t bg-white space-y-2">
+                {step === 'idle' && (
                   <button
                     onClick={() => { setMode('orders'); setStep('configure'); }}
                     className="w-full px-3 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700"
                   >
-                    Revise {selectedOrders.size} Order{selectedOrders.size !== 1 ? 's' : ''}
+                    {selectedOrders.size > 0 ? `Revise ${selectedOrders.size} Order${selectedOrders.size !== 1 ? 's' : ''}` : 'Paste Brand Order'}
                   </button>
                 )}
                 {step === 'idle' && (
                   <button
                     onClick={() => { setMode('spreadsheet'); setStep('configure'); }}
-                    className={`w-full px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 ${selectedOrders.size > 0 ? 'mt-2' : ''}`}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
                   >
                     Upload Spreadsheet
                   </button>
