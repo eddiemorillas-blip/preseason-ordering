@@ -30,6 +30,7 @@
     "multer": "^2.0.2",
     "node-cache": "^5.1.2",
     "openai": "^6.16.0",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.17.2",
     "xlsx": "^0.18.5",
     "xlsx-populate": "^1.21.0"

@@ -256,6 +256,9 @@ export const agentAPI = {
 export const revisionAPI = {
   run: (data) => api.post('/revisions/run', data),
   apply: (data) => api.post('/revisions/apply', data),
+  reconcile: (formData) => api.post('/revisions/reconcile', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
   getHistory: (params) => api.get('/revisions/history', { params }),
   compare: (params) => api.get('/revisions/compare', { params }),
   spreadsheetPreview: (formData) => api.post('/revisions/spreadsheet', formData, {

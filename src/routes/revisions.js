@@ -4,9 +4,48 @@ const crypto = require('crypto');
 const pool = require('../config/database');
 const XLSX = require('xlsx');
 const XlsxPopulate = require('xlsx-populate');
+const pdfParse = require('pdf-parse');
 const multer = require('multer');
 const { bigquery, FACILITY_TO_LOCATION, LOCATION_TO_FACILITY } = require('../services/bigquery');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
+
+/**
+ * Parse a PDF file into rows of data (like a spreadsheet).
+ * Extracts text, splits into lines, then tokenizes each line.
+ * Looks for lines containing UPC-like numbers and tries to build a table.
+ */
+async function parsePdfToRows(buffer) {
+  const data = await pdfParse(buffer);
+  const lines = data.text.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Try to detect header line and data lines
+  // Look for a line that contains "UPC" or "Barcode" to identify the header
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(lines.length, 30); i++) {
+    if (/\b(upc|barcode|ean|item.?code)\b/i.test(lines[i])) {
+      headerIdx = i;
+      break;
+    }
+  }
+
+  // Tokenize lines by splitting on 2+ spaces or tabs (common in PDF table extraction)
+  const tokenize = (line) => line.split(/\s{2,}|\t/).map(s => s.trim()).filter(Boolean);
+
+  const headers = headerIdx >= 0 ? tokenize(lines[headerIdx]) : [];
+  const dataLines = [];
+
+  const startIdx = headerIdx >= 0 ? headerIdx + 1 : 0;
+  for (let i = startIdx; i < lines.length; i++) {
+    const tokens = tokenize(lines[i]);
+    // A valid data line should have a UPC-like token (8-14 digit number)
+    const hasUPC = tokens.some(t => /^\d{8,14}$/.test(t.replace(/[^0-9]/g, '')));
+    if (hasUPC && tokens.length >= 2) {
+      dataLines.push(tokens);
+    }
+  }
+
+  return { headers, rows: dataLines, rawLines: lines };
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -878,6 +917,347 @@ router.post('/compare-spreadsheet', authorizeRoles('admin', 'buyer'), upload.sin
     });
   } catch (error) {
     console.error('Compare spreadsheet error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/revisions/reconcile
+ * Compare brand order spreadsheet against system orders and optionally sync.
+ * Brand order takes precedence — quantities are updated to match, items only
+ * in the brand order are flagged, items only in system are flagged for removal.
+ * Run this BEFORE the revision logic so the system reflects the brand's actual order.
+ */
+router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'), async (req, res) => {
+  try {
+    const { brandId, seasonId, orderIds: orderIdsRaw, dryRun } = req.body;
+
+    if (!req.file) return res.status(400).json({ error: 'File is required' });
+    if (!brandId) return res.status(400).json({ error: 'brandId is required' });
+
+    const orderIds = orderIdsRaw ? JSON.parse(orderIdsRaw) : [];
+    const isDryRun = dryRun === 'false' ? false : true;
+    const isPdf = req.file.originalname.toLowerCase().endsWith('.pdf') ||
+                  req.file.mimetype === 'application/pdf';
+
+    // Load template
+    let template = null;
+    const tRes = await pool.query(
+      'SELECT * FROM brand_order_templates WHERE brand_id = $1 AND active = true ORDER BY updated_at DESC LIMIT 1',
+      [brandId]
+    );
+    if (tRes.rows.length > 0) template = tRes.rows[0];
+
+    // Location mapping
+    const locationMapping = template?.location_mapping || {};
+    const resolveLocationId = (locName) => {
+      if (!locName) return null;
+      if (locationMapping[locName]) return locationMapping[locName];
+      const lower = locName.toLowerCase();
+      if (lower.includes('salt lake') || lower.includes('slc')) return 1;
+      if (lower.includes('south main') || lower.includes('millcreek')) return 2;
+      if (lower.includes('ogden')) return 3;
+      return null;
+    };
+
+    let brandItems = [];
+
+    if (isPdf) {
+      // --- PDF parsing ---
+      const parsed = await parsePdfToRows(req.file.buffer);
+
+      if (parsed.rows.length === 0) {
+        return res.status(400).json({
+          error: 'Could not extract table data from PDF. Make sure it contains UPC numbers.',
+          rawLineCount: parsed.rawLines.length,
+          sampleLines: parsed.rawLines.slice(0, 10),
+        });
+      }
+
+      // Find column positions in PDF header or auto-detect from data
+      const pdfHeaders = parsed.headers.map(h => h.toLowerCase());
+      let upcIdx = pdfHeaders.findIndex(h => /upc|barcode|ean|item.?code/.test(h));
+      let locIdx = pdfHeaders.findIndex(h => /location|ship.?to|dealer|store/.test(h));
+      let qtyIdx = pdfHeaders.findIndex(h => /qty|quantity|ordered|committed|units/.test(h));
+
+      for (const row of parsed.rows) {
+        // Find UPC token: 8-14 digit number
+        let upc = null, upcTokenIdx = -1;
+        for (let i = 0; i < row.length; i++) {
+          const cleaned = row[i].replace(/[^0-9]/g, '');
+          if (/^\d{8,14}$/.test(cleaned)) {
+            // Prefer the column we identified as UPC, otherwise take first match
+            if (upcIdx >= 0 && i === upcIdx) { upc = cleaned; upcTokenIdx = i; break; }
+            if (!upc) { upc = cleaned; upcTokenIdx = i; }
+          }
+        }
+        if (!upc) continue;
+
+        // Find location token
+        let location = null;
+        if (locIdx >= 0 && locIdx < row.length) {
+          location = row[locIdx];
+        } else {
+          // Scan for known location names
+          for (let i = 0; i < row.length; i++) {
+            if (i === upcTokenIdx) continue;
+            const lower = row[i].toLowerCase();
+            if (lower.includes('slc') || lower.includes('salt lake') ||
+                lower.includes('south main') || lower.includes('millcreek') ||
+                lower.includes('ogden')) {
+              location = row[i];
+              break;
+            }
+          }
+        }
+
+        // Find qty token
+        let qty = 0;
+        if (qtyIdx >= 0 && qtyIdx < row.length) {
+          qty = parseInt(row[qtyIdx]) || 0;
+        } else {
+          // Take the last numeric token that isn't the UPC and looks like a small qty
+          for (let i = row.length - 1; i >= 0; i--) {
+            if (i === upcTokenIdx) continue;
+            const num = parseInt(row[i]);
+            if (!isNaN(num) && num >= 0 && num < 10000 && row[i].trim().length <= 5) {
+              qty = num;
+              break;
+            }
+          }
+        }
+
+        const locationId = resolveLocationId(location);
+        brandItems.push({ upc, location, locationId, qty, rowIndex: parsed.rows.indexOf(row) });
+      }
+
+      if (brandItems.length === 0) {
+        return res.status(400).json({
+          error: 'Found table rows in PDF but could not extract UPC + quantity pairs.',
+          extractedRows: parsed.rows.length,
+          sampleRows: parsed.rows.slice(0, 5),
+        });
+      }
+    } else {
+      // --- Excel/CSV parsing ---
+      const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+      let sheetName = workbook.SheetNames[0];
+      if (template?.sheet_name) {
+        const match = workbook.SheetNames.find(s => s.toLowerCase() === template.sheet_name.toLowerCase());
+        if (match) sheetName = match;
+      }
+      const worksheet = workbook.Sheets[sheetName];
+      const allData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+
+      const columns = template?.column_mappings || {};
+      const headerRow = (template?.header_row || 1) - 1;
+      const dataStartRow = (template?.data_start_row || 2) - 1;
+      const headers = allData[headerRow] || [];
+
+      // Find UPC column
+      let upcCol = columns.upc != null ? columns.upc - 1 : -1;
+      if (upcCol < 0) upcCol = headers.findIndex(h => h && /upc|barcode|ean/i.test(h.toString()));
+      if (upcCol < 0) return res.status(400).json({ error: 'Could not find UPC column', headers: headers.filter(Boolean) });
+
+      // Find location + qty columns
+      let locationCol = columns.ship_to_location != null ? columns.ship_to_location - 1 : -1;
+      if (locationCol < 0) locationCol = headers.findIndex(h => h && /location|ship.?to|dealer/i.test(h.toString()));
+      let orderedCol = columns.ordered != null ? columns.ordered - 1 : -1;
+      let committedCol = columns.committed != null ? columns.committed - 1 : -1;
+
+      for (let r = dataStartRow; r < allData.length; r++) {
+        const row = allData[r];
+        const upc = row[upcCol]?.toString().trim();
+        if (!upc) continue;
+        const location = locationCol >= 0 ? row[locationCol]?.toString().trim() : null;
+        const locationId = resolveLocationId(location);
+        const qty = committedCol >= 0 ? (parseInt(row[committedCol]) || 0) : (orderedCol >= 0 ? (parseInt(row[orderedCol]) || 0) : 0);
+        brandItems.push({ upc, location, locationId, qty, rowIndex: r });
+      }
+    }
+
+    // Get system order items for the selected orders (or all orders for this brand/season)
+    let systemQuery, systemParams;
+    if (orderIds.length > 0) {
+      const placeholders = orderIds.map((_, i) => `$${i + 1}`).join(',');
+      systemQuery = `
+        SELECT oi.id AS order_item_id, oi.order_id, oi.product_id,
+               oi.quantity, COALESCE(oi.adjusted_quantity, oi.quantity) AS current_qty,
+               oi.unit_cost, oi.vendor_decision,
+               p.upc, p.name AS product_name, p.size, p.color,
+               o.location_id, l.name AS location_name
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        JOIN orders o ON oi.order_id = o.id
+        JOIN locations l ON o.location_id = l.id
+        WHERE oi.order_id IN (${placeholders})
+        ORDER BY o.location_id, p.name, p.size
+      `;
+      systemParams = orderIds;
+    } else {
+      systemQuery = `
+        SELECT oi.id AS order_item_id, oi.order_id, oi.product_id,
+               oi.quantity, COALESCE(oi.adjusted_quantity, oi.quantity) AS current_qty,
+               oi.unit_cost, oi.vendor_decision,
+               p.upc, p.name AS product_name, p.size, p.color,
+               o.location_id, l.name AS location_name
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        JOIN orders o ON oi.order_id = o.id
+        JOIN locations l ON o.location_id = l.id
+        WHERE o.brand_id = $1 ${seasonId ? 'AND o.season_id = $2' : ''}
+        ORDER BY o.location_id, p.name, p.size
+      `;
+      systemParams = seasonId ? [brandId, seasonId] : [brandId];
+    }
+
+    const systemResult = await pool.query(systemQuery, systemParams);
+
+    // Build system lookup: upc+locationId -> item
+    const systemMap = {};
+    for (const item of systemResult.rows) {
+      const key = `${item.upc}|${item.location_id}`;
+      if (!systemMap[key]) systemMap[key] = item;
+    }
+
+    // Look up product info for brand UPCs we don't already know
+    const brandUPCs = [...new Set(brandItems.map(v => v.upc))];
+    const productMap = {};
+    if (brandUPCs.length > 0) {
+      const placeholders = brandUPCs.map((_, i) => `$${i + 1}`).join(',');
+      const prodRes = await pool.query(`SELECT id, upc, name, size, color FROM products WHERE upc IN (${placeholders})`, brandUPCs);
+      for (const p of prodRes.rows) { if (p.upc) productMap[p.upc] = p; }
+    }
+
+    // Compare
+    const matched = [];       // same qty
+    const qtyChanges = [];    // brand has different qty
+    const brandOnly = [];     // in brand order but not system
+    const systemOnly = [];    // in system but not brand order
+    const brandSeen = new Set();
+
+    for (const b of brandItems) {
+      const key = b.locationId ? `${b.upc}|${b.locationId}` : null;
+      const systemItem = key ? systemMap[key] : null;
+      const product = productMap[b.upc] || {};
+
+      if (systemItem) {
+        brandSeen.add(key);
+        if (b.qty !== systemItem.current_qty) {
+          qtyChanges.push({
+            orderItemId: systemItem.order_item_id,
+            orderId: systemItem.order_id,
+            productId: systemItem.product_id,
+            upc: b.upc,
+            productName: systemItem.product_name || product.name,
+            size: systemItem.size || product.size,
+            color: systemItem.color || product.color,
+            location: b.location || systemItem.location_name,
+            locationId: systemItem.location_id,
+            brandQty: b.qty,
+            systemQty: systemItem.current_qty,
+            diff: b.qty - systemItem.current_qty,
+          });
+        } else {
+          matched.push({
+            upc: b.upc,
+            productName: systemItem.product_name,
+            size: systemItem.size,
+            location: systemItem.location_name,
+            qty: systemItem.current_qty,
+          });
+        }
+      } else {
+        brandOnly.push({
+          upc: b.upc,
+          productName: product.name || null,
+          productId: product.id || null,
+          size: product.size || null,
+          color: product.color || null,
+          location: b.location,
+          locationId: b.locationId,
+          brandQty: b.qty,
+        });
+      }
+    }
+
+    // System items not in brand order
+    for (const [key, item] of Object.entries(systemMap)) {
+      if (!brandSeen.has(key) && item.current_qty > 0) {
+        systemOnly.push({
+          orderItemId: item.order_item_id,
+          orderId: item.order_id,
+          upc: item.upc,
+          productName: item.product_name,
+          size: item.size,
+          color: item.color,
+          location: item.location_name,
+          locationId: item.location_id,
+          systemQty: item.current_qty,
+        });
+      }
+    }
+
+    // If not dry run, apply brand's order as source of truth
+    const applied = { qtyUpdated: 0, systemItemsCancelled: 0 };
+    if (!isDryRun) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Update quantities where brand differs
+        for (const change of qtyChanges) {
+          await client.query(
+            `UPDATE order_items SET quantity = $1, adjusted_quantity = $1, updated_at = NOW() WHERE id = $2`,
+            [change.brandQty, change.orderItemId]
+          );
+          applied.qtyUpdated++;
+        }
+
+        // Cancel system-only items (brand removed them)
+        for (const item of systemOnly) {
+          await client.query(
+            `UPDATE order_items SET adjusted_quantity = 0, vendor_decision = 'cancel', receipt_status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+            [item.orderItemId]
+          );
+          applied.systemItemsCancelled++;
+        }
+
+        // Update order timestamps
+        const affectedOrderIds = new Set([
+          ...qtyChanges.map(c => c.orderId),
+          ...systemOnly.map(s => s.orderId),
+        ]);
+        for (const oid of affectedOrderIds) {
+          await client.query('UPDATE orders SET updated_at = NOW() WHERE id = $1', [oid]);
+        }
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    res.json({
+      dryRun: isDryRun,
+      summary: {
+        brandItems: brandItems.length,
+        matched: matched.length,
+        qtyChanges: qtyChanges.length,
+        brandOnly: brandOnly.length,
+        systemOnly: systemOnly.length,
+      },
+      matched,
+      qtyChanges,
+      brandOnly,
+      systemOnly,
+      ...(isDryRun ? {} : { applied }),
+    });
+  } catch (error) {
+    console.error('Reconcile error:', error);
     res.status(500).json({ error: error.message });
   }
 });
