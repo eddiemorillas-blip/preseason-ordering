@@ -156,10 +156,45 @@ const Revisions = () => {
     } catch { setHasTemplate(false); }
   };
 
-  // Filter orders by ship date
+  // Extract unique months from ship dates
+  const shipMonths = useMemo(() => {
+    const months = new Set();
+    for (const o of orders) {
+      if (o.ship_date) {
+        const d = new Date(o.ship_date);
+        months.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+      }
+    }
+    return [...months].sort();
+  }, [orders]);
+
+  const formatMonth = (ym) => {
+    const [y, m] = ym.split('-');
+    return new Date(y, m - 1).toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
+  };
+
+  // Filter orders by month (or exact ship date), sorted by date
   const filteredOrders = useMemo(() => {
-    if (!selectedShipDate) return orders;
-    return orders.filter(o => o.ship_date === selectedShipDate);
+    let filtered = orders;
+    if (selectedShipDate) {
+      // Check if it's a month filter (YYYY-MM) or exact date
+      if (/^\d{4}-\d{2}$/.test(selectedShipDate)) {
+        filtered = orders.filter(o => {
+          if (!o.ship_date) return false;
+          const d = new Date(o.ship_date);
+          const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+          return ym === selectedShipDate;
+        });
+      } else {
+        filtered = orders.filter(o => o.ship_date === selectedShipDate);
+      }
+    }
+    // Sort by ship date ascending
+    return [...filtered].sort((a, b) => {
+      const da = a.ship_date ? new Date(a.ship_date) : new Date(0);
+      const db = b.ship_date ? new Date(b.ship_date) : new Date(0);
+      return da - db;
+    });
   }, [orders, selectedShipDate]);
 
   const updateFilter = (key, value) => {
@@ -517,16 +552,16 @@ const Revisions = () => {
           <div className="flex flex-1 overflow-hidden">
             {/* LEFT SIDEBAR */}
             <div className="w-72 border-r bg-gray-50 flex flex-col flex-shrink-0 overflow-hidden">
-              {/* Ship Date Filter */}
+              {/* Month Filter */}
               <div className="p-3 border-b">
                 <select
                   value={selectedShipDate}
                   onChange={e => updateFilter('shipDate', e.target.value)}
                   className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
                 >
-                  <option value="">All Ship Dates</option>
-                  {shipDates.map(d => (
-                    <option key={d} value={d}>{formatDate(d)}</option>
+                  <option value="">All Months</option>
+                  {shipMonths.map(m => (
+                    <option key={m} value={m}>{formatMonth(m)}</option>
                   ))}
                 </select>
               </div>
@@ -542,26 +577,40 @@ const Revisions = () => {
               </div>
 
               <div className="flex-1 overflow-y-auto">
-                {filteredOrders.map(o => (
-                  <label
-                    key={o.id}
-                    className={`flex items-start gap-2 px-3 py-2 border-b border-gray-100 cursor-pointer hover:bg-white ${selectedOrders.has(o.id) ? 'bg-blue-50' : ''}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedOrders.has(o.id)}
-                      onChange={() => toggleOrder(o.id)}
-                      className="mt-1"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-gray-900 truncate">{o.order_number || `#${o.id}`}</div>
-                      <div className="text-xs text-gray-500">{o.location_name}</div>
-                      <div className="text-xs text-gray-400">
-                        {o.ship_date ? formatDate(o.ship_date) : 'No date'} · {o.item_count || 0} items
+                {(() => {
+                  let lastDate = null;
+                  return filteredOrders.map(o => {
+                    const dateStr = o.ship_date ? formatDate(o.ship_date) : 'No date';
+                    const showHeader = dateStr !== lastDate;
+                    lastDate = dateStr;
+                    return (
+                      <div key={o.id}>
+                        {showHeader && (
+                          <div className="px-3 py-1.5 bg-gray-100 border-b border-gray-200 text-xs font-semibold text-gray-600 sticky top-0">
+                            {dateStr}
+                          </div>
+                        )}
+                        <label
+                          className={`flex items-start gap-2 px-3 py-2 border-b border-gray-100 cursor-pointer hover:bg-white ${selectedOrders.has(o.id) ? 'bg-blue-50' : ''}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedOrders.has(o.id)}
+                            onChange={() => toggleOrder(o.id)}
+                            className="mt-1"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-gray-900 truncate">{o.order_number || `#${o.id}`}</div>
+                            <div className="text-xs text-gray-500">{o.location_name}</div>
+                            <div className="text-xs text-gray-400">
+                              {o.item_count || 0} items
+                            </div>
+                          </div>
+                        </label>
                       </div>
-                    </div>
-                  </label>
-                ))}
+                    );
+                  });
+                })()}
                 {filteredOrders.length === 0 && (
                   <p className="px-3 py-8 text-center text-sm text-gray-400">No orders found</p>
                 )}
