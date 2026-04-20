@@ -85,7 +85,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
         oi.id AS order_item_id,
         oi.order_id,
         oi.product_id,
-        oi.quantity AS original_qty,
+        COALESCE(oi.adjusted_quantity, oi.quantity) AS original_qty,
         COALESCE(oi.adjusted_quantity, oi.quantity) AS current_qty,
         oi.unit_cost,
         oi.vendor_decision,
@@ -101,6 +101,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       JOIN orders o ON oi.order_id = o.id
       JOIN locations l ON o.location_id = l.id
       WHERE oi.order_id IN (${orderPlaceholders})
+        AND COALESCE(oi.adjusted_quantity, oi.quantity) > 0
       ORDER BY o.location_id, p.name, p.size
     `, orderIds);
 
