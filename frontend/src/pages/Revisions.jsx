@@ -740,11 +740,13 @@ const Revisions = () => {
 
                     {mode === 'orders' && (
                       <div className="space-y-4">
-                        <div className="bg-gray-50 rounded-lg p-3">
-                          <p className="text-sm text-gray-600">{selectedOrders.size} orders selected from {selectedBrand?.name}</p>
-                        </div>
+                        {selectedOrders.size > 0 && (
+                          <div className="bg-gray-50 rounded-lg p-3">
+                            <p className="text-sm text-gray-600">{selectedOrders.size} orders selected from {selectedBrand?.name}</p>
+                          </div>
+                        )}
 
-                        {/* Brand Order Paste (optional) */}
+                        {/* Brand Order Paste */}
                         <div className="border border-blue-200 rounded-lg p-4 bg-blue-50/50">
                           <label className="text-sm font-medium text-gray-700 mb-1 block">Brand Order (optional)</label>
                           <p className="text-xs text-gray-500 mb-3">

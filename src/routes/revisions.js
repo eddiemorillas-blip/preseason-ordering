@@ -71,20 +71,9 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       return res.status(400).json({ error: 'brandId is required' });
     }
 
-    // If brand order is pasted without selected orders, auto-find orders for brand/season
     if ((!orderIds || orderIds.length === 0) && !pastedBrandOrder) {
       return res.status(400).json({ error: 'Select orders or paste a brand order' });
     }
-    if ((!orderIds || orderIds.length === 0) && pastedBrandOrder) {
-      const seasonId = req.body.seasonId;
-      if (seasonId) {
-        const autoOrders = await pool.query(
-          'SELECT id FROM orders WHERE brand_id = $1 AND season_id = $2', [brandId, seasonId]
-        );
-        req.body.orderIds = autoOrders.rows.map(r => r.id);
-      }
-    }
-    const resolvedOrderIds = req.body.orderIds || orderIds || [];
 
     if (!bigquery) {
       return res.status(503).json({ error: 'BigQuery is not available. Revision requires live inventory data.' });
@@ -95,10 +84,11 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
     const withAdditions = includeAdditions !== undefined ? includeAdditions : true;
 
     let items;
+    const isPasteMode = pastedBrandOrder && pastedBrandOrder.trim();
 
-    if (pastedBrandOrder && pastedBrandOrder.trim()) {
+    if (isPasteMode) {
       // ---- Brand order paste mode ----
-      // Parse pasted text into items, look up products, use brand order as the item list
+      // Parse pasted text, look up products by UPC, check inventory. No orders needed.
 
       // Load template for column positions
       let template = null;
@@ -183,51 +173,29 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       const productMap = {};
       for (const p of prodRes.rows) { if (p.upc) productMap[p.upc] = p; }
 
-      // Get order→location mapping from selected orders
-      const orderLocRes = await pool.query(
-        `SELECT o.id, o.location_id, l.name AS location_name FROM orders o JOIN locations l ON o.location_id = l.id WHERE o.id = ANY($1::int[])`,
-        [resolvedOrderIds]
-      );
-      const orderByLocation = {};
+      // Get location names
+      const locRes = await pool.query('SELECT id, name FROM locations');
       const locationNames = {};
-      for (const row of orderLocRes.rows) {
-        orderByLocation[row.location_id] = row.id;
-        locationNames[row.location_id] = row.location_name;
-      }
-
-      // Also check if order_items already exist for these UPCs
-      const existingRes = await pool.query(`
-        SELECT oi.id AS order_item_id, oi.order_id, oi.product_id, oi.quantity,
-               COALESCE(oi.adjusted_quantity, oi.quantity) AS current_qty,
-               oi.unit_cost, p.upc, o.location_id
-        FROM order_items oi
-        JOIN products p ON oi.product_id = p.id
-        JOIN orders o ON oi.order_id = o.id
-        WHERE oi.order_id = ANY($1::int[]) AND p.upc = ANY($2::text[])
-      `, [resolvedOrderIds, brandUPCs]);
-      const existingMap = {};
-      for (const row of existingRes.rows) {
-        existingMap[`${row.upc}|${row.location_id}`] = row;
-      }
+      for (const row of locRes.rows) locationNames[row.id] = row.name;
+      const allLocationIds = locRes.rows.map(r => r.id);
 
       // Build items list from pasted data
       items = [];
       for (const pi of parsedItems) {
         const product = productMap[pi.upc];
-        if (!product) continue; // unknown UPC, skip
+        if (!product) continue;
 
-        // If item has a location, use it. Otherwise expand to all selected order locations.
-        const targetLocations = pi.locationId ? [pi.locationId] : Object.keys(orderByLocation).map(Number);
+        // If item has a location, use it. Otherwise use all locations.
+        const targetLocations = pi.locationId ? [pi.locationId] : allLocationIds;
 
         for (const locId of targetLocations) {
-          const existing = existingMap[`${pi.upc}|${locId}`];
           items.push({
-            order_item_id: existing?.order_item_id || null,
-            order_id: existing?.order_id || orderByLocation[locId] || resolvedOrderIds[0],
+            order_item_id: null,
+            order_id: null,
             product_id: product.id,
             original_qty: pi.qty,
             current_qty: pi.qty,
-            unit_cost: existing?.unit_cost || parseFloat(product.wholesale_cost) || 0,
+            unit_cost: parseFloat(product.wholesale_cost) || 0,
             vendor_decision: null,
             upc: pi.upc,
             product_name: product.name,
@@ -240,12 +208,13 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
         }
       }
 
+      const unmatchedUPCs = parsedItems.filter(p => !productMap[p.upc]).map(p => p.upc);
       if (items.length === 0) {
-        return res.json({ summary: { totalItems: 0 }, decisions: [], pastedItemCount: parsedItems.length, unmatchedUPCs: parsedItems.filter(p => !productMap[p.upc]).map(p => p.upc) });
+        return res.json({ summary: { totalItems: 0 }, decisions: [], pastedItemCount: parsedItems.length, unmatchedUPCs });
       }
     } else {
       // ---- Normal mode: use system order_items ----
-      const orderPlaceholders = resolvedOrderIds.map((_, i) => `$${i + 1}`).join(',');
+      const orderPlaceholders = orderIds.map((_, i) => `$${i + 1}`).join(',');
       const itemsResult = await pool.query(`
         SELECT
           oi.id AS order_item_id,
@@ -269,7 +238,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
         WHERE oi.order_id IN (${orderPlaceholders})
           AND COALESCE(oi.adjusted_quantity, oi.quantity) > 0
         ORDER BY o.location_id, p.name, p.size
-      `, resolvedOrderIds);
+      `, orderIds);
 
       if (itemsResult.rows.length === 0) {
         return res.json({ summary: { totalItems: 0 }, decisions: [] });
@@ -453,17 +422,17 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
 
     const exceedsCap = reductionPct > maxReduction;
 
-    // If not dry run, commit
+    // If not dry run and not paste mode, commit to DB
     let revisionId = null;
 
-    if (!isDryRun) {
+    if (!isDryRun && !isPasteMode) {
       revisionId = crypto.randomUUID();
       const client = await pool.connect();
 
       try {
         await client.query('BEGIN');
 
-        const seasonResult = await client.query('SELECT season_id FROM orders WHERE id = $1', [resolvedOrderIds[0]]);
+        const seasonResult = await client.query('SELECT season_id FROM orders WHERE id = $1', [orderIds[0]]);
         const seasonId = seasonResult.rows.length > 0 ? seasonResult.rows[0].season_id : null;
 
         await client.query(`
@@ -514,7 +483,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
           `, [vendorDecision, d.adjustedQty, receiptStatus, d.orderItemId]);
         }
 
-        for (const oid of resolvedOrderIds) {
+        for (const oid of orderIds) {
           await client.query('UPDATE orders SET updated_at = NOW() WHERE id = $1', [oid]);
         }
 
