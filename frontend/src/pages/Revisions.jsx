@@ -59,13 +59,9 @@ const Revisions = () => {
   const [locationFilter, setLocationFilter] = useState('');
   const [decisionFilter, setDecisionFilter] = useState('');
 
-  // Reconcile state (brand order comparison before revision)
-  const [reconcileFile, setReconcileFile] = useState(null);
-  const [reconcileResults, setReconcileResults] = useState(null);
-  const [reconcileApplied, setReconcileApplied] = useState(false);
+  // Brand order paste state
   const [reconcilePaste, setReconcilePaste] = useState('');
-  const [reconcileInputMode, setReconcileInputMode] = useState('paste'); // paste | file
-  const [pasteColumns, setPasteColumns] = useState({ upc: '', location: '', qty: '' }); // user-selected column indices (0-based) or ''
+  const [pasteColumns, setPasteColumns] = useState({ upc: '', location: '', qty: '' });
 
   // Spreadsheet state
   const [spreadsheetFile, setSpreadsheetFile] = useState(null);
@@ -226,73 +222,16 @@ const Revisions = () => {
   const selectedOrdersList = filteredOrders.filter(o => selectedOrders.has(o.id));
   const orderIds = selectedOrdersList.map(o => o.id);
 
-  // ---- Reconcile handlers (brand order comparison) ----
+  const hasBrandPaste = reconcilePaste.trim().length > 0;
 
-  const buildReconcileFormData = (isDryRun) => {
-    const formData = new FormData();
-    if (reconcileFile) formData.append('file', reconcileFile);
-    if (reconcilePaste.trim()) formData.append('pastedText', reconcilePaste.trim());
-    formData.append('brandId', selectedBrandId);
-    formData.append('seasonId', selectedSeasonId);
-    formData.append('orderIds', JSON.stringify(orderIds));
-    formData.append('dryRun', isDryRun ? 'true' : 'false');
-    // Send user-selected column overrides if any are set
-    const hasOverrides = pasteColumns.upc !== '' || pasteColumns.location !== '' || pasteColumns.qty !== '';
-    if (hasOverrides) {
-      formData.append('columnOverrides', JSON.stringify({
-        upc: pasteColumns.upc !== '' ? parseInt(pasteColumns.upc) : null,
-        location: pasteColumns.location !== '' ? parseInt(pasteColumns.location) : null,
-        qty: pasteColumns.qty !== '' ? parseInt(pasteColumns.qty) : null,
-      }));
-    }
-    return formData;
-  };
-
-  const hasReconcileInput = reconcileFile || reconcilePaste.trim();
-
-  const handleReconcilePreview = async () => {
-    if (!hasReconcileInput) return;
-    setLoading(true);
-    setError('');
-    try {
-      const res = await revisionAPI.reconcile(buildReconcileFormData(true));
-      setReconcileResults(res.data);
-      setStep('reconcile');
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to compare brand order');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleReconcileApply = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const res = await revisionAPI.reconcile(buildReconcileFormData(false));
-      setReconcileResults(res.data);
-      setReconcileApplied(true);
-      // Proceed directly to revision preview after syncing
-      handleRunPreview();
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to sync brand order');
-      setLoading(false);
-    }
-  };
-
-  const handleSkipReconcile = () => {
-    // Skip brand comparison, go straight to revision preview
-    handleRunPreview();
-  };
-
-  // ---- Revision handlers (extracted from RevisionModal) ----
+  // ---- Revision handlers ----
 
   const handleRunPreview = async () => {
     if (orderIds.length === 0) { setError('Select at least one order'); return; }
     setLoading(true);
     setError('');
     try {
-      const res = await revisionAPI.run({
+      const payload = {
         brandId: parseInt(selectedBrandId),
         orderIds,
         maxReductionPct: maxReductionPct / 100,
@@ -300,7 +239,23 @@ const Revisions = () => {
         includeAdditions: true,
         brandName: selectedBrand?.name,
         revisionNotes,
-      });
+      };
+
+      // If brand order is pasted, send it directly to /run
+      if (hasBrandPaste) {
+        payload.pastedBrandOrder = reconcilePaste.trim();
+        // Include column overrides if set
+        const hasOverrides = pasteColumns.upc !== '' || pasteColumns.location !== '' || pasteColumns.qty !== '';
+        if (hasOverrides) {
+          payload.columnOverrides = {
+            upc: pasteColumns.upc !== '' ? parseInt(pasteColumns.upc) : null,
+            location: pasteColumns.location !== '' ? parseInt(pasteColumns.location) : null,
+            qty: pasteColumns.qty !== '' ? parseInt(pasteColumns.qty) : null,
+          };
+        }
+      }
+
+      const res = await revisionAPI.run(payload);
       setDecisions(res.data.decisions);
       setSummary(res.data.summary);
       setStep('preview');
@@ -504,12 +459,8 @@ const Revisions = () => {
     setDecisionFilter('');
     setCompareFile(null);
     setCompareResults(null);
-    setReconcileFile(null);
     setReconcilePaste('');
     setPasteColumns({ upc: '', location: '', qty: '' });
-    setReconcileResults(null);
-    setReconcileApplied(false);
-    setReconcileInputMode('paste');
   };
 
   const formatDate = (d) => d ? new Date(d).toLocaleDateString() : '-';
@@ -792,36 +743,19 @@ const Revisions = () => {
                           <p className="text-sm text-gray-600">{selectedOrders.size} orders selected from {selectedBrand?.name}</p>
                         </div>
 
-                        {/* Brand Order Comparison (optional) */}
+                        {/* Brand Order Paste (optional) */}
                         <div className="border border-blue-200 rounded-lg p-4 bg-blue-50/50">
-                          <div className="flex items-center justify-between mb-1">
-                            <label className="text-sm font-medium text-gray-700">Brand Order (recommended)</label>
-                            <div className="flex gap-1 text-xs">
-                              <button onClick={() => setReconcileInputMode('paste')}
-                                className={`px-2 py-0.5 rounded ${reconcileInputMode === 'paste' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>
-                                Paste
-                              </button>
-                              <button onClick={() => setReconcileInputMode('file')}
-                                className={`px-2 py-0.5 rounded ${reconcileInputMode === 'file' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}>
-                                File
-                              </button>
-                            </div>
-                          </div>
+                          <label className="text-sm font-medium text-gray-700 mb-1 block">Brand Order (optional)</label>
                           <p className="text-xs text-gray-500 mb-3">
-                            {reconcileInputMode === 'paste'
-                              ? 'Paste the order lines from the brand — just the rows with UPCs, locations, and quantities.'
-                              : 'Upload the brand\'s order confirmation file.'}
-                            {' '}If quantities differ, the brand's order takes precedence.
+                            Paste the order lines from the brand. The revision will run against these items instead of what's in the system.
                           </p>
-                          {reconcileInputMode === 'paste' ? (
-                            <>
-                              <textarea
-                                value={reconcilePaste}
-                                onChange={e => { setReconcilePaste(e.target.value); setPasteColumns({ upc: '', location: '', qty: '' }); }}
-                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono"
-                                rows={6}
-                                placeholder={"8020647637812\tSLC\t2\n8020647637829\tOgden\t1\n8020647637836\tSouth Main\t3"}
-                              />
+                          <textarea
+                            value={reconcilePaste}
+                            onChange={e => { setReconcilePaste(e.target.value); setPasteColumns({ upc: '', location: '', qty: '' }); }}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono"
+                            rows={6}
+                            placeholder={"8020647637812\tSLC\t2\n8020647637829\tOgden\t1\n8020647637836\tSouth Main\t3"}
+                          />
                               {/* Column mapper — shows preview of pasted data with column assignment */}
                               {reconcilePaste.trim() && (() => {
                                 const previewLines = reconcilePaste.trim().split(/\r?\n/).slice(0, 5);
@@ -890,15 +824,6 @@ const Revisions = () => {
                                   </div>
                                 );
                               })()}
-                            </>
-                          ) : (
-                            <input
-                              type="file"
-                              accept=".xlsx,.xls,.csv,.pdf"
-                              onChange={e => setReconcileFile(e.target.files[0])}
-                              className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                            />
-                          )}
                         </div>
 
                         <div>
@@ -919,175 +844,13 @@ const Revisions = () => {
                         </div>
                         <div className="flex gap-2 pt-4">
                           <button onClick={resetWorkflow} className="px-4 py-2 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">Cancel</button>
-                          {hasReconcileInput ? (
-                            <button onClick={handleReconcilePreview} disabled={loading}
-                              className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400">
-                              {loading ? 'Comparing...' : 'Compare Brand Order'}
-                            </button>
-                          ) : (
-                            <button onClick={handleRunPreview} disabled={loading}
-                              className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400">
-                              {loading ? 'Running...' : 'Run Preview'}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* RECONCILE STEP — Brand Order Comparison */}
-                {step === 'reconcile' && reconcileResults && (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-bold text-gray-900">Brand Order Comparison</h3>
-                      <div className="flex gap-2">
-                        <button onClick={() => { setStep('configure'); setReconcileResults(null); }}
-                          className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800">Back</button>
-                      </div>
-                    </div>
-
-                    {/* Summary */}
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                      <div className="bg-blue-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-blue-600">Brand Items</p>
-                        <p className="text-xl font-semibold text-blue-700">{reconcileResults.summary?.brandItems || 0}</p>
-                      </div>
-                      <div className="bg-green-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-green-600">Matched</p>
-                        <p className="text-xl font-semibold text-green-700">{reconcileResults.summary?.matched || 0}</p>
-                      </div>
-                      <div className="bg-amber-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-amber-600">Qty Differences</p>
-                        <p className="text-xl font-semibold text-amber-700">{reconcileResults.summary?.qtyChanges || 0}</p>
-                      </div>
-                      <div className="bg-purple-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-purple-600">Brand Only</p>
-                        <p className="text-xl font-semibold text-purple-700">{reconcileResults.summary?.brandOnly || 0}</p>
-                      </div>
-                      <div className="bg-red-50 rounded-lg p-3 text-center">
-                        <p className="text-xs text-red-600">System Only</p>
-                        <p className="text-xl font-semibold text-red-700">{reconcileResults.summary?.systemOnly || 0}</p>
-                      </div>
-                    </div>
-
-                    {/* No differences */}
-                    {reconcileResults.summary?.qtyChanges === 0 && reconcileResults.summary?.systemOnly === 0 && reconcileResults.summary?.brandOnly === 0 && (
-                      <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
-                        <p className="text-sm text-green-800 font-medium">Brand order matches your system — no sync needed.</p>
-                      </div>
-                    )}
-
-                    {/* Qty Changes — these will be synced */}
-                    {reconcileResults.qtyChanges?.length > 0 && (
-                      <div className="border border-amber-200 rounded-lg overflow-hidden">
-                        <div className="bg-amber-50 px-4 py-2 border-b border-amber-200">
-                          <p className="text-sm font-medium text-amber-800">
-                            {reconcileResults.qtyChanges.length} item{reconcileResults.qtyChanges.length !== 1 ? 's' : ''} with quantity differences — brand qty will be used
-                          </p>
-                        </div>
-                        <div className="max-h-60 overflow-y-auto">
-                          <table className="w-full text-sm">
-                            <thead className="bg-amber-50/50 sticky top-0">
-                              <tr>
-                                <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Product</th>
-                                <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Size</th>
-                                <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
-                                <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">System</th>
-                                <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Brand</th>
-                                <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Diff</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {reconcileResults.qtyChanges.map((d, i) => (
-                                <tr key={i} className="border-t">
-                                  <td className="px-3 py-1.5">
-                                    <div className="font-medium truncate max-w-[180px]">{d.productName || d.upc}</div>
-                                    <div className="text-xs text-gray-400 font-mono">{d.upc}</div>
-                                  </td>
-                                  <td className="px-3 py-1.5 text-xs">{d.size || '-'}</td>
-                                  <td className="px-3 py-1.5 text-xs">{d.location || '-'}</td>
-                                  <td className="px-3 py-1.5 text-center text-gray-500">{d.systemQty}</td>
-                                  <td className="px-3 py-1.5 text-center font-medium">{d.brandQty}</td>
-                                  <td className="px-3 py-1.5 text-center font-medium">
-                                    <span className={d.diff > 0 ? 'text-green-600' : 'text-red-600'}>
-                                      {d.diff > 0 ? '+' : ''}{d.diff}
-                                    </span>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* System Only — will be cancelled */}
-                    {reconcileResults.systemOnly?.length > 0 && (
-                      <details className="border border-red-200 rounded-lg">
-                        <summary className="px-4 py-2 text-sm font-medium text-red-800 cursor-pointer hover:bg-red-50">
-                          {reconcileResults.systemOnly.length} item{reconcileResults.systemOnly.length !== 1 ? 's' : ''} in your system but NOT in brand order — will be cancelled
-                        </summary>
-                        <div className="max-h-40 overflow-y-auto border-t">
-                          <table className="w-full text-xs">
-                            <tbody>
-                              {reconcileResults.systemOnly.map((d, i) => (
-                                <tr key={i} className="border-t">
-                                  <td className="px-3 py-1">{d.productName || d.upc}</td>
-                                  <td className="px-3 py-1">{d.size || '-'}</td>
-                                  <td className="px-3 py-1">{d.location || '-'}</td>
-                                  <td className="px-3 py-1 text-center">{d.systemQty}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </details>
-                    )}
-
-                    {/* Brand Only — informational */}
-                    {reconcileResults.brandOnly?.length > 0 && (
-                      <details className="border border-purple-200 rounded-lg">
-                        <summary className="px-4 py-2 text-sm font-medium text-purple-800 cursor-pointer hover:bg-purple-50">
-                          {reconcileResults.brandOnly.length} item{reconcileResults.brandOnly.length !== 1 ? 's' : ''} in brand order but not in your system — will be added
-                        </summary>
-                        <div className="max-h-40 overflow-y-auto border-t">
-                          <table className="w-full text-xs">
-                            <tbody>
-                              {reconcileResults.brandOnly.map((d, i) => (
-                                <tr key={i} className="border-t">
-                                  <td className="px-3 py-1">{d.productName || d.upc}</td>
-                                  <td className="px-3 py-1">{d.size || '-'}</td>
-                                  <td className="px-3 py-1">{d.location || '-'}</td>
-                                  <td className="px-3 py-1 text-center">{d.brandQty}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </details>
-                    )}
-
-                    {/* Action buttons */}
-                    <div className="flex gap-2 pt-2">
-                      {(reconcileResults.summary?.qtyChanges > 0 || reconcileResults.summary?.systemOnly > 0 || reconcileResults.summary?.brandOnly > 0) ? (
-                        <>
-                          <button onClick={handleSkipReconcile} disabled={loading}
-                            className="px-4 py-2 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-50">
-                            Skip — Keep System As-Is
+                          <button onClick={handleRunPreview} disabled={loading}
+                            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400">
+                            {loading ? 'Running...' : hasBrandPaste ? 'Run Preview (Brand Order)' : 'Run Preview'}
                           </button>
-                          <button onClick={handleReconcileApply} disabled={loading}
-                            className="px-4 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:bg-gray-400">
-                            {loading ? 'Syncing...' : 'Sync to Brand Order & Run Revision'}
-                          </button>
-                        </>
-                      ) : (
-                        <button onClick={handleSkipReconcile} disabled={loading}
-                          className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400">
-                          {loading ? 'Running...' : 'Continue to Revision'}
-                        </button>
-                      )}
-                    </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1104,10 +867,10 @@ const Revisions = () => {
                       </div>
                     </div>
 
-                    {/* Reconcile banner */}
-                    {reconcileApplied && reconcileResults?.applied && (
+                    {/* Brand paste indicator */}
+                    {hasBrandPaste && (
                       <div className="bg-blue-50 border border-blue-200 rounded-md px-3 py-2 text-sm text-blue-800">
-                        Brand order synced: {reconcileResults.applied.qtyUpdated} quantities updated, {reconcileResults.applied.itemsAdded || 0} items added, {reconcileResults.applied.systemItemsCancelled} items cancelled.
+                        Running revision against pasted brand order ({decisions.length} items matched)
                       </div>
                     )}
 

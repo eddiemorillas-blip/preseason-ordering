@@ -63,7 +63,8 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
     const {
       brandId, orderIds, maxReductionPct, dryRun,
-      includeAdditions, brandName, revisionNotes
+      includeAdditions, brandName, revisionNotes,
+      pastedBrandOrder, columnOverrides
     } = req.body;
 
     if (!brandId || !orderIds || orderIds.length === 0) {
@@ -78,38 +79,189 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
     const isDryRun = dryRun !== undefined ? dryRun : true;
     const withAdditions = includeAdditions !== undefined ? includeAdditions : true;
 
-    // Get all order items for specified orders
-    const orderPlaceholders = orderIds.map((_, i) => `$${i + 1}`).join(',');
-    const itemsResult = await pool.query(`
-      SELECT
-        oi.id AS order_item_id,
-        oi.order_id,
-        oi.product_id,
-        COALESCE(oi.adjusted_quantity, oi.quantity) AS original_qty,
-        COALESCE(oi.adjusted_quantity, oi.quantity) AS current_qty,
-        oi.unit_cost,
-        oi.vendor_decision,
-        p.upc,
-        p.name AS product_name,
-        p.size,
-        p.color,
-        p.category,
-        o.location_id,
-        l.name AS location_name
-      FROM order_items oi
-      JOIN products p ON oi.product_id = p.id
-      JOIN orders o ON oi.order_id = o.id
-      JOIN locations l ON o.location_id = l.id
-      WHERE oi.order_id IN (${orderPlaceholders})
-        AND COALESCE(oi.adjusted_quantity, oi.quantity) > 0
-      ORDER BY o.location_id, p.name, p.size
-    `, orderIds);
+    let items;
 
-    if (itemsResult.rows.length === 0) {
-      return res.json({ summary: { totalItems: 0 }, decisions: [] });
+    if (pastedBrandOrder && pastedBrandOrder.trim()) {
+      // ---- Brand order paste mode ----
+      // Parse pasted text into items, look up products, use brand order as the item list
+
+      // Load template for column positions
+      let template = null;
+      try {
+        const tRes = await pool.query(
+          'SELECT * FROM brand_order_templates WHERE brand_id = $1 AND active = true ORDER BY updated_at DESC LIMIT 1',
+          [brandId]
+        );
+        if (tRes.rows.length > 0) template = tRes.rows[0];
+      } catch (e) { /* no template */ }
+
+      const overrides = columnOverrides || {};
+      const columns = template?.column_mappings || {};
+      const tplUpcCol = overrides.upc != null ? overrides.upc : (columns.upc != null ? columns.upc - 1 : -1);
+      const tplLocCol = overrides.location != null ? overrides.location : (columns.ship_to_location != null ? columns.ship_to_location - 1 : -1);
+      const tplQtyCol = overrides.qty != null ? overrides.qty : (columns.committed != null ? columns.committed - 1 : (columns.ordered != null ? columns.ordered - 1 : -1));
+      const hasColumns = tplUpcCol >= 0;
+
+      const locationMapping = template?.location_mapping || {};
+      const resolveLocationId = (locName) => {
+        if (!locName) return null;
+        if (locationMapping[locName]) return locationMapping[locName];
+        const lower = locName.toLowerCase();
+        if (lower.includes('salt lake') || lower.includes('slc')) return 1;
+        if (lower.includes('south main') || lower.includes('millcreek')) return 2;
+        if (lower.includes('ogden')) return 3;
+        return null;
+      };
+
+      // Parse lines
+      const lines = pastedBrandOrder.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const tokenize = (line) => line.split(/\t|(?:\s{2,})|\|/).map(s => s.trim()).filter(Boolean);
+      const parsedItems = [];
+
+      for (const line of lines) {
+        const tokens = tokenize(line);
+        let upc = null, upcTokenIdx = -1, location = null, qty = 0;
+
+        if (hasColumns) {
+          if (tplUpcCol >= 0 && tplUpcCol < tokens.length) {
+            const cleaned = tokens[tplUpcCol].replace(/[^0-9]/g, '');
+            if (/^\d{8,14}$/.test(cleaned)) { upc = cleaned; upcTokenIdx = tplUpcCol; }
+          }
+          if (!upc) continue;
+          if (tplLocCol >= 0 && tplLocCol < tokens.length) location = tokens[tplLocCol];
+          if (tplQtyCol >= 0 && tplQtyCol < tokens.length) qty = parseInt(tokens[tplQtyCol]) || 0;
+        } else {
+          for (let i = 0; i < tokens.length; i++) {
+            const cleaned = tokens[i].replace(/[^0-9]/g, '');
+            if (/^\d{8,14}$/.test(cleaned)) { upc = cleaned; upcTokenIdx = i; break; }
+          }
+          if (!upc) continue;
+          for (let i = 0; i < tokens.length; i++) {
+            if (i === upcTokenIdx) continue;
+            const lower = tokens[i].toLowerCase();
+            if (lower.includes('slc') || lower.includes('salt lake') || lower.includes('south main') || lower.includes('millcreek') || lower.includes('ogden')) {
+              location = tokens[i]; break;
+            }
+            if (locationMapping[tokens[i]]) { location = tokens[i]; break; }
+          }
+          for (let i = tokens.length - 1; i >= 0; i--) {
+            if (i === upcTokenIdx) continue;
+            const num = parseInt(tokens[i]);
+            if (!isNaN(num) && num >= 0 && num < 10000 && tokens[i].trim().length <= 5) { qty = num; break; }
+          }
+        }
+
+        parsedItems.push({ upc, locationId: resolveLocationId(location), location, qty: qty || 1 });
+      }
+
+      if (parsedItems.length === 0) {
+        return res.status(400).json({ error: 'No UPCs found in pasted text' });
+      }
+
+      // Look up products by UPC
+      const brandUPCs = [...new Set(parsedItems.map(p => p.upc))];
+      const upcPlaceholders = brandUPCs.map((_, i) => `$${i + 1}`).join(',');
+      const prodRes = await pool.query(
+        `SELECT id, upc, name, size, color, category, wholesale_cost FROM products WHERE upc IN (${upcPlaceholders})`,
+        brandUPCs
+      );
+      const productMap = {};
+      for (const p of prodRes.rows) { if (p.upc) productMap[p.upc] = p; }
+
+      // Get order→location mapping from selected orders
+      const orderLocRes = await pool.query(
+        `SELECT o.id, o.location_id, l.name AS location_name FROM orders o JOIN locations l ON o.location_id = l.id WHERE o.id = ANY($1::int[])`,
+        [orderIds]
+      );
+      const orderByLocation = {};
+      const locationNames = {};
+      for (const row of orderLocRes.rows) {
+        orderByLocation[row.location_id] = row.id;
+        locationNames[row.location_id] = row.location_name;
+      }
+
+      // Also check if order_items already exist for these UPCs
+      const existingRes = await pool.query(`
+        SELECT oi.id AS order_item_id, oi.order_id, oi.product_id, oi.quantity,
+               COALESCE(oi.adjusted_quantity, oi.quantity) AS current_qty,
+               oi.unit_cost, p.upc, o.location_id
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        JOIN orders o ON oi.order_id = o.id
+        WHERE oi.order_id = ANY($1::int[]) AND p.upc = ANY($2::text[])
+      `, [orderIds, brandUPCs]);
+      const existingMap = {};
+      for (const row of existingRes.rows) {
+        existingMap[`${row.upc}|${row.location_id}`] = row;
+      }
+
+      // Build items list from pasted data
+      items = [];
+      for (const pi of parsedItems) {
+        const product = productMap[pi.upc];
+        if (!product) continue; // unknown UPC, skip
+
+        // If item has a location, use it. Otherwise expand to all selected order locations.
+        const targetLocations = pi.locationId ? [pi.locationId] : Object.keys(orderByLocation).map(Number);
+
+        for (const locId of targetLocations) {
+          const existing = existingMap[`${pi.upc}|${locId}`];
+          items.push({
+            order_item_id: existing?.order_item_id || null,
+            order_id: existing?.order_id || orderByLocation[locId] || orderIds[0],
+            product_id: product.id,
+            original_qty: pi.qty,
+            current_qty: pi.qty,
+            unit_cost: existing?.unit_cost || parseFloat(product.wholesale_cost) || 0,
+            vendor_decision: null,
+            upc: pi.upc,
+            product_name: product.name,
+            size: product.size,
+            color: product.color,
+            category: product.category,
+            location_id: locId,
+            location_name: locationNames[locId] || `Location ${locId}`,
+          });
+        }
+      }
+
+      if (items.length === 0) {
+        return res.json({ summary: { totalItems: 0 }, decisions: [], pastedItemCount: parsedItems.length, unmatchedUPCs: parsedItems.filter(p => !productMap[p.upc]).map(p => p.upc) });
+      }
+    } else {
+      // ---- Normal mode: use system order_items ----
+      const orderPlaceholders = orderIds.map((_, i) => `$${i + 1}`).join(',');
+      const itemsResult = await pool.query(`
+        SELECT
+          oi.id AS order_item_id,
+          oi.order_id,
+          oi.product_id,
+          COALESCE(oi.adjusted_quantity, oi.quantity) AS original_qty,
+          COALESCE(oi.adjusted_quantity, oi.quantity) AS current_qty,
+          oi.unit_cost,
+          oi.vendor_decision,
+          p.upc,
+          p.name AS product_name,
+          p.size,
+          p.color,
+          p.category,
+          o.location_id,
+          l.name AS location_name
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        JOIN orders o ON oi.order_id = o.id
+        JOIN locations l ON o.location_id = l.id
+        WHERE oi.order_id IN (${orderPlaceholders})
+          AND COALESCE(oi.adjusted_quantity, oi.quantity) > 0
+        ORDER BY o.location_id, p.name, p.size
+      `, orderIds);
+
+      if (itemsResult.rows.length === 0) {
+        return res.json({ summary: { totalItems: 0 }, decisions: [] });
+      }
+
+      items = itemsResult.rows;
     }
-
-    const items = itemsResult.rows;
 
     // Bulk fetch on-hand from BigQuery
     const upcs = [...new Set(items.map(i => i.upc).filter(Boolean))];
