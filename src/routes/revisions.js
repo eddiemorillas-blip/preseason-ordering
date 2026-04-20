@@ -1260,7 +1260,7 @@ router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'
         // Update quantities where brand differs
         for (const change of qtyChanges) {
           await client.query(
-            `UPDATE order_items SET quantity = $1, adjusted_quantity = $1, updated_at = NOW() WHERE id = $2`,
+            `UPDATE order_items SET quantity = $1, adjusted_quantity = $1 WHERE id = $2`,
             [change.brandQty, change.orderItemId]
           );
           applied.qtyUpdated++;
@@ -1269,7 +1269,7 @@ router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'
         // Cancel system-only items (brand removed them)
         for (const item of systemOnly) {
           await client.query(
-            `UPDATE order_items SET adjusted_quantity = 0, vendor_decision = 'cancel', receipt_status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+            `UPDATE order_items SET adjusted_quantity = 0, vendor_decision = 'cancel', receipt_status = 'cancelled' WHERE id = $1`,
             [item.orderItemId]
           );
           applied.systemItemsCancelled++;
