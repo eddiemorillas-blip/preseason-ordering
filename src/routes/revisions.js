@@ -4,7 +4,6 @@ const crypto = require('crypto');
 const pool = require('../config/database');
 const XLSX = require('xlsx');
 const XlsxPopulate = require('xlsx-populate');
-const pdfParse = require('pdf-parse');
 const multer = require('multer');
 const { bigquery, FACILITY_TO_LOCATION, LOCATION_TO_FACILITY } = require('../services/bigquery');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
@@ -15,6 +14,7 @@ const { authenticateToken, authorizeRoles } = require('../middleware/auth');
  * Looks for lines containing UPC-like numbers and tries to build a table.
  */
 async function parsePdfToRows(buffer) {
+  const pdfParse = require('pdf-parse');
   const data = await pdfParse(buffer);
   const lines = data.text.split('\n').map(l => l.trim()).filter(Boolean);
 
