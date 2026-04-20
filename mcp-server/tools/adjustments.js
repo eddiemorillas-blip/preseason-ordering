@@ -612,10 +612,84 @@ async function applySizeCurve(args) {
   }
 }
 
+/**
+ * modify_decision: Modify revision decisions by UPC — works for paste-mode items without orderItemId.
+ * Returns structured JSON that the frontend applies to the local decisions array.
+ */
+async function modifyDecision(args) {
+  try {
+    const { items, reasoning } = args;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return { content: [{ type: 'text', text: 'items array is required with at least one entry' }] };
+    }
+
+    const changes = [];
+    for (const item of items) {
+      if (!item.upc && !item.productName) {
+        continue;
+      }
+      changes.push({
+        upc: item.upc || null,
+        productName: item.productName || null,
+        size: item.size || null,
+        location: item.location || null,
+        decision: item.decision, // 'ship', 'cancel', or 'keep_open_bo'
+        adjustedQty: item.adjustedQty != null ? item.adjustedQty : (item.decision === 'cancel' ? 0 : undefined),
+        reason: reasoning || 'user_override',
+      });
+    }
+
+    if (changes.length === 0) {
+      return { content: [{ type: 'text', text: 'No valid items to modify' }] };
+    }
+
+    // Return structured result — the frontend will interpret __decisionChanges__
+    let summary = `DECISION CHANGES (${changes.length} items):\n`;
+    for (const c of changes) {
+      summary += `  ${c.upc || c.productName}${c.size ? ' ' + c.size : ''}${c.location ? ' @ ' + c.location : ''} → ${c.decision.toUpperCase()}${c.adjustedQty != null ? ' (qty: ' + c.adjustedQty + ')' : ''}\n`;
+    }
+    if (reasoning) summary += `Reason: ${reasoning}\n`;
+    summary += `\n__decisionChanges__${JSON.stringify(changes)}__end__`;
+
+    return { content: [{ type: 'text', text: summary }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+  }
+}
+
 module.exports = [
   {
+    name: 'modify_decision',
+    description: 'Modify revision decisions by UPC, product name, size, or location. Works for ALL items including paste-mode items without an orderItemId. Use this instead of adjust_item when items have no orderItemId or when working with pasted brand orders. Returns changes that the frontend applies to the decisions list.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          description: 'Items to modify. Match by UPC and/or productName + size + location.',
+          items: {
+            type: 'object',
+            properties: {
+              upc: { type: 'string', description: 'UPC to match' },
+              productName: { type: 'string', description: 'Product name substring to match (case-insensitive)' },
+              size: { type: 'string', description: 'Size to match (optional, narrows results)' },
+              location: { type: 'string', description: 'Location name to match (optional)' },
+              decision: { type: 'string', enum: ['ship', 'cancel', 'keep_open_bo'], description: 'New decision' },
+              adjustedQty: { type: 'integer', description: 'New quantity (defaults to 0 for cancel, keeps original for ship)' }
+            },
+            required: ['decision']
+          }
+        },
+        reasoning: { type: 'string', description: 'Reason for the changes' }
+      },
+      required: ['items']
+    },
+    handler: modifyDecision
+  },
+  {
     name: 'adjust_item',
-    description: 'Adjust a single order item quantity and log the change',
+    description: 'Adjust a single order item quantity by orderItemId. Only works for items that exist in the database (have a real orderItemId). For paste-mode items without orderItemId, use modify_decision instead.',
     inputSchema: {
       type: 'object',
       properties: {

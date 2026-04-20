@@ -1240,6 +1240,35 @@ const Revisions = () => {
                 seasonId={parseInt(selectedSeasonId)}
                 orderIds={orderIds}
                 brandName={selectedBrand?.name}
+                onDecisionsChange={(changes) => {
+                  setDecisions(prev => {
+                    const updated = [...prev];
+                    for (const change of changes) {
+                      for (let i = 0; i < updated.length; i++) {
+                        const d = updated[i];
+                        // Match by UPC if provided
+                        const upcMatch = !change.upc || d.upc === change.upc;
+                        // Match by product name substring if provided
+                        const nameMatch = !change.productName || (d.productName || '').toLowerCase().includes(change.productName.toLowerCase());
+                        // Match by size if provided
+                        const sizeMatch = !change.size || (d.size || '').toLowerCase() === change.size.toLowerCase();
+                        // Match by location if provided
+                        const locMatch = !change.location || (d.location || '').toLowerCase().includes(change.location.toLowerCase());
+
+                        if (upcMatch && nameMatch && sizeMatch && locMatch) {
+                          updated[i] = {
+                            ...d,
+                            decision: change.decision,
+                            adjustedQty: change.adjustedQty != null ? change.adjustedQty : (change.decision === 'cancel' ? 0 : d.originalQty),
+                            reason: change.reason || 'user_override',
+                            userOverride: true,
+                          };
+                        }
+                      }
+                    }
+                    return updated;
+                  });
+                }}
                 revisionContext={{
                   mode,
                   step,

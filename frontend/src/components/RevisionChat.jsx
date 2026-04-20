@@ -11,7 +11,7 @@ const THINKING_MESSAGES = [
   'Almost there...',
 ];
 
-const RevisionChat = ({ brandId, seasonId, orderIds, brandName, revisionContext }) => {
+const RevisionChat = ({ brandId, seasonId, orderIds, brandName, revisionContext, onDecisionsChange }) => {
   const [conversationId, setConversationId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -61,9 +61,22 @@ const RevisionChat = ({ brandId, seasonId, orderIds, brandName, revisionContext 
         context: { brandId, seasonId, orderIds, revisionContext }
       });
 
+      let content = res.data.content;
+
+      // Check for decision changes from modify_decision tool
+      const dcMatch = content.match(/__decisionChanges__(.+?)__end__/s);
+      if (dcMatch && onDecisionsChange) {
+        try {
+          const changes = JSON.parse(dcMatch[1]);
+          onDecisionsChange(changes);
+        } catch (e) { /* parse error, ignore */ }
+        // Strip the marker from displayed content
+        content = content.replace(/__decisionChanges__.+?__end__/s, '').trim();
+      }
+
       const assistantMsg = {
         role: 'assistant',
-        content: res.data.content,
+        content,
         toolResults: res.data.toolResults,
         usage: res.data.usage,
         model: res.data.model,
