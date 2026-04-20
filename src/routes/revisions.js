@@ -1181,6 +1181,14 @@ router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'
       for (const p of prodRes.rows) { if (p.upc) productMap[p.upc] = p; }
     }
 
+    // Build reverse lookup: upc -> [keys] for matching without location
+    const upcToKeys = {};
+    for (const key of Object.keys(systemMap)) {
+      const upc = key.split('|')[0];
+      if (!upcToKeys[upc]) upcToKeys[upc] = [];
+      upcToKeys[upc].push(key);
+    }
+
     // Compare
     const matched = [];       // same qty
     const qtyChanges = [];    // brand has different qty
@@ -1189,35 +1197,47 @@ router.post('/reconcile', authorizeRoles('admin', 'buyer'), upload.single('file'
     const brandSeen = new Set();
 
     for (const b of brandItems) {
-      const key = b.locationId ? `${b.upc}|${b.locationId}` : null;
-      const systemItem = key ? systemMap[key] : null;
       const product = productMap[b.upc] || {};
 
-      if (systemItem) {
-        brandSeen.add(key);
-        if (b.qty !== systemItem.current_qty) {
-          qtyChanges.push({
-            orderItemId: systemItem.order_item_id,
-            orderId: systemItem.order_id,
-            productId: systemItem.product_id,
-            upc: b.upc,
-            productName: systemItem.product_name || product.name,
-            size: systemItem.size || product.size,
-            color: systemItem.color || product.color,
-            location: b.location || systemItem.location_name,
-            locationId: systemItem.location_id,
-            brandQty: b.qty,
-            systemQty: systemItem.current_qty,
-            diff: b.qty - systemItem.current_qty,
-          });
-        } else {
-          matched.push({
-            upc: b.upc,
-            productName: systemItem.product_name,
-            size: systemItem.size,
-            location: systemItem.location_name,
-            qty: systemItem.current_qty,
-          });
+      // Find matching system items:
+      // If brand item has a location, match exactly.
+      // If no location, match all system items with that UPC.
+      let matchKeys = [];
+      if (b.locationId) {
+        const key = `${b.upc}|${b.locationId}`;
+        if (systemMap[key]) matchKeys = [key];
+      } else {
+        matchKeys = upcToKeys[b.upc] || [];
+      }
+
+      if (matchKeys.length > 0) {
+        for (const key of matchKeys) {
+          const systemItem = systemMap[key];
+          brandSeen.add(key);
+          if (b.qty !== systemItem.current_qty) {
+            qtyChanges.push({
+              orderItemId: systemItem.order_item_id,
+              orderId: systemItem.order_id,
+              productId: systemItem.product_id,
+              upc: b.upc,
+              productName: systemItem.product_name || product.name,
+              size: systemItem.size || product.size,
+              color: systemItem.color || product.color,
+              location: b.location || systemItem.location_name,
+              locationId: systemItem.location_id,
+              brandQty: b.qty,
+              systemQty: systemItem.current_qty,
+              diff: b.qty - systemItem.current_qty,
+            });
+          } else {
+            matched.push({
+              upc: b.upc,
+              productName: systemItem.product_name,
+              size: systemItem.size,
+              location: systemItem.location_name,
+              qty: systemItem.current_qty,
+            });
+          }
         }
       } else {
         brandOnly.push({
