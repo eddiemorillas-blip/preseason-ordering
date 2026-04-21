@@ -73,6 +73,19 @@ const Revisions = () => {
   const [downloading, setDownloading] = useState(false);
   const [showTemplateEditor, setShowTemplateEditor] = useState(false);
 
+  // Paste-from-clipboard state
+  const [spreadsheetSubMode, setSpreadsheetSubMode] = useState('upload');
+  const [pasteText, setPasteText] = useState('');
+  const [pasteSeparator, setPasteSeparator] = useState('auto');
+  const [pasteHasHeaders, setPasteHasHeaders] = useState(true);
+  const [pasteColumnMapping, setPasteColumnMapping] = useState({});
+  const [pasteParsedPreview, setPasteParsedPreview] = useState(null);
+  const [pasteBuckets, setPasteBuckets] = useState(null);
+  const [pasteDecisions, setPasteDecisions] = useState([]);
+  const [pasteSummary, setPasteSummary] = useState(null);
+  const [pasteWarnings, setPasteWarnings] = useState([]);
+  const [pasteCommitting, setPasteCommitting] = useState(false);
+
   // Compare state
   const [compareFile, setCompareFile] = useState(null);
   const [compareResults, setCompareResults] = useState(null);
@@ -384,6 +397,77 @@ const Revisions = () => {
     }
   };
 
+  // ---- Paste handlers ----
+  const parsePasteLocally = (text) => {
+    if (!text.trim()) { setPasteParsedPreview(null); return; }
+    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim());
+    let sep = '\t';
+    if (pasteSeparator !== 'auto') {
+      sep = { tab: '\t', comma: ',', pipe: '|', semicolon: ';' }[pasteSeparator] || '\t';
+    } else {
+      const sample = lines.slice(0, 5).join('\n');
+      if ((sample.match(/\t/g) || []).length > 0) sep = '\t';
+      else if ((sample.match(/,/g) || []).length > 0) sep = ',';
+      else if ((sample.match(/\|/g) || []).length > 0) sep = '|';
+      else if ((sample.match(/;/g) || []).length > 0) sep = ';';
+    }
+    const rows = lines.map(l => l.split(sep).map(c => c.trim()));
+    const startIdx = pasteHasHeaders ? 1 : 0;
+    const dataRows = rows.slice(startIdx, startIdx + 5);
+    const allDataRows = rows.slice(startIdx);
+    const maxCols = Math.max(...rows.map(r => r.length), 0);
+    if (!pasteColumnMapping.upcCol && !pasteColumnMapping.qtyCol) {
+      const autoMapping = {};
+      for (let c = 0; c < maxCols; c++) {
+        const vals = allDataRows.slice(0, 10).map(r => r[c] || '');
+        const digits = vals.filter(v => /^\d{8,14}$/.test(v.replace(/[^0-9]/g, '')));
+        const smallNums = vals.filter(v => /^\d{1,4}$/.test(v.trim()) && parseInt(v) < 1000);
+        if (digits.length > vals.length * 0.5 && !autoMapping.upcCol) autoMapping.upcCol = c;
+        else if (smallNums.length > vals.length * 0.3 && !autoMapping.qtyCol && autoMapping.upcCol !== c) autoMapping.qtyCol = c;
+      }
+      if (Object.keys(autoMapping).length > 0) setPasteColumnMapping(prev => ({ ...prev, ...autoMapping }));
+    }
+    setPasteParsedPreview({ rows: dataRows, totalRows: allDataRows.length, maxCols, headers: pasteHasHeaders ? rows[0] : null });
+  };
+
+  const handlePastePreview = async () => {
+    setLoading(true); setError('');
+    setPasteBuckets(null); setPasteDecisions([]); setPasteSummary(null); setPasteWarnings([]);
+    try {
+      const res = await revisionAPI.pastePreview({
+        brandId: parseInt(selectedBrandId), seasonId: parseInt(selectedSeasonId),
+        rawText: pasteText,
+        separator: pasteSeparator === 'auto' ? undefined : pasteSeparator,
+        hasHeaders: pasteHasHeaders, columnMapping: pasteColumnMapping,
+      });
+      setPasteBuckets(res.data.buckets);
+      setPasteDecisions(res.data.decisions || []);
+      setPasteSummary(res.data.summary);
+      setPasteWarnings(res.data.parseWarnings || []);
+      setStep('preview');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to parse pasted data');
+    } finally { setLoading(false); }
+  };
+
+  const handlePasteCommit = async () => {
+    setPasteCommitting(true); setError('');
+    try {
+      const res = await revisionAPI.pasteCommit({
+        brandId: parseInt(selectedBrandId), seasonId: parseInt(selectedSeasonId),
+        rawText: pasteText,
+        separator: pasteSeparator === 'auto' ? undefined : pasteSeparator,
+        hasHeaders: pasteHasHeaders, columnMapping: pasteColumnMapping,
+        revisionNotes,
+      });
+      setRevisionId(res.data.revisionId);
+      setSummary(res.data.summary);
+      setStep('done');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to commit paste revision');
+    } finally { setPasteCommitting(false); }
+  };
+
   // Compare handler
   const handleCompare = async () => {
     if (!compareFile) return;
@@ -463,6 +547,14 @@ const Revisions = () => {
     setCompareResults(null);
     setReconcilePaste('');
     setPasteColumns({ upc: '', location: '', qty: '' });
+    setPasteText('');
+    setPasteColumnMapping({});
+    setPasteParsedPreview(null);
+    setPasteBuckets(null);
+    setPasteDecisions([]);
+    setPasteSummary(null);
+    setPasteWarnings([]);
+    setSpreadsheetSubMode('upload');
   };
 
   const formatDate = (d) => d ? new Date(d).toLocaleDateString() : '-';
@@ -595,7 +687,7 @@ const Revisions = () => {
                     onClick={() => { setMode('spreadsheet'); setStep('configure'); }}
                     className="w-full px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
                   >
-                    Upload Spreadsheet
+                    Upload / Paste
                   </button>
                 )}
                 {step !== 'idle' && (
@@ -714,28 +806,146 @@ const Revisions = () => {
 
                     {mode === 'spreadsheet' && (
                       <div className="space-y-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">Vendor Spreadsheet</label>
-                          <input
-                            type="file"
-                            accept=".xlsx,.xls,.csv"
-                            onChange={e => setSpreadsheetFile(e.target.files[0])}
-                            className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                          />
-                          <p className="text-xs text-gray-400 mt-1">
-                            Uses saved column template for {selectedBrand?.name || 'this brand'}.
-                          </p>
-                        </div>
-                        <button onClick={() => setShowTemplateEditor(true)} className="text-sm text-blue-600 hover:text-blue-800">
-                          Configure column mapping
-                        </button>
-                        <div className="flex gap-2 pt-4">
-                          <button onClick={resetWorkflow} className="px-4 py-2 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">Cancel</button>
-                          <button onClick={handleSpreadsheetPreview} disabled={loading || !spreadsheetFile}
-                            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400">
-                            {loading ? 'Processing...' : 'Preview Revisions'}
+                        {/* Sub-tabs: Upload vs Paste */}
+                        <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+                          <button onClick={() => setSpreadsheetSubMode('upload')}
+                            className={`flex-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${spreadsheetSubMode === 'upload' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                            Upload File
+                          </button>
+                          <button onClick={() => setSpreadsheetSubMode('paste')}
+                            className={`flex-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${spreadsheetSubMode === 'paste' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                            Paste from Clipboard
                           </button>
                         </div>
+
+                        {spreadsheetSubMode === 'upload' && (
+                          <>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">Vendor Spreadsheet</label>
+                              <input type="file" accept=".xlsx,.xls,.csv"
+                                onChange={e => setSpreadsheetFile(e.target.files[0])}
+                                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
+                              <p className="text-xs text-gray-400 mt-1">
+                                Uses saved column template for {selectedBrand?.name || 'this brand'}.
+                              </p>
+                            </div>
+                            <button onClick={() => setShowTemplateEditor(true)} className="text-sm text-blue-600 hover:text-blue-800">
+                              Configure column mapping
+                            </button>
+                            <div className="flex gap-2 pt-4">
+                              <button onClick={resetWorkflow} className="px-4 py-2 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">Cancel</button>
+                              <button onClick={handleSpreadsheetPreview} disabled={loading || !spreadsheetFile}
+                                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400">
+                                {loading ? 'Processing...' : 'Preview Revisions'}
+                              </button>
+                            </div>
+                          </>
+                        )}
+
+                        {spreadsheetSubMode === 'paste' && (
+                          <div className="space-y-4">
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">Paste your UPC + quantity data</label>
+                              <textarea value={pasteText}
+                                onChange={e => { setPasteText(e.target.value); parsePasteLocally(e.target.value); }}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono" rows={8}
+                                placeholder={"UPC\tQty\n840016123456\t2\n840016123457\t4\n840016123458\t1"} />
+                            </div>
+                            <div className="flex flex-wrap gap-4 items-center">
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs font-medium text-gray-600">Separator</label>
+                                <select value={pasteSeparator}
+                                  onChange={e => { setPasteSeparator(e.target.value); parsePasteLocally(pasteText); }}
+                                  className="text-xs border border-gray-300 rounded px-2 py-1">
+                                  <option value="auto">Auto-detect</option>
+                                  <option value="tab">Tab</option>
+                                  <option value="comma">Comma</option>
+                                  <option value="pipe">Pipe</option>
+                                  <option value="semicolon">Semicolon</option>
+                                </select>
+                              </div>
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                                <input type="checkbox" checked={pasteHasHeaders}
+                                  onChange={e => { setPasteHasHeaders(e.target.checked); parsePasteLocally(pasteText); }}
+                                  className="rounded border-gray-300" />
+                                Column Headers
+                              </label>
+                            </div>
+
+                            {/* Parsed preview with column mapping */}
+                            {pasteParsedPreview && pasteParsedPreview.rows.length > 0 && (
+                              <div className="border rounded-lg overflow-hidden">
+                                <div className="bg-gray-50 px-3 py-1.5 border-b flex items-center justify-between">
+                                  <span className="text-xs font-medium text-gray-600">Column Mapping — {pasteParsedPreview.totalRows} data row{pasteParsedPreview.totalRows !== 1 ? 's' : ''}</span>
+                                </div>
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-xs">
+                                    <thead>
+                                      <tr className="bg-gray-50 border-b">
+                                        {Array.from({ length: pasteParsedPreview.maxCols }, (_, i) => (
+                                          <th key={i} className="px-2 py-1.5 text-center min-w-[80px]">
+                                            <div className="text-gray-400 mb-1">{String.fromCharCode(65 + i)}</div>
+                                            <select
+                                              value={
+                                                pasteColumnMapping.upcCol === i ? 'upc' :
+                                                pasteColumnMapping.qtyCol === i ? 'qty' :
+                                                pasteColumnMapping.locationCol === i ? 'location' : ''
+                                              }
+                                              onChange={e => {
+                                                const role = e.target.value;
+                                                setPasteColumnMapping(prev => {
+                                                  const next = { ...prev };
+                                                  for (const k of ['upcCol', 'qtyCol', 'locationCol', 'sizeCol', 'colorCol']) {
+                                                    if (next[k] === i) delete next[k];
+                                                  }
+                                                  if (role) next[role + 'Col'] = i;
+                                                  return next;
+                                                });
+                                              }}
+                                              className="w-full px-1 py-0.5 border border-gray-300 rounded text-xs bg-white">
+                                              <option value="">—</option>
+                                              <option value="upc">UPC/SKU</option>
+                                              <option value="qty">Quantity</option>
+                                              <option value="location">Location</option>
+                                            </select>
+                                          </th>
+                                        ))}
+                                      </tr>
+                                      {pasteParsedPreview.headers && (
+                                        <tr className="bg-blue-50 border-b">
+                                          {pasteParsedPreview.headers.map((h, i) => (
+                                            <td key={i} className="px-2 py-1 text-blue-700 font-medium">{h}</td>
+                                          ))}
+                                        </tr>
+                                      )}
+                                    </thead>
+                                    <tbody>
+                                      {pasteParsedPreview.rows.map((row, ri) => (
+                                        <tr key={ri} className="border-t">
+                                          {Array.from({ length: pasteParsedPreview.maxCols }, (_, ci) => (
+                                            <td key={ci} className={`px-2 py-1 font-mono ${
+                                              pasteColumnMapping.upcCol === ci ? 'bg-blue-50 text-blue-700' :
+                                              pasteColumnMapping.qtyCol === ci ? 'bg-amber-50 text-amber-700' :
+                                              pasteColumnMapping.locationCol === ci ? 'bg-green-50 text-green-700' : 'text-gray-600'
+                                            }`}>{row[ci] || ''}</td>
+                                          ))}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="flex gap-2 pt-2">
+                              <button onClick={resetWorkflow} className="px-4 py-2 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">Cancel</button>
+                              <button onClick={handlePastePreview} disabled={loading || !pasteText.trim()}
+                                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400">
+                                {loading ? 'Parsing...' : 'Parse & Preview'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -980,8 +1190,162 @@ const Revisions = () => {
                   </div>
                 )}
 
-                {/* PREVIEW — SPREADSHEET MODE */}
-                {step === 'preview' && mode === 'spreadsheet' && spreadsheetSummary && (
+                {/* PREVIEW — PASTE MODE */}
+                {step === 'preview' && mode === 'spreadsheet' && spreadsheetSubMode === 'paste' && pasteBuckets && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-bold text-gray-900">Paste Preview</h3>
+                      <div className="flex gap-2">
+                        <button onClick={() => { setStep('configure'); setPasteBuckets(null); setPasteDecisions([]); setPasteSummary(null); }}
+                          className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800">Back</button>
+                        <button onClick={handlePasteCommit} disabled={pasteCommitting || !pasteDecisions.length}
+                          className="px-4 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:bg-gray-400">
+                          {pasteCommitting ? 'Committing...' : 'Commit Revision'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {pasteWarnings.length > 0 && (
+                      <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3">
+                        {pasteWarnings.map((w, i) => <p key={i} className="text-sm text-yellow-800">{w}</p>)}
+                      </div>
+                    )}
+
+                    {/* Buckets */}
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                      <div className="bg-green-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-green-600">Available</p>
+                        <p className="text-lg font-semibold text-green-700">{pasteBuckets.fullyAvailable?.length || 0}</p>
+                      </div>
+                      <div className="bg-yellow-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-yellow-600">Partial</p>
+                        <p className="text-lg font-semibold text-yellow-700">{pasteBuckets.partiallyAvailable?.length || 0}</p>
+                      </div>
+                      <div className="bg-blue-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-blue-600">Future</p>
+                        <p className="text-lg font-semibold text-blue-700">{pasteBuckets.futureAvailable?.length || 0}</p>
+                      </div>
+                      <div className="bg-red-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-red-600">Unavailable</p>
+                        <p className="text-lg font-semibold text-red-700">{pasteBuckets.unavailable?.length || 0}</p>
+                      </div>
+                      <div className="bg-gray-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-gray-600">Not Found</p>
+                        <p className="text-lg font-semibold text-gray-700">{pasteBuckets.notFound?.length || 0}</p>
+                      </div>
+                    </div>
+
+                    {pasteBuckets.notFound?.length > 0 && (
+                      <details className="border rounded-lg">
+                        <summary className="px-3 py-2 text-sm font-medium text-gray-700 cursor-pointer hover:bg-gray-50">
+                          {pasteBuckets.notFound.length} Not Found
+                        </summary>
+                        <div className="border-t px-3 py-2 space-y-1 max-h-40 overflow-y-auto">
+                          {pasteBuckets.notFound.slice(0, 50).map((item, i) => (
+                            <div key={i} className="text-xs text-gray-600 font-mono">{item.upc} {item.note ? `— ${item.note}` : ''}</div>
+                          ))}
+                          <button onClick={() => navigator.clipboard.writeText(pasteBuckets.notFound.map(i => i.upc).join('\n'))}
+                            className="mt-2 text-xs text-blue-600 hover:text-blue-800">Copy unmatched UPCs</button>
+                        </div>
+                      </details>
+                    )}
+
+                    {pasteBuckets.unavailable?.length > 0 && (
+                      <details className="border rounded-lg">
+                        <summary className="px-3 py-2 text-sm font-medium text-red-700 cursor-pointer hover:bg-red-50">
+                          {pasteBuckets.unavailable.length} Unavailable (discontinued)
+                        </summary>
+                        <div className="border-t max-h-40 overflow-y-auto">
+                          <table className="w-full text-xs"><tbody>
+                            {pasteBuckets.unavailable.slice(0, 50).map((item, i) => (
+                              <tr key={i} className="border-t">
+                                <td className="px-3 py-1">{item.productName || item.upc}</td>
+                                <td className="px-3 py-1">{item.size || '-'}</td>
+                                <td className="px-3 py-1 text-center">{item.qty}</td>
+                                <td className="px-3 py-1 text-red-500">{item.reason}</td>
+                              </tr>
+                            ))}
+                          </tbody></table>
+                        </div>
+                      </details>
+                    )}
+
+                    {/* Decision stats */}
+                    {pasteSummary && (
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="bg-gray-50 rounded-lg p-3 text-center">
+                          <p className="text-xs text-gray-500">Total</p>
+                          <p className="text-xl font-semibold">{pasteSummary.totalItems}</p>
+                        </div>
+                        <div className="bg-green-50 rounded-lg p-3 text-center">
+                          <p className="text-xs text-green-600">Ship</p>
+                          <p className="text-xl font-semibold text-green-700">{pasteSummary.ship}</p>
+                        </div>
+                        <div className="bg-red-50 rounded-lg p-3 text-center">
+                          <p className="text-xs text-red-600">Cancel</p>
+                          <p className="text-xl font-semibold text-red-700">{pasteSummary.cancel}</p>
+                        </div>
+                        <div className="bg-blue-50 rounded-lg p-3 text-center">
+                          <p className="text-xs text-blue-600">Reduction</p>
+                          <p className="text-xl font-semibold text-blue-700">{pasteSummary.reductionPct}%</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Decisions table */}
+                    {pasteDecisions.length > 0 && (
+                      <div className="border rounded-lg overflow-hidden">
+                        <div className="max-h-[45vh] overflow-y-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50 sticky top-0">
+                              <tr>
+                                <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Product</th>
+                                <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Size</th>
+                                <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
+                                <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Qty</th>
+                                <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">On Hand</th>
+                                <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Target</th>
+                                <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Decision</th>
+                                <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Adj Qty</th>
+                                <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Reason</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pasteDecisions.map((d, idx) => (
+                                <tr key={idx} className={`border-t ${DECISION_COLORS[d.decision] || ''}`}>
+                                  <td className="px-3 py-2">
+                                    <div className="font-medium truncate max-w-[180px]">{d.productName || 'Unknown'}</div>
+                                    <div className="text-xs text-gray-400 font-mono">{d.upc}</div>
+                                  </td>
+                                  <td className="px-3 py-2">{d.size || '-'}</td>
+                                  <td className="px-3 py-2 text-xs">{d.location || '-'}</td>
+                                  <td className="px-3 py-2 text-center">{d.originalQty}</td>
+                                  <td className="px-3 py-2 text-center">
+                                    <span className={d.onHand > 0 ? 'text-green-600' : 'text-gray-500'}>{d.onHand}</span>
+                                  </td>
+                                  <td className="px-3 py-2 text-center text-xs text-gray-500">{d.targetQty > 0 ? d.targetQty : '\u2014'}</td>
+                                  <td className="px-3 py-2 text-center">
+                                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${DECISION_BADGES[d.decision]}`}>
+                                      {d.decision.toUpperCase()}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2 text-center">{d.adjustedQty}</td>
+                                  <td className="px-3 py-2 text-xs text-gray-500">{REASON_LABELS[d.reason] || d.reason}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="bg-gray-50 px-3 py-2 text-xs text-gray-500 border-t">
+                          {pasteDecisions.length} items from pasted data
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* PREVIEW — SPREADSHEET FILE MODE */}
+                {step === 'preview' && mode === 'spreadsheet' && spreadsheetSubMode !== 'paste' && spreadsheetSummary && (
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
                       <h3 className="text-lg font-bold text-gray-900">Spreadsheet Analysis</h3>
