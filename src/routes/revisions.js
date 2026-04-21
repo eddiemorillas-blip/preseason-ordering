@@ -1854,13 +1854,13 @@ router.post('/paste-preview', authorizeRoles('admin', 'buyer'), async (req, res)
       return res.status(400).json({ error: 'No valid UPCs found in pasted data', parseWarnings: parsed.warnings });
     }
 
-    // Lookup products by UPC within this brand
+    // Lookup products by UPC
     const uniqueUPCs = [...new Set(rawItems.map(r => r.upc))];
-    const upcPlaceholders = uniqueUPCs.map((_, i) => `$${i + 2}`).join(',');
-    let prodQuery = `SELECT id, upc, name, size, color, category, brand_id, season_id, wholesale_cost FROM products WHERE upc IN (${upcPlaceholders})`;
-    const prodParams = [brandId, ...uniqueUPCs];
-    // Filter by brand if possible, but also include non-brand matches for notFound classification
-    const prodResult = await pool.query(prodQuery, prodParams.slice(1));
+    const upcPlaceholders = uniqueUPCs.map((_, i) => `$${i + 1}`).join(',');
+    const prodResult = await pool.query(
+      `SELECT id, upc, name, size, color, category, brand_id, season_id, wholesale_cost FROM products WHERE upc IN (${upcPlaceholders})`,
+      uniqueUPCs
+    );
     const productMap = {};
     for (const p of prodResult.rows) { if (p.upc) productMap[p.upc] = p; }
 
