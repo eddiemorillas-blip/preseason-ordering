@@ -273,6 +273,8 @@ export const revisionAPI = {
     headers: { 'Content-Type': 'multipart/form-data' },
     responseType: 'blob'
   }),
+  pastePreview: (body) => api.post('/revisions/paste-preview', body),
+  pasteCommit: (body) => api.post('/revisions/paste-commit', body),
 };
 
 export default api;

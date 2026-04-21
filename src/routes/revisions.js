@@ -8,6 +8,7 @@ const multer = require('multer');
 const { bigquery, FACILITY_TO_LOCATION, LOCATION_TO_FACILITY } = require('../services/bigquery');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 const { computeDecisions } = require('../services/revisionEngine');
+const { parsePastedGrid } = require('../services/pasteParser');
 
 /**
  * Parse a PDF file into rows of data (like a spreadsheet).
@@ -1812,6 +1813,440 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
 
   } catch (error) {
     console.error('Spreadsheet revision error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/revisions/paste-preview
+ * Elastic-style paste: parse clipboard grid, classify into buckets, run computeDecisions.
+ * Preview only — does not persist.
+ */
+router.post('/paste-preview', authorizeRoles('admin', 'buyer'), async (req, res) => {
+  try {
+    const { brandId, seasonId, rawText, separator, hasHeaders, columnMapping } = req.body;
+
+    if (!brandId) return res.status(400).json({ error: 'brandId is required' });
+    if (!rawText || !rawText.trim()) return res.status(400).json({ error: 'rawText is required' });
+
+    // Parse the pasted grid
+    const parsed = parsePastedGrid(rawText, { separator: separator || undefined, hasHeaders: !!hasHeaders });
+    if (parsed.rows.length === 0) {
+      return res.status(400).json({ error: 'No data rows found', parseWarnings: parsed.warnings });
+    }
+
+    const mapping = columnMapping || {};
+    const upcCol = mapping.upcCol != null ? mapping.upcCol : 0;
+    const qtyCol = mapping.qtyCol != null ? mapping.qtyCol : (parsed.rows[0].length > 1 ? 1 : -1);
+    const locationCol = mapping.locationCol != null ? mapping.locationCol : -1;
+
+    // Extract items from rows
+    const rawItems = [];
+    for (const row of parsed.rows) {
+      const upc = (row[upcCol] || '').replace(/[^0-9]/g, '');
+      if (!upc || upc.length < 8 || upc.length > 14) continue;
+      const qty = qtyCol >= 0 && qtyCol < row.length ? (parseInt(row[qtyCol]) || 1) : 1;
+      const locationStr = locationCol >= 0 && locationCol < row.length ? row[locationCol] : null;
+      rawItems.push({ upc, qty, locationStr });
+    }
+
+    if (rawItems.length === 0) {
+      return res.status(400).json({ error: 'No valid UPCs found in pasted data', parseWarnings: parsed.warnings });
+    }
+
+    // Lookup products by UPC within this brand
+    const uniqueUPCs = [...new Set(rawItems.map(r => r.upc))];
+    const upcPlaceholders = uniqueUPCs.map((_, i) => `$${i + 2}`).join(',');
+    let prodQuery = `SELECT id, upc, name, size, color, category, brand_id, season_id, wholesale_cost FROM products WHERE upc IN (${upcPlaceholders})`;
+    const prodParams = [brandId, ...uniqueUPCs];
+    // Filter by brand if possible, but also include non-brand matches for notFound classification
+    const prodResult = await pool.query(prodQuery, prodParams.slice(1));
+    const productMap = {};
+    for (const p of prodResult.rows) { if (p.upc) productMap[p.upc] = p; }
+
+    // Get all locations
+    const locRes = await pool.query('SELECT id, name FROM locations');
+    const locationNames = {};
+    for (const r of locRes.rows) locationNames[r.id] = r.name;
+    const allLocationIds = locRes.rows.map(r => r.id);
+
+    const resolveLocationId = (locStr) => {
+      if (!locStr) return null;
+      const lower = locStr.toLowerCase();
+      if (lower.includes('salt lake') || lower.includes('slc')) return 1;
+      if (lower.includes('south main') || lower.includes('millcreek')) return 2;
+      if (lower.includes('ogden')) return 3;
+      return null;
+    };
+
+    // Get discontinued UPCs
+    const discontinuedUPCs = new Set();
+    try {
+      const discResult = await pool.query(
+        `SELECT key, value FROM knowledge_entries WHERE type = 'discontinued_product' AND active = TRUE AND ($1::int IS NULL OR target_id = $1)`,
+        [brandId]
+      );
+      for (const row of discResult.rows) {
+        if (row.key) discontinuedUPCs.add(row.key.toLowerCase());
+        if (row.value?.upc) discontinuedUPCs.add(String(row.value.upc));
+        if (row.value?.upcs) row.value.upcs.forEach(u => discontinuedUPCs.add(String(u)));
+      }
+    } catch (e) { /* */ }
+
+    // Classify into buckets
+    const buckets = {
+      fullyAvailable: [],
+      partiallyAvailable: [],
+      futureAvailable: [],
+      unavailable: [],
+      notFound: [],
+    };
+
+    const engineItems = [];
+
+    for (const ri of rawItems) {
+      const product = productMap[ri.upc];
+
+      if (!product) {
+        buckets.notFound.push({ upc: ri.upc, qty: ri.qty, locationStr: ri.locationStr });
+        continue;
+      }
+
+      const isDiscontinued = discontinuedUPCs.has(ri.upc.toLowerCase()) ||
+        discontinuedUPCs.has((product.name || '').toLowerCase());
+
+      if (isDiscontinued) {
+        buckets.unavailable.push({
+          upc: ri.upc, productName: product.name, size: product.size, color: product.color,
+          qty: ri.qty, reason: 'discontinued',
+        });
+        // Still add to engine items so the decision shows up
+        const locId = resolveLocationId(ri.locationStr);
+        const targetLocs = locId ? [locId] : allLocationIds;
+        for (const lid of targetLocs) {
+          engineItems.push({
+            product_id: product.id, location_id: lid, upc: ri.upc,
+            original_qty: ri.qty, product_name: product.name, size: product.size,
+            color: product.color, category: product.category,
+            location_name: locationNames[lid] || `Location ${lid}`,
+            order_item_id: null, order_id: null,
+          });
+        }
+        continue;
+      }
+
+      // Check if product belongs to the right brand
+      if (product.brand_id !== parseInt(brandId)) {
+        buckets.notFound.push({ upc: ri.upc, qty: ri.qty, locationStr: ri.locationStr, note: `Wrong brand (product brand_id=${product.brand_id})` });
+        continue;
+      }
+
+      // Check future ship date
+      if (product.season_id && seasonId) {
+        // We'd need to check season dates — simplified: just check if product's season_id differs
+        // For now, treat all matched products as available
+      }
+
+      const locId = resolveLocationId(ri.locationStr);
+      const targetLocs = locId ? [locId] : allLocationIds;
+
+      buckets.fullyAvailable.push({
+        upc: ri.upc, productName: product.name, size: product.size, color: product.color,
+        qty: ri.qty, locationCount: targetLocs.length,
+      });
+
+      for (const lid of targetLocs) {
+        engineItems.push({
+          product_id: product.id, location_id: lid, upc: ri.upc,
+          original_qty: ri.qty, product_name: product.name, size: product.size,
+          color: product.color, category: product.category,
+          location_name: locationNames[lid] || `Location ${lid}`,
+          order_item_id: null, order_id: null,
+        });
+      }
+    }
+
+    // Load targets, inventory, sales for engine items
+    let decisions = [];
+    let summary = { totalItems: 0, ship: 0, cancel: 0, keepOpen: 0, originalTotalQty: 0, adjustedTotalQty: 0, reductionPct: 0 };
+
+    if (engineItems.length > 0) {
+      // Targets
+      const productIds = [...new Set(engineItems.map(i => i.product_id))];
+      const targetMap = {};
+      if (productIds.length > 0) {
+        const tPlaceholders = productIds.map((_, i) => `$${i + 1}`).join(',');
+        const targetResult = await pool.query(
+          `SELECT product_id, location_id, target_qty FROM product_location_targets WHERE product_id IN (${tPlaceholders})`,
+          productIds
+        );
+        for (const row of targetResult.rows) targetMap[`${row.product_id}|${row.location_id}`] = row.target_qty;
+      }
+
+      // Inventory from BigQuery
+      const inventoryMap = {};
+      if (bigquery) {
+        const upcs = [...new Set(engineItems.map(i => i.upc).filter(Boolean))];
+        if (upcs.length > 0) {
+          const upcList = upcs.map(u => `'${u}'`).join(',');
+          try {
+            const [bqRows] = await bigquery.query({
+              query: `SELECT DISTINCT i.barcode AS upc, i.facility_id, i.on_hand_qty
+                FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+                WHERE i.barcode IN (${upcList}) AND i.facility_id IN (41185, 1003, 1000)`
+            });
+            for (const row of bqRows) {
+              const locId = FACILITY_TO_LOCATION[String(row.facility_id)];
+              if (locId) inventoryMap[`${row.upc}|${locId}`] = parseInt(row.on_hand_qty) || 0;
+            }
+          } catch (e) { /* BigQuery may not be available in dev */ }
+        }
+      }
+
+      // Sales
+      const salesMap = {};
+      if (bigquery) {
+        const upcs = [...new Set(engineItems.map(i => i.upc).filter(Boolean))];
+        if (upcs.length > 0) {
+          const upcList = upcs.map(u => `'${u}'`).join(',');
+          try {
+            const [salesRows] = await bigquery.query({
+              query: `SELECT p.BARCODE AS upc, p.facility_id_true AS facility_id,
+                SUM(ii.QUANTITY) AS qty_sold, COUNT(DISTINCT i.invoice_concat) AS txns
+                FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+                JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+                JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+                WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+                  AND ii.QUANTITY > 0 AND p.BARCODE IN (${upcList})
+                  AND p.facility_id_true IN (41185, 1003, 1000)
+                GROUP BY p.BARCODE, p.facility_id_true`
+            });
+            for (const row of salesRows) {
+              const locId = FACILITY_TO_LOCATION[String(row.facility_id)];
+              if (locId) salesMap[`${row.upc}|${locId}`] = { qtySold: parseInt(row.qty_sold) || 0, transactions: parseInt(row.txns) || 0 };
+            }
+          } catch (e) { /* */ }
+        }
+      }
+
+      const result = computeDecisions({
+        items: engineItems, targetMap, inventoryMap, salesMap,
+        priorRevisionMap: {}, discontinuedUPCs,
+      });
+      decisions = result.decisions;
+      summary = result.summary;
+    }
+
+    res.json({
+      buckets,
+      decisions,
+      summary,
+      parseWarnings: parsed.warnings,
+      parsedRowCount: parsed.rows.length,
+      matchedItemCount: engineItems.length,
+    });
+  } catch (error) {
+    console.error('Paste preview error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/revisions/paste-commit
+ * Persist a paste-based revision. Re-runs classification + computeDecisions and writes to DB.
+ */
+router.post('/paste-commit', authorizeRoles('admin', 'buyer'), async (req, res) => {
+  try {
+    const { brandId, seasonId, rawText, separator, hasHeaders, columnMapping, revisionNotes } = req.body;
+
+    if (!brandId) return res.status(400).json({ error: 'brandId is required' });
+    if (!rawText || !rawText.trim()) return res.status(400).json({ error: 'rawText is required' });
+
+    // Parse
+    const parsed = parsePastedGrid(rawText, { separator: separator || undefined, hasHeaders: !!hasHeaders });
+    if (parsed.rows.length === 0) return res.status(400).json({ error: 'No data rows found' });
+
+    const mapping = columnMapping || {};
+    const upcCol = mapping.upcCol != null ? mapping.upcCol : 0;
+    const qtyCol = mapping.qtyCol != null ? mapping.qtyCol : (parsed.rows[0].length > 1 ? 1 : -1);
+    const locationCol = mapping.locationCol != null ? mapping.locationCol : -1;
+
+    // Extract items
+    const rawItems = [];
+    for (const row of parsed.rows) {
+      const upc = (row[upcCol] || '').replace(/[^0-9]/g, '');
+      if (!upc || upc.length < 8 || upc.length > 14) continue;
+      const qty = qtyCol >= 0 && qtyCol < row.length ? (parseInt(row[qtyCol]) || 1) : 1;
+      const locationStr = locationCol >= 0 && locationCol < row.length ? row[locationCol] : null;
+      rawItems.push({ upc, qty, locationStr });
+    }
+
+    if (rawItems.length === 0) return res.status(400).json({ error: 'No valid UPCs found' });
+
+    // Lookup products
+    const uniqueUPCs = [...new Set(rawItems.map(r => r.upc))];
+    const prodResult = await pool.query(
+      `SELECT id, upc, name, size, color, category, brand_id, wholesale_cost FROM products WHERE upc IN (${uniqueUPCs.map((_, i) => `$${i + 1}`).join(',')})`,
+      uniqueUPCs
+    );
+    const productMap = {};
+    for (const p of prodResult.rows) { if (p.upc) productMap[p.upc] = p; }
+
+    const locRes = await pool.query('SELECT id, name FROM locations');
+    const locationNames = {};
+    for (const r of locRes.rows) locationNames[r.id] = r.name;
+    const allLocationIds = locRes.rows.map(r => r.id);
+
+    const resolveLocationId = (locStr) => {
+      if (!locStr) return null;
+      const lower = locStr.toLowerCase();
+      if (lower.includes('salt lake') || lower.includes('slc')) return 1;
+      if (lower.includes('south main') || lower.includes('millcreek')) return 2;
+      if (lower.includes('ogden')) return 3;
+      return null;
+    };
+
+    // Discontinued
+    const discontinuedUPCs = new Set();
+    try {
+      const discResult = await pool.query(
+        `SELECT key, value FROM knowledge_entries WHERE type = 'discontinued_product' AND active = TRUE AND ($1::int IS NULL OR target_id = $1)`,
+        [brandId]
+      );
+      for (const row of discResult.rows) {
+        if (row.key) discontinuedUPCs.add(row.key.toLowerCase());
+        if (row.value?.upc) discontinuedUPCs.add(String(row.value.upc));
+        if (row.value?.upcs) row.value.upcs.forEach(u => discontinuedUPCs.add(String(u)));
+      }
+    } catch (e) { /* */ }
+
+    // Build engine items (only brand-matched products)
+    const engineItems = [];
+    for (const ri of rawItems) {
+      const product = productMap[ri.upc];
+      if (!product || product.brand_id !== parseInt(brandId)) continue;
+      const locId = resolveLocationId(ri.locationStr);
+      const targetLocs = locId ? [locId] : allLocationIds;
+      for (const lid of targetLocs) {
+        engineItems.push({
+          product_id: product.id, location_id: lid, upc: ri.upc,
+          original_qty: ri.qty, product_name: product.name, size: product.size,
+          color: product.color, category: product.category,
+          location_name: locationNames[lid] || `Location ${lid}`,
+          order_item_id: null, order_id: null,
+        });
+      }
+    }
+
+    if (engineItems.length === 0) return res.status(400).json({ error: 'No matching products found for this brand' });
+
+    // Load targets
+    const productIds = [...new Set(engineItems.map(i => i.product_id))];
+    const targetMap = {};
+    if (productIds.length > 0) {
+      const tPlaceholders = productIds.map((_, i) => `$${i + 1}`).join(',');
+      const targetResult = await pool.query(
+        `SELECT product_id, location_id, target_qty FROM product_location_targets WHERE product_id IN (${tPlaceholders})`,
+        productIds
+      );
+      for (const row of targetResult.rows) targetMap[`${row.product_id}|${row.location_id}`] = row.target_qty;
+    }
+
+    // Inventory + sales (same as paste-preview)
+    const inventoryMap = {};
+    const salesMap = {};
+    if (bigquery) {
+      const upcs = [...new Set(engineItems.map(i => i.upc).filter(Boolean))];
+      if (upcs.length > 0) {
+        const upcList = upcs.map(u => `'${u}'`).join(',');
+        try {
+          const [bqRows] = await bigquery.query({
+            query: `SELECT DISTINCT i.barcode AS upc, i.facility_id, i.on_hand_qty
+              FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+              WHERE i.barcode IN (${upcList}) AND i.facility_id IN (41185, 1003, 1000)`
+          });
+          for (const row of bqRows) {
+            const locId = FACILITY_TO_LOCATION[String(row.facility_id)];
+            if (locId) inventoryMap[`${row.upc}|${locId}`] = parseInt(row.on_hand_qty) || 0;
+          }
+        } catch (e) { /* */ }
+
+        try {
+          const [salesRows] = await bigquery.query({
+            query: `SELECT p.BARCODE AS upc, p.facility_id_true AS facility_id,
+              SUM(ii.QUANTITY) AS qty_sold, COUNT(DISTINCT i.invoice_concat) AS txns
+              FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+              JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+              JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+              WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+                AND ii.QUANTITY > 0 AND p.BARCODE IN (${upcList})
+                AND p.facility_id_true IN (41185, 1003, 1000)
+              GROUP BY p.BARCODE, p.facility_id_true`
+          });
+          for (const row of salesRows) {
+            const locId = FACILITY_TO_LOCATION[String(row.facility_id)];
+            if (locId) salesMap[`${row.upc}|${locId}`] = { qtySold: parseInt(row.qty_sold) || 0, transactions: parseInt(row.txns) || 0 };
+          }
+        } catch (e) { /* */ }
+      }
+    }
+
+    // Run engine
+    const { decisions, summary } = computeDecisions({
+      items: engineItems, targetMap, inventoryMap, salesMap,
+      priorRevisionMap: {}, discontinuedUPCs,
+    });
+
+    // Persist revision
+    const revisionId = crypto.randomUUID();
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      await client.query(`
+        INSERT INTO revisions (
+          revision_id, brand_id, season_id, revision_type,
+          total_items, ship_count, cancel_count, keep_open_count,
+          original_total_qty, adjusted_total_qty, reduction_pct,
+          logic_applied, notes, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+      `, [
+        revisionId, brandId, seasonId || null, 'paste_revision',
+        summary.totalItems, summary.ship, summary.cancel, summary.keepOpen,
+        summary.originalTotalQty, summary.adjustedTotalQty, summary.reductionPct,
+        'target_qty', revisionNotes || null
+      ]);
+
+      for (const d of decisions) {
+        await client.query(`
+          INSERT INTO adjustment_history (
+            order_id, order_item_id, product_id,
+            original_quantity, new_quantity, adjustment_type, reasoning,
+            revision_id, brand_id, location_id, upc, product_name, size,
+            decision, decision_reason, on_hand_at_revision, was_flipped,
+            created_by, applied_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+        `, [
+          null, null, d.productId,
+          d.originalQty, d.adjustedQty, 'revision', d.reason,
+          revisionId, brandId, d.locationId, d.upc, d.productName, d.size,
+          d.decision, d.reason, d.onHand, false,
+          `web_user:${req.user.id}`
+        ]);
+      }
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    res.json({ revisionId, decisions, summary });
+  } catch (error) {
+    console.error('Paste commit error:', error);
     res.status(500).json({ error: error.message });
   }
 });
