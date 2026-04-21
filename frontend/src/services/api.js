@@ -253,6 +253,11 @@ export const agentAPI = {
 };
 
 // Revision API calls
+export const targetAPI = {
+  list: (params) => api.get('/targets', { params }),
+  saveBatch: (targets) => api.put('/targets', { targets }),
+};
+
 export const revisionAPI = {
   run: (data) => api.post('/revisions/run', data),
   apply: (data) => api.post('/revisions/apply', data),

@@ -13,7 +13,7 @@ function formatCurrency(num) {
 async function updateOrderDecisions(args) {
   const client = await pool.connect();
   try {
-    const { orderId, decisions, revisionNotes, maxReductionPct } = args;
+    const { orderId, decisions, revisionNotes } = args;
     if (!orderId || !decisions || !decisions.length) {
       return { content: [{ type: 'text', text: 'orderId and decisions array are required' }] };
     }
@@ -119,7 +119,7 @@ async function updateOrderDecisions(args) {
       revisionId, brandId, seasonId, 'monthly_adjustment',
       decisions.length - errors, shipped, cancelled, keepOpen,
       originalTotalQty, adjustedTotalQty, reductionPct,
-      maxReductionPct || null, revisionNotes || null
+      null, revisionNotes || null
     ]);
 
     // Update order timestamp
@@ -522,8 +522,7 @@ module.exports = [
             required: ['orderItemId', 'decision']
           }
         },
-        revisionNotes: { type: 'string', description: 'Notes for this revision session' },
-        maxReductionPct: { type: 'number', description: 'Max reduction percentage used (for audit trail)' }
+        revisionNotes: { type: 'string', description: 'Notes for this revision session' }
       },
       required: ['orderId', 'decisions']
     },

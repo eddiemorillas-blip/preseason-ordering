@@ -38,6 +38,7 @@ const Layout = ({ children, fullWidth }) => {
       items: [
         { path: '/', label: 'Order Manager' },
         { path: '/revisions', label: 'Revisions', buyerOnly: true },
+        { path: '/targets', label: 'Targets', buyerOnly: true },
         { path: '/order-adjustment', label: 'Adjust Orders', buyerOnly: true },
         { path: '/order-suggestions', label: 'Suggestions', buyerOnly: true },
         { path: '/export-center', label: 'Export Center', buyerOnly: true },

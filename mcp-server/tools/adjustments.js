@@ -658,7 +658,202 @@ async function modifyDecision(args) {
   }
 }
 
+/**
+ * get_target_qty: Query target quantities for products at locations
+ */
+async function getTargetQty(args) {
+  try {
+    const { upc, productId, locationId } = args;
+
+    if (!upc && !productId) {
+      return { content: [{ type: 'text', text: 'Either upc or productId is required' }] };
+    }
+
+    let query = `
+      SELECT plt.product_id, plt.location_id, plt.target_qty, plt.updated_at, plt.updated_by,
+             p.upc, p.name AS product_name, p.size, p.color,
+             l.name AS location_name
+      FROM product_location_targets plt
+      JOIN products p ON plt.product_id = p.id
+      JOIN locations l ON plt.location_id = l.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramIdx = 1;
+
+    if (upc) {
+      query += ` AND p.upc = $${paramIdx++}`;
+      params.push(upc);
+    }
+    if (productId) {
+      query += ` AND plt.product_id = $${paramIdx++}`;
+      params.push(productId);
+    }
+    if (locationId) {
+      query += ` AND plt.location_id = $${paramIdx++}`;
+      params.push(locationId);
+    }
+
+    query += ` ORDER BY p.name, p.size, l.id`;
+
+    const result = await pool.query(query, params);
+
+    if (result.rows.length === 0) {
+      // Try to find the product to give better feedback
+      let productInfo = '';
+      if (upc) {
+        const pRes = await pool.query('SELECT id, name, size FROM products WHERE upc = $1', [upc]);
+        if (pRes.rows.length > 0) {
+          productInfo = ` Product "${pRes.rows[0].name}" (size ${pRes.rows[0].size}) found but has no targets set.`;
+        } else {
+          productInfo = ` No product found with UPC ${upc}.`;
+        }
+      }
+      return { content: [{ type: 'text', text: `No targets found.${productInfo} Default target is 0 (do not stock).` }] };
+    }
+
+    let output = `TARGET QUANTITIES (${result.rows.length} rows)\n${'─'.repeat(80)}\n`;
+    output += `${'Product'.padEnd(30)} ${'Size'.padEnd(6)} ${'Location'.padEnd(14)} ${'Target'.padEnd(7)} Updated\n`;
+    output += `${'─'.repeat(80)}\n`;
+
+    for (const r of result.rows) {
+      output += `${(r.product_name || '').substring(0, 29).padEnd(30)} ` +
+        `${(r.size || '-').padEnd(6)} ` +
+        `${(r.location_name || '-').padEnd(14)} ` +
+        `${String(r.target_qty).padEnd(7)} ` +
+        `${r.updated_at ? r.updated_at.toISOString().split('T')[0] : '-'}\n`;
+    }
+
+    return { content: [{ type: 'text', text: output }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+  }
+}
+
+/**
+ * set_target_qty: Upsert target quantity for a product at a location
+ */
+async function setTargetQty(args) {
+  try {
+    const { upc, productId, locationId, targetQty, targets } = args;
+
+    // Bulk mode
+    if (targets && Array.isArray(targets) && targets.length > 0) {
+      const client = await pool.connect();
+      let updated = 0;
+      const details = [];
+      try {
+        await client.query('BEGIN');
+        for (const t of targets) {
+          let pid = t.productId;
+          if (!pid && t.upc) {
+            const pRes = await client.query('SELECT id, name, size FROM products WHERE upc = $1', [t.upc]);
+            if (pRes.rows.length > 0) pid = pRes.rows[0].id;
+            else { details.push(`UPC ${t.upc}: not found`); continue; }
+          }
+          if (!pid || !t.locationId || t.targetQty == null) continue;
+          await client.query(`
+            INSERT INTO product_location_targets (product_id, location_id, target_qty, updated_at, updated_by)
+            VALUES ($1, $2, $3, NOW(), 'chatbot')
+            ON CONFLICT (product_id, location_id) DO UPDATE SET target_qty = EXCLUDED.target_qty, updated_at = NOW(), updated_by = 'chatbot'
+          `, [pid, t.locationId, t.targetQty]);
+          details.push(`Product ${pid} @ Location ${t.locationId} → target ${t.targetQty}`);
+          updated++;
+        }
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+      return { content: [{ type: 'text', text: `SET ${updated} TARGET(S)\n${details.join('\n')}` }] };
+    }
+
+    // Single mode
+    if (targetQty == null || !locationId) {
+      return { content: [{ type: 'text', text: 'locationId and targetQty are required' }] };
+    }
+
+    let pid = productId;
+    let productName = '';
+    if (!pid && upc) {
+      const pRes = await pool.query('SELECT id, name, size FROM products WHERE upc = $1', [upc]);
+      if (pRes.rows.length === 0) return { content: [{ type: 'text', text: `No product found with UPC ${upc}` }] };
+      pid = pRes.rows[0].id;
+      productName = `${pRes.rows[0].name} (${pRes.rows[0].size})`;
+    }
+    if (!pid) return { content: [{ type: 'text', text: 'Either upc or productId is required' }] };
+
+    if (!productName) {
+      const pRes = await pool.query('SELECT name, size FROM products WHERE id = $1', [pid]);
+      if (pRes.rows.length > 0) productName = `${pRes.rows[0].name} (${pRes.rows[0].size})`;
+    }
+
+    // Get location name
+    const locRes = await pool.query('SELECT name FROM locations WHERE id = $1', [locationId]);
+    const locationName = locRes.rows.length > 0 ? locRes.rows[0].name : `Location ${locationId}`;
+
+    // Get old value
+    const oldRes = await pool.query(
+      'SELECT target_qty FROM product_location_targets WHERE product_id = $1 AND location_id = $2',
+      [pid, locationId]
+    );
+    const oldTarget = oldRes.rows.length > 0 ? oldRes.rows[0].target_qty : 0;
+
+    await pool.query(`
+      INSERT INTO product_location_targets (product_id, location_id, target_qty, updated_at, updated_by)
+      VALUES ($1, $2, $3, NOW(), 'chatbot')
+      ON CONFLICT (product_id, location_id) DO UPDATE SET target_qty = EXCLUDED.target_qty, updated_at = NOW(), updated_by = 'chatbot'
+    `, [pid, locationId, targetQty]);
+
+    return { content: [{ type: 'text', text: `TARGET SET: ${productName} at ${locationName}: ${oldTarget} → ${targetQty}` }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+  }
+}
+
 module.exports = [
+  {
+    name: 'get_target_qty',
+    description: 'Get target quantities for a product at each location. Target qty determines how many units we want on hand — the revision engine uses this to decide ship/cancel.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        upc: { type: 'string', description: 'Product UPC to look up' },
+        productId: { type: 'integer', description: 'Product ID (alternative to UPC)' },
+        locationId: { type: 'integer', description: 'Optional: filter to a specific location (1=SLC, 2=South Main, 3=Ogden)' }
+      }
+    },
+    handler: getTargetQty
+  },
+  {
+    name: 'set_target_qty',
+    description: 'Set target quantity for a product at a location. Target determines how many units we want on hand — the revision engine ships/cancels to reach this target. Writes directly to the database.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        upc: { type: 'string', description: 'Product UPC' },
+        productId: { type: 'integer', description: 'Product ID (alternative to UPC)' },
+        locationId: { type: 'integer', description: 'Location ID (1=SLC, 2=South Main, 3=Ogden)' },
+        targetQty: { type: 'integer', description: 'Target quantity (>= 0)' },
+        targets: {
+          type: 'array',
+          description: 'Bulk mode: array of {upc?, productId?, locationId, targetQty}',
+          items: {
+            type: 'object',
+            properties: {
+              upc: { type: 'string' },
+              productId: { type: 'integer' },
+              locationId: { type: 'integer' },
+              targetQty: { type: 'integer' }
+            }
+          }
+        }
+      }
+    },
+    handler: setTargetQty
+  },
   {
     name: 'modify_decision',
     description: 'Modify revision decisions by UPC, product name, size, or location. Works for ALL items including paste-mode items without an orderItemId. Use this instead of adjust_item when items have no orderItemId or when working with pasted brand orders. Returns changes that the frontend applies to the decisions list.',

@@ -7,6 +7,7 @@ const XlsxPopulate = require('xlsx-populate');
 const multer = require('multer');
 const { bigquery, FACILITY_TO_LOCATION, LOCATION_TO_FACILITY } = require('../services/bigquery');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
+const { computeDecisions } = require('../services/revisionEngine');
 
 /**
  * Parse a PDF file into rows of data (like a spreadsheet).
@@ -62,7 +63,7 @@ router.use(authenticateToken);
 router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
     const {
-      brandId, orderIds, maxReductionPct, dryRun,
+      brandId, orderIds, dryRun,
       includeAdditions, brandName, revisionNotes,
       pastedBrandOrder, columnOverrides
     } = req.body;
@@ -79,7 +80,6 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       return res.status(503).json({ error: 'BigQuery is not available. Revision requires live inventory data.' });
     }
 
-    const maxReduction = maxReductionPct !== undefined ? maxReductionPct : 0.20;
     const isDryRun = dryRun !== undefined ? dryRun : true;
     const withAdditions = includeAdditions !== undefined ? includeAdditions : true;
 
@@ -350,77 +350,29 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
       console.error('Sales lookup error (non-fatal):', e.message);
     }
 
-    // Apply decision logic
-    const decisions = [];
-    let totalOriginalQty = 0;
-    let shipCount = 0, cancelCount = 0, keepOpenCount = 0;
-
-    for (const item of items) {
-      const invKey = `${item.upc}|${item.location_id}`;
-      const onHand = inventoryMap[invKey] || 0;
-      const sales = salesMap[invKey] || null;
-      const priorRevision = priorRevisionMap[item.order_item_id] || null;
-      totalOriginalQty += item.original_qty;
-
-      const isDiscontinued = item.upc && (
-        discontinuedUPCs.has(item.upc.toLowerCase()) ||
-        discontinuedUPCs.has((item.product_name || '').toLowerCase())
+    // Load target quantities
+    const productIds = [...new Set(items.map(i => i.product_id))];
+    const targetMap = {};
+    if (productIds.length > 0) {
+      const tPlaceholders = productIds.map((_, i) => `$${i + 1}`).join(',');
+      const targetResult = await pool.query(
+        `SELECT product_id, location_id, target_qty FROM product_location_targets WHERE product_id IN (${tPlaceholders})`,
+        productIds
       );
-
-      // Items with 0 inventory BUT recent sales → received but not inventoried → cancel
-      const hasRecentSales = sales && sales.qtySold > 0;
-      const receivedNotInventoried = onHand <= 0 && hasRecentSales;
-
-      let decision, adjustedQty, reason;
-
-      if (isDiscontinued) {
-        decision = 'cancel'; adjustedQty = 0; reason = 'discontinued_product'; cancelCount++;
-      } else if (onHand > 0) {
-        decision = 'cancel'; adjustedQty = 0; reason = 'positive_stock_cancel'; cancelCount++;
-      } else if (receivedNotInventoried) {
-        decision = 'cancel'; adjustedQty = 0; reason = 'received_not_inventoried'; cancelCount++;
-      } else {
-        decision = 'ship'; adjustedQty = item.original_qty; reason = 'zero_stock'; shipCount++;
+      for (const row of targetResult.rows) {
+        targetMap[`${row.product_id}|${row.location_id}`] = row.target_qty;
       }
-
-      decisions.push({
-        orderItemId: item.order_item_id,
-        orderId: item.order_id,
-        productId: item.product_id,
-        upc: item.upc,
-        productName: item.product_name,
-        size: item.size,
-        color: item.color,
-        category: item.category,
-        location: item.location_name,
-        locationId: item.location_id,
-        originalQty: item.original_qty,
-        onHand,
-        decision,
-        adjustedQty,
-        reason,
-        wasFlipped: false,
-        isDiscontinued,
-        // Sales data
-        recentSales: sales ? { qtySold: sales.qtySold, transactions: sales.transactions, lastSale: sales.lastSale } : null,
-        receivedNotInventoried,
-        // Prior revision data
-        priorRevision: priorRevision ? {
-          decision: priorRevision.decision,
-          reason: priorRevision.reason,
-          date: priorRevision.date,
-          onHand: priorRevision.onHand
-        } : null
-      });
     }
 
-    // Calculate reduction
-    let totalAdjustedQty = decisions.reduce((s, d) => s + d.adjustedQty, 0);
-    let reductionPct = totalOriginalQty > 0
-      ? (totalOriginalQty - totalAdjustedQty) / totalOriginalQty
-      : 0;
-
-    const exceedsCap = reductionPct > maxReduction;
+    // Run decision engine
+    const { decisions, summary } = computeDecisions({
+      items,
+      targetMap,
+      inventoryMap,
+      salesMap,
+      priorRevisionMap,
+      discontinuedUPCs,
+    });
 
     // If not dry run and not paste mode, commit to DB
     let revisionId = null;
@@ -440,14 +392,14 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
             revision_id, brand_id, season_id, revision_type,
             total_items, ship_count, cancel_count, keep_open_count,
             original_total_qty, adjusted_total_qty, reduction_pct,
-            max_reduction_pct, logic_applied, notes, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+            logic_applied, notes, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
         `, [
           revisionId, brandId, seasonId, 'monthly_adjustment',
-          decisions.length, shipCount, cancelCount, keepOpenCount,
-          totalOriginalQty, totalAdjustedQty,
-          parseFloat((reductionPct * 100).toFixed(2)),
-          maxReduction, 'zero_stock_with_cap',
+          summary.totalItems, summary.ship, summary.cancel, summary.keepOpen,
+          summary.originalTotalQty, summary.adjustedTotalQty,
+          summary.reductionPct,
+          'target_qty',
           revisionNotes || null
         ]);
 
@@ -464,7 +416,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
             d.orderId, d.orderItemId, d.productId,
             d.originalQty, d.adjustedQty, 'revision', d.reason,
             revisionId, brandId, d.locationId, d.upc, d.productName, d.size,
-            d.decision, d.reason, d.onHand, d.wasFlipped,
+            d.decision, d.reason, d.onHand, false,
             `web_user:${req.user.id}`
           ]);
 
@@ -499,17 +451,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
     res.json({
       revisionId,
       dryRun: isDryRun,
-      summary: {
-        totalItems: decisions.length,
-        ship: shipCount,
-        cancel: cancelCount,
-        keepOpen: keepOpenCount,
-        originalTotalQty: totalOriginalQty,
-        adjustedTotalQty: totalAdjustedQty,
-        reductionPct: parseFloat((reductionPct * 100).toFixed(1)),
-        exceedsCap,
-        maxReductionPct: parseFloat((maxReduction * 100).toFixed(0))
-      },
+      summary,
       decisions
     });
   } catch (error) {
@@ -524,7 +466,7 @@ router.post('/run', authorizeRoles('admin', 'buyer'), async (req, res) => {
  */
 router.post('/apply', authorizeRoles('admin', 'buyer'), async (req, res) => {
   try {
-    const { brandId, orderIds, decisions, revisionNotes, maxReductionPct } = req.body;
+    const { brandId, orderIds, decisions, revisionNotes } = req.body;
 
     if (!brandId || !decisions || decisions.length === 0) {
       return res.status(400).json({ error: 'brandId and decisions are required' });
@@ -565,7 +507,7 @@ router.post('/apply', authorizeRoles('admin', 'buyer'), async (req, res) => {
           d.orderId, d.orderItemId, d.productId,
           d.originalQty, d.adjustedQty, 'revision', d.reason || null,
           revisionId, brandId, d.locationId, d.upc, d.productName, d.size,
-          d.decision, d.reason || null, d.onHand || null, d.wasFlipped || false,
+          d.decision, d.reason || null, d.onHand || null, false,
           `web_user:${req.user.id}`
         ]);
 
@@ -594,13 +536,13 @@ router.post('/apply', authorizeRoles('admin', 'buyer'), async (req, res) => {
           revision_id, brand_id, season_id, revision_type,
           total_items, ship_count, cancel_count, keep_open_count,
           original_total_qty, adjusted_total_qty, reduction_pct,
-          max_reduction_pct, notes, created_at
+          logic_applied, notes, created_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
       `, [
         revisionId, brandId, seasonId, 'monthly_adjustment',
         decisions.length, shipCount, cancelCount, keepOpenCount,
         totalOriginalQty, totalAdjustedQty, reductionPct,
-        maxReductionPct || null, revisionNotes || null
+        'target_qty', revisionNotes || null
       ]);
 
       // Update order timestamps
@@ -1648,17 +1590,17 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
       return res.status(400).json({ error: 'No data rows with UPCs found in the spreadsheet' });
     }
 
-    // Look up product details by UPC
+    // Look up product details by UPC (include id for target lookup)
     const uniqueUPCs = [...new Set(rowUPCs.map(r => r.upc))];
     const productMap = {};
     if (uniqueUPCs.length > 0) {
       const upcPlaceholders = uniqueUPCs.map((_, i) => `$${i + 1}`).join(',');
       const prodResult = await pool.query(
-        `SELECT upc, name, color, size FROM products WHERE upc IN (${upcPlaceholders})`,
+        `SELECT id, upc, name, color, size, category FROM products WHERE upc IN (${upcPlaceholders})`,
         uniqueUPCs
       );
       for (const row of prodResult.rows) {
-        if (row.upc) productMap[row.upc] = { name: row.name, color: row.color, size: row.size };
+        if (row.upc) productMap[row.upc] = row;
       }
     }
 
@@ -1697,7 +1639,7 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
       });
       for (const row of salesRows) {
         const locId = FACILITY_TO_LOCATION[String(row.facility_id)];
-        if (locId) salesMap[`${row.upc}|${locId}`] = { qtySold: parseInt(row.qty_sold) || 0, txns: parseInt(row.txns) || 0 };
+        if (locId) salesMap[`${row.upc}|${locId}`] = { qtySold: parseInt(row.qty_sold) || 0, transactions: parseInt(row.txns) || 0 };
       }
     } catch (e) { /* non-fatal */ }
 
@@ -1706,7 +1648,7 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
     if (uniqueUPCs.length > 0) {
       const upcPlaceholders = uniqueUPCs.map((_, i) => `$${i + 2}`).join(',');
       const oiResult = await pool.query(
-        `SELECT oi.id AS order_item_id, oi.order_id, oi.quantity, p.upc, o.location_id
+        `SELECT oi.id AS order_item_id, oi.order_id, oi.quantity, p.upc, p.id AS product_id, o.location_id
          FROM order_items oi
          JOIN products p ON oi.product_id = p.id
          JOIN orders o ON oi.order_id = o.id
@@ -1745,68 +1687,79 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
       return null;
     };
 
+    // Build items array for computeDecisions
+    const engineItems = [];
+    const rowIndexMap = []; // parallel array to map back to spreadsheet rows
+    for (const item of rowUPCs) {
+      const locId = resolveLocationId(item.location);
+      const product = productMap[item.upc] || {};
+      const oiKey = locId ? `${item.upc}|${locId}` : null;
+      const orderItem = oiKey ? (orderItemMap[oiKey] || null) : null;
+      engineItems.push({
+        product_id: product.id || 0,
+        location_id: locId || 0,
+        upc: item.upc,
+        original_qty: item.committedQty || item.orderedQty || 1,
+        product_name: product.name || null,
+        size: product.size || null,
+        color: product.color || null,
+        category: product.category || null,
+        location_name: item.location,
+        order_item_id: orderItem?.order_item_id || null,
+        order_id: orderItem?.order_id || null,
+      });
+      rowIndexMap.push({ rowIndex: item.rowIndex, orderedQty: item.orderedQty, committedQty: item.committedQty });
+    }
+
+    // Load target quantities
+    const productIds = [...new Set(engineItems.map(i => i.product_id).filter(Boolean))];
+    const targetMap = {};
+    if (productIds.length > 0) {
+      const tPlaceholders = productIds.map((_, i) => `$${i + 1}`).join(',');
+      const targetResult = await pool.query(
+        `SELECT product_id, location_id, target_qty FROM product_location_targets WHERE product_id IN (${tPlaceholders})`,
+        productIds
+      );
+      for (const row of targetResult.rows) {
+        targetMap[`${row.product_id}|${row.location_id}`] = row.target_qty;
+      }
+    }
+
+    // Run decision engine
+    const { decisions: engineDecisions, summary } = computeDecisions({
+      items: engineItems,
+      targetMap,
+      inventoryMap,
+      salesMap,
+      priorRevisionMap: {},
+      discontinuedUPCs,
+    });
+
     // Get dropdown values from template
     const shipCancelOptions = dropdownOpts.ship_cancel || [];
     const getShipValue = () => shipCancelOptions.find(o => /ship.*asap/i.test(o)) || 'Ship Product(s) ASAP';
     const getKeepOpenValue = () => shipCancelOptions.find(o => /keep.*open|b.*o/i.test(o)) || 'Keep Open - B/O';
     const getCancelValue = () => shipCancelOptions.find(o => /cancel/i.test(o)) || 'Cancel Product(s)';
 
-    // Process each row
-    const decisions = [];
-    let shipCount = 0, cancelCount = 0;
-
-    for (const item of rowUPCs) {
-      const locId = resolveLocationId(item.location);
-      const invKey = locId ? `${item.upc}|${locId}` : null;
-      const onHand = invKey ? (inventoryMap[invKey] || 0) : 0;
-      const sales = invKey ? (salesMap[invKey] || null) : null;
-      const isDiscontinued = discontinuedUPCs.has(item.upc.toLowerCase());
-      const hasRecentSales = sales && sales.qtySold > 0;
-      const receivedNotInventoried = onHand <= 0 && hasRecentSales;
-
-      let decision, adjustedQty, reason, shipCancelValue;
-
-      if (isDiscontinued) {
-        decision = 'cancel'; adjustedQty = 0; reason = 'discontinued_product';
-        shipCancelValue = getCancelValue(); cancelCount++;
-      } else if (onHand > 0) {
-        decision = 'cancel'; adjustedQty = 0; reason = 'positive_stock_cancel';
-        shipCancelValue = getCancelValue(); cancelCount++;
-      } else if (receivedNotInventoried) {
-        decision = 'cancel'; adjustedQty = 0; reason = 'received_not_inventoried';
-        shipCancelValue = getCancelValue(); cancelCount++;
+    // Merge engine decisions with spreadsheet row info and dropdown values
+    const decisions = engineDecisions.map((d, idx) => {
+      const rowInfo = rowIndexMap[idx];
+      let shipCancelValue;
+      if (d.decision === 'cancel') {
+        shipCancelValue = getCancelValue();
+      } else if (d.decision === 'keep_open_bo') {
+        shipCancelValue = getKeepOpenValue();
       } else {
-        decision = 'ship'; adjustedQty = item.committedQty || item.orderedQty || 1; reason = 'zero_stock';
-        shipCancelValue = item.committedQty > 0 ? getShipValue() : getKeepOpenValue(); shipCount++;
+        shipCancelValue = rowInfo.committedQty > 0 ? getShipValue() : getKeepOpenValue();
       }
-
-      const product = productMap[item.upc] || {};
-      const oiKey = locId ? `${item.upc}|${locId}` : null;
-      const orderItem = oiKey ? (orderItemMap[oiKey] || null) : null;
-
-      decisions.push({
-        rowIndex: item.rowIndex,
-        orderItemId: orderItem?.order_item_id || null,
-        orderId: orderItem?.order_id || null,
-        upc: item.upc,
-        productName: product.name || null,
-        color: product.color || null,
-        size: product.size || null,
-        location: item.location,
-        locationId: locId,
-        orderedQty: item.orderedQty,
-        committedQty: item.committedQty,
-        onHand,
-        decision,
-        adjustedQty,
-        reason,
+      return {
+        ...d,
+        rowIndex: rowInfo.rowIndex,
+        orderedQty: rowInfo.orderedQty,
+        committedQty: rowInfo.committedQty,
         shipCancelValue,
-        recentSales: sales,
-        isDiscontinued,
-        receivedNotInventoried
-      });
-
-    }
+      };
+    });
 
     const isDryRun = dryRun === 'true' || dryRun === true;
 
@@ -1817,12 +1770,7 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
         sheetName,
         template: template ? { id: template.id, name: template.name } : null,
         columnsDetected: { upc: upcCol + 1, location: locationCol + 1, qtyAdj: qtyAdjCol + 1, shipCancel: shipCancelCol + 1 },
-        summary: {
-          totalItems: decisions.length,
-          ship: shipCount,
-          cancel: cancelCount,
-          reductionPct: decisions.length > 0 ? parseFloat(((cancelCount / decisions.length) * 100).toFixed(1)) : 0
-        },
+        summary,
         decisions
       });
     }
@@ -1858,7 +1806,7 @@ router.post('/spreadsheet', authorizeRoles('admin', 'buyer'), upload.single('fil
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('X-Revision-Summary', JSON.stringify({
-      totalItems: decisions.length, ship: shipCount, cancel: cancelCount
+      totalItems: summary.totalItems, ship: summary.ship, cancel: summary.cancel
     }));
     res.send(Buffer.from(outputBuffer));
 

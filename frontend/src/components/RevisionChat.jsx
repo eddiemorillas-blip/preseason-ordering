@@ -106,9 +106,10 @@ const RevisionChat = ({ brandId, seasonId, orderIds, brandName, revisionContext,
   };
 
   const quickActions = [
-    { label: 'Check inventory', prompt: `Check current inventory levels for ${brandName || 'this brand'} across all locations` },
+    { label: 'Check inventory', prompt: `Check on-hand and target for ${brandName || 'this brand'} across locations` },
+    { label: 'Set target', prompt: 'Set a target quantity of ' },
+    { label: 'Remove items', prompt: 'Remove all items called ' },
     { label: 'Run revision', prompt: `Run a revision preview for the selected ${brandName || ''} orders` },
-    { label: 'Add rule', prompt: 'I want to add a new ordering rule: ' },
     { label: 'Compare revisions', prompt: `Compare all revisions for ${brandName || 'this brand'} this season` },
   ];
 

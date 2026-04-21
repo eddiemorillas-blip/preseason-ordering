@@ -21,12 +21,14 @@ const REASON_LABELS = {
   received_not_inventoried: 'Sold (not in inv)',
   flipped_back_cap: 'Flipped (cap)',
   user_override: 'Manual override',
+  at_or_above_target: 'At/above target',
+  below_target: 'Below target',
+  removed_by_chat: 'Removed via chat',
 };
 
 const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, onComplete }) => {
   const [mode, setMode] = useState('orders'); // orders | spreadsheet
   const [step, setStep] = useState('configure'); // configure | preview | applying | done
-  const [maxReductionPct, setMaxReductionPct] = useState(20);
   const [revisionNotes, setRevisionNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -53,7 +55,6 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
       const res = await revisionAPI.run({
         brandId,
         orderIds,
-        maxReductionPct: maxReductionPct / 100,
         dryRun: true,
         includeAdditions: true,
         brandName,
@@ -101,8 +102,7 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
     const reductionPct = totalOriginalQty > 0
       ? parseFloat((((totalOriginalQty - totalAdjustedQty) / totalOriginalQty) * 100).toFixed(1))
       : 0;
-    const flippedBack = decisions.filter(d => d.wasFlipped).length;
-    return { totalItems: decisions.length, ship, cancel, keepOpen, totalOriginalQty, totalAdjustedQty, reductionPct, flippedBack };
+    return { totalItems: decisions.length, ship, cancel, keepOpen, totalOriginalQty, totalAdjustedQty, reductionPct };
   }, [decisions, summary]);
 
   const handleApply = async () => {
@@ -119,14 +119,12 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
           orderIds,
           decisions,
           revisionNotes,
-          maxReductionPct: maxReductionPct / 100,
         });
       } else {
         // No overrides — run again with dryRun=false
         res = await revisionAPI.run({
           brandId,
           orderIds,
-          maxReductionPct: maxReductionPct / 100,
           dryRun: false,
           includeAdditions: false,
           brandName,
@@ -306,28 +304,6 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Max Reduction: {maxReductionPct}%
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={maxReductionPct}
-                  onChange={e => setMaxReductionPct(parseInt(e.target.value))}
-                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                />
-                <div className="flex justify-between text-xs text-gray-400 mt-1">
-                  <span>0%</span>
-                  <span>50%</span>
-                  <span>100%</span>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">
-                  If cancellations exceed this %, items will be flipped back to ship (lowest stock first).
-                </p>
-              </div>
-
-              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Revision Notes (optional)</label>
                 <textarea
                   value={revisionNotes}
@@ -374,6 +350,7 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                         <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Ordered</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">On Hand</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Target</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Decision</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Adj Qty</th>
                         <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Reason</th>
@@ -394,6 +371,9 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                             <span className={d.onHand > 0 ? 'text-green-600' : d.onHand < 0 ? 'text-red-600' : 'text-gray-500'}>
                               {d.onHand}
                             </span>
+                          </td>
+                          <td className="px-3 py-2 text-center text-xs text-gray-500">
+                            {d.targetQty > 0 ? d.targetQty : '\u2014'}
                           </td>
                           <td className="px-3 py-2 text-center">
                             <span className={`px-2 py-0.5 rounded text-xs font-medium ${DECISION_BADGES[d.decision]}`}>
@@ -452,12 +432,6 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                 </div>
               </div>
 
-              {liveSummary.flippedBack > 0 && (
-                <p className="text-sm text-amber-600 bg-amber-50 rounded px-3 py-2">
-                  {liveSummary.flippedBack} item{liveSummary.flippedBack !== 1 ? 's' : ''} flipped back to ship to stay within {maxReductionPct}% cap.
-                </p>
-              )}
-
               {/* Filters */}
               <div className="flex flex-wrap gap-2">
                 <input
@@ -501,6 +475,7 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                         <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Orig Qty</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">On Hand</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Target</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Decision</th>
                         <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Adj Qty</th>
                         <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Reason</th>
@@ -524,6 +499,9 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                                 {d.onHand}
                               </span>
                             </td>
+                            <td className="px-3 py-2 text-center text-xs text-gray-500">
+                              {d.targetQty > 0 ? d.targetQty : '\u2014'}
+                            </td>
                             <td className="px-3 py-2 text-center">
                               <button
                                 onClick={() => handleToggleDecision(realIdx)}
@@ -537,7 +515,6 @@ const RevisionModal = ({ selectedOrders, brandId, brandName, seasonId, onClose, 
                             <td className="px-3 py-2 text-center">{d.adjustedQty}</td>
                             <td className="px-3 py-2 text-xs text-gray-500">
                               <span>{REASON_LABELS[d.reason] || d.reason}</span>
-                              {d.wasFlipped && !d.userOverride && <span className="ml-1 text-amber-500">(flipped)</span>}
                               {d.userOverride && <span className="ml-1 text-blue-500">(modified)</span>}
                               {d.recentSales && (
                                 <span className="ml-1 text-purple-500" title={`Last sale: ${d.recentSales.lastSale || 'N/A'}`}>

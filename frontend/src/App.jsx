@@ -24,6 +24,7 @@ import Help from './pages/Help';
 import FormTemplateManager from './pages/FormTemplateManager';
 import AIAssistant from './pages/AIAssistant';
 import Revisions from './pages/Revisions';
+import TargetQuantities from './pages/TargetQuantities';
 
 function App() {
   return (
@@ -163,6 +164,14 @@ function App() {
             element={
               <ProtectedRoute requiredRole={['admin', 'buyer']}>
                 <Revisions />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/targets"
+            element={
+              <ProtectedRoute requiredRole={['admin', 'buyer']}>
+                <TargetQuantities />
               </ProtectedRoute>
             }
           />

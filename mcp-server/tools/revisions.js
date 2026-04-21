@@ -1,5 +1,6 @@
 const { pool, bigquery, LOCATION_TO_FACILITY, FACILITY_TO_LOCATION } = require('../db.js');
 const crypto = require('crypto');
+const { computeDecisions } = require('../../src/services/revisionEngine');
 
 function formatCurrency(num) {
   if (num === null || num === undefined) return 'N/A';
@@ -196,17 +197,15 @@ async function compareRevisions(args) {
 }
 
 /**
- * run_revision: Automated revision workflow
- * 1. Fetch on-hand from BigQuery for all order items
- * 2. Apply zero-stock logic (cancel if on_hand > 0, ship if on_hand <= 0)
- * 3. Check discontinued products via knowledge_entries
- * 4. Enforce max reduction cap (flip items back if over)
- * 5. Optionally propose additions
- * 6. Write decisions if not dryRun
+ * run_revision: Automated revision workflow using target-qty engine
+ * 1. Fetch order items
+ * 2. Load on-hand from BigQuery, targets, sales, discontinued
+ * 3. Call computeDecisions (target-qty based)
+ * 4. Optionally persist
  */
 async function runRevision(args) {
   try {
-    const { brandId, orderIds, maxReductionPct, dryRun, includeAdditions } = args;
+    const { brandId, orderIds, dryRun, revisionNotes } = args;
 
     if (!brandId || !orderIds || orderIds.length === 0) {
       return { content: [{ type: 'text', text: 'brandId and orderIds are required' }] };
@@ -216,21 +215,17 @@ async function runRevision(args) {
       return { content: [{ type: 'text', text: 'BigQuery is not available. run_revision requires live inventory data.' }] };
     }
 
-    const maxReduction = maxReductionPct !== undefined ? maxReductionPct : 0.20;
     const isDryRun = dryRun !== undefined ? dryRun : true;
-    const withAdditions = includeAdditions !== undefined ? includeAdditions : true;
 
-    // Step 0: Get all order items for the specified orders
+    // Get all order items
     const orderPlaceholders = orderIds.map((_, i) => `$${i + 1}`).join(',');
     const itemsResult = await pool.query(`
       SELECT
         oi.id AS order_item_id,
         oi.order_id,
         oi.product_id,
-        oi.quantity AS original_qty,
-        COALESCE(oi.adjusted_quantity, oi.quantity) AS current_qty,
+        COALESCE(oi.adjusted_quantity, oi.quantity) AS original_qty,
         oi.unit_cost,
-        oi.vendor_decision,
         p.upc,
         p.name AS product_name,
         p.size,
@@ -243,6 +238,7 @@ async function runRevision(args) {
       JOIN orders o ON oi.order_id = o.id
       JOIN locations l ON o.location_id = l.id
       WHERE oi.order_id IN (${orderPlaceholders})
+        AND COALESCE(oi.adjusted_quantity, oi.quantity) > 0
       ORDER BY o.location_id, p.name, p.size
     `, orderIds);
 
@@ -252,34 +248,40 @@ async function runRevision(args) {
 
     const items = itemsResult.rows;
 
-    // Step 1: Bulk fetch on-hand from BigQuery
+    // Bulk fetch on-hand from BigQuery
     const upcs = [...new Set(items.map(i => i.upc).filter(Boolean))];
     const upcList = upcs.map(u => `'${u}'`).join(',');
 
-    const bqQuery = `
-      SELECT DISTINCT
-        i.barcode AS upc,
-        i.facility_id,
-        i.on_hand_qty
-      FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
-      WHERE i.barcode IN (${upcList})
-        AND i.facility_id IN (41185, 1003, 1000)
-    `;
+    const [bqRows] = await bigquery.query({
+      query: `
+        SELECT DISTINCT i.barcode AS upc, i.facility_id, i.on_hand_qty
+        FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
+        WHERE i.barcode IN (${upcList}) AND i.facility_id IN (41185, 1003, 1000)
+      `
+    });
 
-    const [bqRows] = await bigquery.query({ query: bqQuery });
-
-    // Build lookup: upc+locationId -> on_hand
     const inventoryMap = {};
     for (const row of bqRows) {
       const locationId = FACILITY_TO_LOCATION[String(row.facility_id)];
-      if (locationId) {
-        const key = `${row.upc}|${locationId}`;
-        inventoryMap[key] = parseInt(row.on_hand_qty) || 0;
+      if (locationId) inventoryMap[`${row.upc}|${locationId}`] = parseInt(row.on_hand_qty) || 0;
+    }
+
+    // Load targets
+    const productIds = [...new Set(items.map(i => i.product_id))];
+    const targetMap = {};
+    if (productIds.length > 0) {
+      const tPlaceholders = productIds.map((_, i) => `$${i + 1}`).join(',');
+      const targetResult = await pool.query(
+        `SELECT product_id, location_id, target_qty FROM product_location_targets WHERE product_id IN (${tPlaceholders})`,
+        productIds
+      );
+      for (const row of targetResult.rows) {
+        targetMap[`${row.product_id}|${row.location_id}`] = row.target_qty;
       }
     }
 
-    // Step 2: Get discontinued products from knowledge
-    let discontinuedUPCs = new Set();
+    // Get discontinued products
+    const discontinuedUPCs = new Set();
     try {
       const discResult = await pool.query(
         `SELECT key, value FROM knowledge_entries WHERE type = 'discontinued_product' AND active = TRUE AND ($1::int IS NULL OR target_id = $1)`,
@@ -288,24 +290,18 @@ async function runRevision(args) {
       for (const row of discResult.rows) {
         if (row.key) discontinuedUPCs.add(row.key.toLowerCase());
         if (row.value && row.value.upc) discontinuedUPCs.add(String(row.value.upc));
-        if (row.value && Array.isArray(row.value.upcs)) {
-          row.value.upcs.forEach(u => discontinuedUPCs.add(String(u)));
-        }
+        if (row.value && Array.isArray(row.value.upcs)) row.value.upcs.forEach(u => discontinuedUPCs.add(String(u)));
       }
-    } catch (e) {
-      // knowledge_entries table might not have data yet, continue
-    }
+    } catch (e) { /* */ }
 
-    // Step 2b: Check prior revisions for these items
+    // Check prior revisions
     const priorRevisionMap = {};
     try {
       const priorResult = await pool.query(`
         SELECT DISTINCT ON (ah.order_item_id)
-          ah.order_item_id, ah.decision, ah.decision_reason, ah.revision_id,
-          ah.applied_at, ah.on_hand_at_revision
+          ah.order_item_id, ah.decision, ah.decision_reason, ah.applied_at, ah.on_hand_at_revision
         FROM adjustment_history ah
-        WHERE ah.brand_id = $1 AND ah.revision_id IS NOT NULL
-          AND ah.order_item_id = ANY($2::int[])
+        WHERE ah.brand_id = $1 AND ah.revision_id IS NOT NULL AND ah.order_item_id = ANY($2::int[])
         ORDER BY ah.order_item_id, ah.applied_at DESC
       `, [brandId, items.map(i => i.order_item_id)]);
       for (const row of priorResult.rows) {
@@ -313,176 +309,47 @@ async function runRevision(args) {
           decision: row.decision, reason: row.decision_reason, date: row.applied_at, onHand: row.on_hand_at_revision
         };
       }
-    } catch (e) { /* no prior revisions */ }
+    } catch (e) { /* */ }
 
-    // Step 2c: Check sales data — items with 0 inventory but recent sales were received but not inventoried
+    // Check sales data
     const salesMap = {};
     try {
       const facilityIds = [...new Set(items.map(i => LOCATION_TO_FACILITY[i.location_id]).filter(Boolean))];
       const facList = facilityIds.join(',');
-
-      const salesQuery = `
-        SELECT
-          p.BARCODE AS upc,
-          p.facility_id_true AS facility_id,
-          SUM(ii.QUANTITY) AS qty_sold,
-          COUNT(DISTINCT i.invoice_concat) AS transaction_count,
-          MAX(DATE(i.POSTDATE)) AS last_sale
-        FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
-        JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
-        JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
-        WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
-          AND ii.QUANTITY > 0
-          AND p.BARCODE IN (${upcList})
-          AND p.facility_id_true IN (${facList})
-        GROUP BY p.BARCODE, p.facility_id_true
-      `;
-      const [salesRows] = await bigquery.query({ query: salesQuery });
+      const [salesRows] = await bigquery.query({
+        query: `
+          SELECT p.BARCODE AS upc, p.facility_id_true AS facility_id,
+            SUM(ii.QUANTITY) AS qty_sold, COUNT(DISTINCT i.invoice_concat) AS transaction_count,
+            MAX(DATE(i.POSTDATE)) AS last_sale
+          FROM \`front-data-production.rgp_cleaned_zone.invoice_items_all\` ii
+          JOIN \`front-data-production.rgp_cleaned_zone.invoices_all\` i ON ii.invoice_concat = i.invoice_concat
+          JOIN \`front-data-production.rgp_cleaned_zone.products_all\` p ON ii.product_concat = p.product_concat
+          WHERE DATE(i.POSTDATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+            AND ii.QUANTITY > 0 AND p.BARCODE IN (${upcList}) AND p.facility_id_true IN (${facList})
+          GROUP BY p.BARCODE, p.facility_id_true
+        `
+      });
       for (const row of salesRows) {
         const locationId = FACILITY_TO_LOCATION[String(row.facility_id)];
         if (locationId) {
           salesMap[`${row.upc}|${locationId}`] = {
-            qtySold: parseInt(row.qty_sold) || 0,
-            transactions: parseInt(row.transaction_count) || 0,
-            lastSale: row.last_sale
+            qtySold: parseInt(row.qty_sold) || 0, transactions: parseInt(row.transaction_count) || 0, lastSale: row.last_sale
           };
         }
       }
-    } catch (e) {
-      // Sales lookup is non-fatal
-    }
+    } catch (e) { /* non-fatal */ }
 
-    // Step 3: Apply decision logic
-    const decisions = [];
-    let totalOriginalQty = 0;
-    let shipCount = 0;
-    let cancelCount = 0;
-    let keepOpenCount = 0;
+    // Run decision engine
+    const { decisions, summary } = computeDecisions({
+      items,
+      targetMap,
+      inventoryMap,
+      salesMap,
+      priorRevisionMap,
+      discontinuedUPCs,
+    });
 
-    for (const item of items) {
-      const invKey = `${item.upc}|${item.location_id}`;
-      const onHand = inventoryMap[invKey] !== undefined ? inventoryMap[invKey] : 0;
-      const sales = salesMap[invKey] || null;
-      const priorRevision = priorRevisionMap[item.order_item_id] || null;
-      totalOriginalQty += item.original_qty;
-
-      let decision, adjustedQty, reason;
-
-      // Check discontinued first
-      const isDiscontinued = item.upc && (
-        discontinuedUPCs.has(item.upc.toLowerCase()) ||
-        discontinuedUPCs.has((item.product_name || '').toLowerCase())
-      );
-
-      // Items with 0 inventory BUT recent sales → received but not inventoried → cancel
-      const hasRecentSales = sales && sales.qtySold > 0;
-      const receivedNotInventoried = onHand <= 0 && hasRecentSales;
-
-      if (isDiscontinued) {
-        decision = 'cancel';
-        adjustedQty = 0;
-        reason = 'discontinued_product';
-        cancelCount++;
-      } else if (onHand > 0) {
-        decision = 'cancel';
-        adjustedQty = 0;
-        reason = 'positive_stock_cancel';
-        cancelCount++;
-      } else if (receivedNotInventoried) {
-        decision = 'cancel';
-        adjustedQty = 0;
-        reason = 'received_not_inventoried';
-        cancelCount++;
-      } else {
-        decision = 'ship';
-        adjustedQty = item.original_qty;
-        reason = 'zero_stock';
-        shipCount++;
-      }
-
-      decisions.push({
-        orderItemId: item.order_item_id,
-        orderId: item.order_id,
-        productId: item.product_id,
-        upc: item.upc,
-        productName: item.product_name,
-        size: item.size,
-        location: item.location_name,
-        locationId: item.location_id,
-        originalQty: item.original_qty,
-        onHand,
-        decision,
-        adjustedQty,
-        reason,
-        wasFlipped: false,
-        isDiscontinued,
-        recentSales: sales ? { qtySold: sales.qtySold, transactions: sales.transactions, lastSale: sales.lastSale } : null,
-        receivedNotInventoried,
-        priorRevision
-      });
-    }
-
-    // Step 4: Calculate reduction (no auto-flip — user decides what to add via chat)
-    let totalAdjustedQty = decisions.reduce((s, d) => s + d.adjustedQty, 0);
-    let reductionPct = totalOriginalQty > 0
-      ? (totalOriginalQty - totalAdjustedQty) / totalOriginalQty
-      : 0;
-
-    const exceedsCap = reductionPct > maxReduction;
-
-    // Step 5: Propose additions if still over cap and requested
-    let additionsProposed = 0;
-    const proposedAdditions = [];
-
-    if (withAdditions && reductionPct > maxReduction) {
-      // Find negative-stock items NOT on order for this brand at these locations
-      const locationIds = [...new Set(items.map(i => i.location_id))];
-      const existingUpcs = new Set(items.map(i => i.upc).filter(Boolean));
-
-      try {
-        // Query BigQuery for all brand items with negative stock at our locations
-        const facilityIds = locationIds.map(lid => LOCATION_TO_FACILITY[lid]).filter(Boolean);
-        const facList = facilityIds.join(',');
-
-        const addQuery = `
-          SELECT DISTINCT
-            i.barcode AS upc,
-            i.description AS product_name,
-            i.size,
-            i.facility_id,
-            i.on_hand_qty
-          FROM \`front-data-production.dataform.INVENTORY_on_hand_report\` i
-          WHERE i.on_hand_qty < 0
-            AND i.facility_id IN (${facList})
-            AND LOWER(i.vendor) LIKE '%${args.brandName || ''}%'
-          ORDER BY i.on_hand_qty ASC
-          LIMIT 50
-        `;
-
-        // Only run if we have a brand name hint
-        if (args.brandName) {
-          const [addRows] = await bigquery.query({ query: addQuery });
-          for (const row of addRows) {
-            if (!existingUpcs.has(String(row.upc))) {
-              const locId = FACILITY_TO_LOCATION[String(row.facility_id)];
-              proposedAdditions.push({
-                upc: String(row.upc),
-                productName: row.product_name,
-                size: row.size,
-                locationId: locId,
-                onHand: parseInt(row.on_hand_qty) || 0,
-                suggestedQty: 1
-              });
-              additionsProposed++;
-            }
-          }
-        }
-      } catch (e) {
-        // Addition proposal is best-effort
-      }
-    }
-
-    // Step 6: Write if not dry run
+    // Write if not dry run
     let revisionId = null;
 
     if (!isDryRun) {
@@ -492,30 +359,23 @@ async function runRevision(args) {
       try {
         await client.query('BEGIN');
 
-        // Get season_id from first order
-        const seasonResult = await client.query(
-          'SELECT season_id FROM orders WHERE id = $1', [orderIds[0]]
-        );
+        const seasonResult = await client.query('SELECT season_id FROM orders WHERE id = $1', [orderIds[0]]);
         const seasonId = seasonResult.rows.length > 0 ? seasonResult.rows[0].season_id : null;
 
-        // Write revision summary
         await client.query(`
           INSERT INTO revisions (
             revision_id, brand_id, season_id, revision_type,
             total_items, ship_count, cancel_count, keep_open_count,
             original_total_qty, adjusted_total_qty, reduction_pct,
-            max_reduction_pct, logic_applied, notes, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+            logic_applied, notes, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
         `, [
           revisionId, brandId, seasonId, 'monthly_adjustment',
-          decisions.length, shipCount, cancelCount, keepOpenCount,
-          totalOriginalQty, totalAdjustedQty,
-          parseFloat((reductionPct * 100).toFixed(2)),
-          maxReduction, 'zero_stock_with_cap',
-          args.revisionNotes || null
+          summary.totalItems, summary.ship, summary.cancel, summary.keepOpen,
+          summary.originalTotalQty, summary.adjustedTotalQty, summary.reductionPct,
+          'target_qty', revisionNotes || null
         ]);
 
-        // Write adjustment_history records
         for (const d of decisions) {
           await client.query(`
             INSERT INTO adjustment_history (
@@ -524,41 +384,26 @@ async function runRevision(args) {
               revision_id, brand_id, location_id, upc, product_name, size,
               decision, decision_reason, on_hand_at_revision, was_flipped,
               created_by, applied_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
           `, [
             d.orderId, d.orderItemId, d.productId,
             d.originalQty, d.adjustedQty, 'revision', d.reason,
             revisionId, brandId, d.locationId, d.upc, d.productName, d.size,
-            d.decision, d.reason, d.onHand, d.wasFlipped,
+            d.decision, d.reason, d.onHand, false,
             'ai_agent'
           ]);
-        }
 
-        // Apply decisions to order_items
-        for (const d of decisions) {
           let vendorDecision, receiptStatus;
-          if (d.decision === 'cancel') {
-            vendorDecision = 'cancel';
-            receiptStatus = 'cancelled';
-          } else if (d.decision === 'keep_open_bo') {
-            vendorDecision = 'keep_open_bo';
-            receiptStatus = 'backordered';
-          } else {
-            vendorDecision = 'ship';
-            receiptStatus = 'pending';
-          }
+          if (d.decision === 'cancel') { vendorDecision = 'cancel'; receiptStatus = 'cancelled'; }
+          else if (d.decision === 'keep_open_bo') { vendorDecision = 'keep_open_bo'; receiptStatus = 'backordered'; }
+          else { vendorDecision = 'ship'; receiptStatus = 'pending'; }
 
           await client.query(`
-            UPDATE order_items
-            SET vendor_decision = $1,
-                adjusted_quantity = $2,
-                receipt_status = $3,
-                updated_at = NOW()
-            WHERE id = $4
+            UPDATE order_items SET vendor_decision = $1, adjusted_quantity = $2,
+              receipt_status = $3, updated_at = NOW() WHERE id = $4
           `, [vendorDecision, d.adjustedQty, receiptStatus, d.orderItemId]);
         }
 
-        // Update order timestamps
         for (const oid of orderIds) {
           await client.query('UPDATE orders SET updated_at = NOW() WHERE id = $1', [oid]);
         }
@@ -573,34 +418,19 @@ async function runRevision(args) {
     }
 
     // Build response
-    const summary = {
-      totalItems: decisions.length,
-      ship: shipCount,
-      cancel: cancelCount,
-      keepOpen: keepOpenCount,
-      originalTotalQty: totalOriginalQty,
-      adjustedTotalQty: totalAdjustedQty,
-      reductionPct: parseFloat((reductionPct * 100).toFixed(1)),
-      exceedsCap,
-      additionsProposed
-    };
-
     let output = `${isDryRun ? 'DRY RUN — ' : ''}REVISION ${isDryRun ? 'PREVIEW' : 'APPLIED'}\n${'='.repeat(80)}\n`;
     if (revisionId) output += `Revision ID: ${revisionId}\n`;
-    output += `Brand: ${brandId} | Orders: ${orderIds.join(', ')}\n`;
-    output += `Max Reduction: ${(maxReduction * 100).toFixed(0)}%\n\n`;
+    output += `Brand: ${brandId} | Orders: ${orderIds.join(', ')}\n\n`;
 
     output += `SUMMARY\n${'─'.repeat(40)}\n`;
     output += `Total Items: ${summary.totalItems}\n`;
     output += `Ship: ${summary.ship} | Cancel: ${summary.cancel} | Keep Open: ${summary.keepOpen}\n`;
     output += `Original Qty: ${summary.originalTotalQty} → Adjusted: ${summary.adjustedTotalQty}\n`;
     output += `Reduction: ${summary.reductionPct}%\n`;
-    if (exceedsCap) output += `⚠ EXCEEDS ${(maxReduction * 100).toFixed(0)}% CAP — consider adding items or increasing stock on key products\n`;
-    if (additionsProposed > 0) output += `Additions proposed: ${additionsProposed}\n`;
 
-    output += `\nDECISIONS\n${'─'.repeat(80)}\n`;
-    output += `${'Product'.padEnd(28)} ${'Size'.padEnd(6)} ${'Location'.padEnd(14)} ${'Orig'.padEnd(5)} ${'OnHand'.padEnd(7)} ${'Dec'.padEnd(8)} ${'Adj'.padEnd(5)} Reason\n`;
-    output += `${'─'.repeat(80)}\n`;
+    output += `\nDECISIONS\n${'─'.repeat(90)}\n`;
+    output += `${'Product'.padEnd(28)} ${'Size'.padEnd(6)} ${'Location'.padEnd(14)} ${'Orig'.padEnd(5)} ${'OnHand'.padEnd(7)} ${'Target'.padEnd(7)} ${'Dec'.padEnd(8)} ${'Adj'.padEnd(5)} Reason\n`;
+    output += `${'─'.repeat(90)}\n`;
 
     for (const d of decisions) {
       output += `${(d.productName || 'N/A').substring(0, 27).padEnd(28)} ` +
@@ -608,16 +438,10 @@ async function runRevision(args) {
         `${(d.location || '-').padEnd(14)} ` +
         `${String(d.originalQty).padEnd(5)} ` +
         `${String(d.onHand).padEnd(7)} ` +
+        `${String(d.targetQty).padEnd(7)} ` +
         `${d.decision.padEnd(8)} ` +
         `${String(d.adjustedQty).padEnd(5)} ` +
-        `${d.reason}${d.wasFlipped ? ' [FLIPPED]' : ''}\n`;
-    }
-
-    if (proposedAdditions.length > 0) {
-      output += `\nPROPOSED ADDITIONS\n${'─'.repeat(60)}\n`;
-      for (const a of proposedAdditions) {
-        output += `${a.upc} | ${(a.productName || '').substring(0, 30)} | Size: ${a.size || '-'} | OnHand: ${a.onHand} | Suggest: ${a.suggestedQty}\n`;
-      }
+        `${d.reason}\n`;
     }
 
     return { content: [{ type: 'text', text: output }] };
@@ -657,7 +481,7 @@ module.exports = [
   },
   {
     name: 'run_revision',
-    description: 'Automated revision workflow: fetches live inventory from BigQuery, applies zero-stock logic (cancel if on_hand > 0, ship if <= 0), checks discontinued products, enforces max reduction cap by flipping items back, and optionally proposes additions. Use dryRun=true (default) to preview before committing.',
+    description: 'Automated target-qty revision workflow: fetches live inventory from BigQuery, loads target quantities per product/location, and runs the decision engine (cancel if on_hand >= target, ship if below). Checks discontinued products and received-not-inventoried. Use dryRun=true (default) to preview before committing.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -667,10 +491,7 @@ module.exports = [
           items: { type: 'number' },
           description: 'Array of internal order IDs to revise'
         },
-        maxReductionPct: { type: 'number', description: 'Max net reduction allowed as decimal (default 0.20 = 20%)' },
         dryRun: { type: 'boolean', description: 'If true (default), preview decisions without writing' },
-        includeAdditions: { type: 'boolean', description: 'Whether to propose additions if over cap (default true)' },
-        brandName: { type: 'string', description: 'Brand name hint for addition proposals (e.g., "La Sportiva")' },
         revisionNotes: { type: 'string', description: 'Notes for this revision session' }
       },
       required: ['brandId', 'orderIds']

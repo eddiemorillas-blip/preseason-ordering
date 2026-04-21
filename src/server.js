@@ -54,6 +54,7 @@ const patternsRoutes = require('./routes/patterns');
 const batchOperationsRoutes = require('./routes/batch-operations');
 const revisionsRoutes = require('./routes/revisions');
 const revisionsChatRoutes = require('./routes/revisions-chat');
+const targetsRoutes = require('./routes/targets');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -222,6 +223,7 @@ app.use('/api/patterns', patternsRoutes);
 app.use('/api/batch-operations', batchOperationsRoutes);
 app.use('/api/revisions/chat', revisionsChatRoutes);
 app.use('/api/revisions', revisionsRoutes);
+app.use('/api/targets', targetsRoutes);
 
 // Serve static files from frontend build in production
 if (process.env.NODE_ENV === 'production') {

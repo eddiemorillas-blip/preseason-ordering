@@ -23,7 +23,11 @@ const REASON_LABELS = {
   positive_stock_cancel: 'In stock',
   discontinued_product: 'Discontinued',
   received_not_inventoried: 'Sold (not in inv)',
+  flipped_back_cap: 'Flipped (cap)',
   user_override: 'Manual override',
+  at_or_above_target: 'At/above target',
+  below_target: 'Below target',
+  removed_by_chat: 'Removed via chat',
 };
 
 const Revisions = () => {
@@ -48,7 +52,6 @@ const Revisions = () => {
   // Workflow state
   const [mode, setMode] = useState('orders'); // orders | spreadsheet | compare
   const [step, setStep] = useState('idle'); // idle | configure | reconcile | preview | applying | done
-  const [maxReductionPct, setMaxReductionPct] = useState(20);
   const [revisionNotes, setRevisionNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -235,7 +238,6 @@ const Revisions = () => {
         brandId: parseInt(selectedBrandId),
         seasonId: parseInt(selectedSeasonId),
         orderIds,
-        maxReductionPct: maxReductionPct / 100,
         dryRun: true,
         includeAdditions: true,
         brandName: selectedBrand?.name,
@@ -304,12 +306,11 @@ const Revisions = () => {
       if (hasOverrides) {
         res = await revisionAPI.apply({
           brandId: parseInt(selectedBrandId), orderIds, decisions, revisionNotes,
-          maxReductionPct: maxReductionPct / 100,
         });
       } else {
         res = await revisionAPI.run({
           brandId: parseInt(selectedBrandId), orderIds,
-          maxReductionPct: maxReductionPct / 100, dryRun: false,
+          dryRun: false,
           includeAdditions: false, brandName: selectedBrand?.name, revisionNotes,
         });
       }
@@ -830,16 +831,6 @@ const Revisions = () => {
                         </div>
 
                         <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">Max Reduction: {maxReductionPct}%</label>
-                          <input type="range" min="0" max="100" value={maxReductionPct}
-                            onChange={e => setMaxReductionPct(parseInt(e.target.value))}
-                            className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
-                          <div className="flex justify-between text-xs text-gray-400 mt-1">
-                            <span>0%</span><span>50%</span><span>100%</span>
-                          </div>
-                          <p className="text-xs text-gray-500 mt-1">If cancellations exceed this %, items will be flipped back to ship.</p>
-                        </div>
-                        <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">Notes (optional)</label>
                           <textarea value={revisionNotes} onChange={e => setRevisionNotes(e.target.value)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" rows={2}
@@ -905,12 +896,6 @@ const Revisions = () => {
                       </div>
                     </div>
 
-                    {liveSummary.reductionPct > maxReductionPct && (
-                      <p className="text-sm text-amber-600 bg-amber-50 rounded px-3 py-2">
-                        Reduction of {liveSummary.reductionPct}% exceeds {maxReductionPct}% target. Use the AI chat to discuss which items to add or increase.
-                      </p>
-                    )}
-
                     {/* Filters */}
                     <div className="flex flex-wrap gap-2">
                       <input type="text" placeholder="Search product, UPC, size..." value={searchFilter}
@@ -942,6 +927,7 @@ const Revisions = () => {
                               <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
                               <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Orig</th>
                               <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">On Hand</th>
+                              <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Target</th>
                               <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Decision</th>
                               <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Adj</th>
                               <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Reason</th>
@@ -962,6 +948,9 @@ const Revisions = () => {
                                   <td className="px-3 py-2 text-center">{d.originalQty}</td>
                                   <td className="px-3 py-2 text-center font-medium">
                                     <span className={d.onHand > 0 ? 'text-green-600' : d.onHand < 0 ? 'text-red-600' : 'text-gray-500'}>{d.onHand}</span>
+                                  </td>
+                                  <td className="px-3 py-2 text-center text-xs text-gray-500">
+                                    {d.targetQty > 0 ? d.targetQty : '\u2014'}
                                   </td>
                                   <td className="px-3 py-2 text-center">
                                     <button onClick={() => handleToggleDecision(realIdx)}
@@ -1147,6 +1136,7 @@ const Revisions = () => {
                               <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Location</th>
                               <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Ordered</th>
                               <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">On Hand</th>
+                              <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Target</th>
                               <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Decision</th>
                               <th className="text-center px-3 py-2 text-xs font-medium text-gray-500">Adj</th>
                               <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Reason</th>
@@ -1165,6 +1155,9 @@ const Revisions = () => {
                                 <td className="px-3 py-2 text-center">{d.orderedQty}</td>
                                 <td className="px-3 py-2 text-center">
                                   <span className={d.onHand > 0 ? 'text-green-600' : d.onHand < 0 ? 'text-red-600' : 'text-gray-500'}>{d.onHand}</span>
+                                </td>
+                                <td className="px-3 py-2 text-center text-xs text-gray-500">
+                                  {d.targetQty > 0 ? d.targetQty : '\u2014'}
                                 </td>
                                 <td className="px-3 py-2 text-center">
                                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${DECISION_BADGES[d.decision]}`}>
