@@ -269,6 +269,18 @@ const pool = require('./config/database');
       ALTER TABLE order_items ADD COLUMN IF NOT EXISTS vendor_decision VARCHAR(50);
       CREATE INDEX IF NOT EXISTS idx_order_items_receipt ON order_items(receipt_status);
       CREATE INDEX IF NOT EXISTS idx_order_items_vendor_decision ON order_items(vendor_decision);
+
+      CREATE TABLE IF NOT EXISTS product_location_targets (
+        product_id   INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        location_id  INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+        target_qty   INTEGER NOT NULL DEFAULT 0,
+        updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_by   TEXT,
+        PRIMARY KEY (product_id, location_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_targets_product ON product_location_targets(product_id);
+      CREATE INDEX IF NOT EXISTS idx_targets_location ON product_location_targets(location_id);
+      CREATE INDEX IF NOT EXISTS idx_targets_updated ON product_location_targets(updated_at DESC);
     `);
     console.log('✓ Schema migrations verified');
   } catch (err) {
